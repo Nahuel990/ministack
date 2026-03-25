@@ -1864,7 +1864,7 @@ def _delete_function_url_config(func_name: str, qualifier: str | None):
         return error_response_json("ResourceNotFoundException",
                                    f"Function URL config not found for {func_name}", 404)
     del _function_urls[key]
-    return json_response({}, status=204)
+    return 204, {}, b""
 
 
 def _list_function_url_configs(func_name: str, query_params: dict):

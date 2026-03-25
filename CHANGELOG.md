@@ -7,7 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.2.0] — 2026-03-25
+## [1.0.3] — 2026-03-25
+
+### Fixed
+- **Test port portability**: execute-api test URLs now read port from `MINISTACK_ENDPOINT` env var instead of hardcoding 4566 — fixes all execute-api tests when running against Docker on a non-default port
+- **API Gateway Authorizers**: `CreateAuthorizer`, `GetAuthorizer`, `GetAuthorizers`, `UpdateAuthorizer`, `DeleteAuthorizer` — full CRUD for JWT and Lambda authorizers; state included in persistence snapshot
+- **API Gateway `{proxy+}` greedy path matching**: `_path_matches` now handles `{param+}` placeholders matching multiple path segments (e.g. `/files/{proxy+}` matches `/files/a/b/c`)
+- **API Gateway `routeKey` in Lambda event**: Lambda proxy event `routeKey` now reflects the matched route key (e.g. `"GET /ping"`) instead of always being `"$default"`
+- **API Gateway Authorizer `identitySource` compliance**: field now stored and returned as array of strings (`["$request.header.Authorization"]`) matching AWS spec — was incorrectly a single string
+- **Lambda `DeleteFunctionUrlConfig` response**: now returns 204 with empty body (was returning 204 with `{}` body, causing `RemoteDisconnected` in boto3)
+- 377 integration tests — all passing, including against Docker image
+
+---
+
+## [1.0.2] — 2026-03-25
 
 ### Added
 
@@ -75,7 +88,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **API Gateway `routeKey` in Lambda event**: Lambda proxy event `routeKey` now reflects the matched route key (e.g. `"GET /ping"`) instead of always being `"$default"`
 - **API Gateway Authorizers**: `CreateAuthorizer`, `GetAuthorizer`, `GetAuthorizers`, `UpdateAuthorizer`, `DeleteAuthorizer` — full CRUD for JWT and Lambda authorizers; state included in persistence snapshot
 - **Test idempotency**: added `POST /_ministack/reset` endpoint and session-scoped `autouse` fixture so the test suite passes on repeated runs against the same server without restarting
-- 377 integration tests — all passing (6 new tests covering the above gaps)
+- **API Gateway Authorizer `identitySource` compliance**: field now stored and returned as array of strings (`["$request.header.Authorization"]`) matching AWS spec — was incorrectly a single string
+- **Lambda `DeleteFunctionUrlConfig` response**: now returns 204 with empty body (was returning 204 with `{}` body, causing `RemoteDisconnected` in boto3)
+- **Test port portability**: execute-api test URLs now read port from `MINISTACK_ENDPOINT` env var instead of hardcoding 4566 — fixes all execute-api tests when running against Docker on a non-default port
+- 377 integration tests — all passing, including against Docker image
 
 ### Roadmap Update
 The following roadmap items from v0.1.0 are now **completed**:
@@ -87,7 +103,7 @@ The following roadmap items from v0.1.0 are now **completed**:
 
 ---
 
-## [0.1.0] — 2024-03-24
+## [1.0.1] — 2024-03-24
 
 Initial public release. Built as a free, open-source alternative to LocalStack.
 

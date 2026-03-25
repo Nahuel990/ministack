@@ -664,7 +664,7 @@ def _create_authorizer(api_id, data):
         "authorizerId": auth_id,
         "authorizerType": data.get("authorizerType", "JWT"),
         "name": data.get("name", ""),
-        "identitySource": data.get("identitySource", "$request.header.Authorization"),
+        "identitySource": data.get("identitySource", ["$request.header.Authorization"]),
         "jwtConfiguration": data.get("jwtConfiguration", {}),
         "authorizerUri": data.get("authorizerUri", ""),
         "authorizerPayloadFormatVersion": data.get("authorizerPayloadFormatVersion", "2.0"),
