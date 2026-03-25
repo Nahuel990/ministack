@@ -782,6 +782,7 @@ def _describe_tasks(data):
     for ref in task_refs:
         task = _resolve_task(ref, cluster_name)
         if task:
+            _maybe_mark_stopped(task)
             t = _sanitize(task)
             if "TAGS" in include:
                 t["tags"] = _tags.get(task["taskArn"], [])
