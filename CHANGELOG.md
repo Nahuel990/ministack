@@ -7,6 +7,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.5] — 2026-03-26
+
+### Fixed
+- **DynamoDB `UpdateItem` condition expression on missing item**: `ConditionExpression` such as `attribute_exists(...)` now correctly evaluates against the existing stored item (or empty if missing) — was incorrectly evaluating against the in-progress mutation, causing `ConditionalCheckFailedException` to never fire on missing items
+- **DynamoDB key schema validation**: `GetItem`, `DeleteItem`, `UpdateItem`, `BatchWriteItem`, `BatchGetItem` now validate that supplied key attributes match the table schema in name and type — returns `ValidationException: The provided key element does not match the schema`
+- **ESM visibility timeout**: SQS → Lambda event source mapping now respects the queue's configured `VisibilityTimeout` instead of hardcoding 30 s — prevents retry storms and duplicate deliveries when Lambda fails
+- **Lambda stdout/stderr separation**: handler logs now go to stderr, response payload to stdout — matches AWS Lambda runtime contract; fixes log pollution in response payloads
+- **Lambda timeout error**: `subprocess.TimeoutExpired` path now captures and returns stdout/stderr in the error log instead of returning an empty string
+- **ECS `_maybe_mark_stopped` container status**: calls `container.reload()` before checking status to get live state from Docker — was reading stale cached status
+- **ECS `stoppedAt`/`stoppingAt` timestamps**: now stored as ISO 8601 strings matching AWS ECS API format — was storing Unix epoch float
+- **ECS cluster task count**: `_recount_cluster()` now recomputes running/pending counts from all tasks instead of decrementing — prevents count drift on concurrent task terminations
+- **Step Functions service integrations**: Task state now dispatches to real MiniStack services via `arn:aws:states:::` resource URIs — `sqs:sendMessage`, `sns:publish`, `dynamodb:putItem`, `dynamodb:getItem`, `dynamodb:deleteItem`, `dynamodb:updateItem`, `ecs:runTask`, `ecs:runTask.sync` — was returning input passthrough instead of invoking the service
+- 392 integration tests — all passing, including against Docker image
+
+---
+
 ## [1.0.4] — 2026-03-26
 
 ### Fixed

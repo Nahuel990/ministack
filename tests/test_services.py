@@ -1653,6 +1653,94 @@ def test_ddb_update_item_remove(ddb):
     assert resp["Attributes"]["keep"]["S"] == "stay"
 
 
+def test_ddb_update_item_condition_on_missing_item_fails(ddb):
+    """Missing item + attribute_exists(...) condition must fail with ConditionalCheckFailedException."""
+    try:
+        ddb.delete_table(TableName="t_update_cond_missing")
+    except Exception:
+        pass
+    ddb.create_table(
+        TableName="t_update_cond_missing",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    missing_key = {"pk": {"S": "missing-update-item"}}
+    with pytest.raises(ClientError) as exc:
+        ddb.update_item(
+            TableName="t_update_cond_missing",
+            Key=missing_key,
+            UpdateExpression="SET v = :v",
+            ExpressionAttributeValues={":v": {"S": "x"}},
+            ConditionExpression="attribute_exists(pk)",
+            ReturnValues="ALL_NEW",
+        )
+    assert exc.value.response["Error"]["Code"] == "ConditionalCheckFailedException"
+
+
+def test_ddb_get_item_missing_sort_key_fails_validation(ddb):
+    try:
+        ddb.delete_table(TableName="t_get_missing_sk")
+    except Exception:
+        pass
+    ddb.create_table(
+        TableName="t_get_missing_sk",
+        KeySchema=[
+            {"AttributeName": "pk", "KeyType": "HASH"},
+            {"AttributeName": "sk", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "pk", "AttributeType": "S"},
+            {"AttributeName": "sk", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    with pytest.raises(ClientError) as exc:
+        ddb.get_item(TableName="t_get_missing_sk", Key={"pk": {"S": "q_pk"}})
+    assert exc.value.response["Error"]["Code"] == "ValidationException"
+    assert exc.value.response["Error"]["Message"] == "The provided key element does not match the schema"
+
+
+def test_ddb_get_item_wrong_key_type_fails_validation(ddb):
+    try:
+        ddb.delete_table(TableName="t_get_wrong_type")
+    except Exception:
+        pass
+    ddb.create_table(
+        TableName="t_get_wrong_type",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName="t_get_wrong_type", Item={"pk": {"S": "typed-key"}})
+    with pytest.raises(ClientError) as exc:
+        ddb.get_item(TableName="t_get_wrong_type", Key={"pk": {"N": "123"}})
+    assert exc.value.response["Error"]["Code"] == "ValidationException"
+    assert exc.value.response["Error"]["Message"] == "The provided key element does not match the schema"
+
+
+def test_ddb_update_item_extra_key_attribute_fails_validation(ddb):
+    try:
+        ddb.delete_table(TableName="t_update_extra_key")
+    except Exception:
+        pass
+    ddb.create_table(
+        TableName="t_update_extra_key",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    with pytest.raises(ClientError) as exc:
+        ddb.update_item(
+            TableName="t_update_extra_key",
+            Key={"pk": {"S": "k1"}, "sk": {"S": "unexpected"}},
+            UpdateExpression="SET v = :v",
+            ExpressionAttributeValues={":v": {"S": "x"}},
+        )
+    assert exc.value.response["Error"]["Code"] == "ValidationException"
+    assert exc.value.response["Error"]["Message"] == "The provided key element does not match the schema"
+
+
 def test_ddb_update_item_add(ddb):
     ddb.put_item(TableName="t_hash_only", Item={"pk": {"S": "upd_add"}, "counter": {"N": "5"}})
     resp = ddb.update_item(
@@ -2121,6 +2209,67 @@ def test_lambda_esm_sqs_comprehensive(lam, sqs):
 
     listed = lam.list_event_source_mappings(FunctionName="esm-comp-func")
     assert any(e["UUID"] == esm_uuid for e in listed["EventSourceMappings"])
+
+    lam.delete_event_source_mapping(UUID=esm_uuid)
+
+
+def test_lambda_esm_sqs_failure_respects_visibility_timeout(lam, sqs):
+    """On Lambda failure, the message should remain in-flight until VisibilityTimeout expires."""
+    import io
+    import zipfile as zf
+
+    for fn in ("esm-fail-func",):
+        try:
+            lam.delete_function(FunctionName=fn)
+        except Exception:
+            pass
+
+    code = b"def handler(event, context):\n" b"    raise Exception('boom')\n"
+    buf = io.BytesIO()
+    with zf.ZipFile(buf, "w") as z:
+        z.writestr("index.py", code)
+
+    lam.create_function(
+        FunctionName="esm-fail-func",
+        Runtime="python3.9",
+        Role="arn:aws:iam::000000000000:role/test-role",
+        Handler="index.handler",
+        Code={"ZipFile": buf.getvalue()},
+        Timeout=3,
+    )
+
+    q_url = sqs.create_queue(
+        QueueName="esm-fail-queue",
+        Attributes={"VisibilityTimeout": "1"},
+    )["QueueUrl"]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
+        "Attributes"
+    ]["QueueArn"]
+
+    resp = lam.create_event_source_mapping(
+        EventSourceArn=q_arn,
+        FunctionName="esm-fail-func",
+        BatchSize=1,
+        Enabled=True,
+    )
+    esm_uuid = resp["UUID"]
+
+    sqs.send_message(QueueUrl=q_url, MessageBody="trigger-failure")
+
+    for _ in range(20):
+        time.sleep(0.2)
+        cur = lam.get_event_source_mapping(UUID=esm_uuid)
+        if cur.get("LastProcessingResult") == "FAILED":
+            break
+
+    lam.update_event_source_mapping(UUID=esm_uuid, Enabled=False)
+
+    msgs = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
+    assert not msgs.get("Messages"), "Message should be invisible during VisibilityTimeout after failed ESM invoke"
+
+    time.sleep(1.2)
+    msgs = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
+    assert msgs.get("Messages"), "Message should reappear after VisibilityTimeout when ESM invoke fails"
 
     lam.delete_event_source_mapping(UUID=esm_uuid)
 

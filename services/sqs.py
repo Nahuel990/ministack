@@ -1182,3 +1182,40 @@ def _url_from_path(path: str) -> str:
 def reset():
     _queues.clear()
     _queue_name_to_url.clear()
+
+
+# ────────────────────────────────────────────────────────────
+#  ESM helpers (internal)
+# ────────────────────────────────────────────────────────────
+#
+# Lambda Event Source Mapping (SQS → Lambda) should behave like a real client:
+# - "receive" makes messages invisible for the queue VisibilityTimeout and assigns ReceiptHandle
+# - "delete" removes by ReceiptHandle
+#
+# The ESM poller lives in `services/lambda_svc.py` and runs in a background thread
+# (non-async), so we provide sync helpers that reuse the same core SQS logic as
+# ReceiveMessage/DeleteMessageBatch.
+
+
+def _receive_messages_for_esm(queue_url: str, max_number: int) -> list[dict]:
+    """Receive up to max_number messages for ESM consumption.
+
+    Returns the *internal* message dicts (with receipt_handle set) so the ESM poller
+    can build AWS Lambda SQS event payloads and then delete via receipt handles.
+    """
+    q = _get_q(queue_url)
+    max_n = min(int(max_number or 1), 10)
+    vis = int(q["attributes"].get("VisibilityTimeout", "30"))
+    _dlq_sweep(q)
+    return _collect_msgs(q, max_n, vis)
+
+
+def _delete_messages_for_esm(queue_url: str, receipt_handles: set[str]) -> None:
+    """Best-effort delete of messages received by ESM."""
+    if not receipt_handles:
+        return
+    q = _get_q(queue_url)
+    q["messages"] = [
+        m for m in q["messages"]
+        if not (m.get("receipt_handle") is not None and m.get("receipt_handle") in receipt_handles)
+    ]
