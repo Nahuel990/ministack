@@ -23,7 +23,6 @@ RUN addgroup -S ministack && adduser -S ministack -G ministack
 RUN mkdir -p /tmp/localstack-data/s3 && chown -R ministack:ministack /tmp/localstack-data
 RUN mkdir -p /docker-entrypoint-initaws.d && chown ministack:ministack /docker-entrypoint-initaws.d
 VOLUME /docker-entrypoint-initaws.d
-USER ministack
 
 ENV GATEWAY_PORT=4566 \
     LOG_LEVEL=INFO \

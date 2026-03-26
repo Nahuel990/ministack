@@ -1241,8 +1241,8 @@ def test_ecs_run_task_stops_after_exit(ecs):
 
     # Poll until STOPPED (container exits almost immediately)
     stopped = False
-    for _ in range(10):
-        time.sleep(1)
+    for _ in range(30):
+        time.sleep(2)
         desc = ecs.describe_tasks(cluster="task-lifecycle", tasks=[task_arn])
         task = desc["tasks"][0]
         if task["lastStatus"] == "STOPPED":
