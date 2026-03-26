@@ -145,12 +145,14 @@ pytest tests/ -v -k "test_myservice"
 
 High-value contributions right now:
 
-- **API Gateway** — very commonly needed for local dev
-- **Cognito** — user pools, sign-up/sign-in flows
-- **SNS → SQS fan-out** — publish to a topic and have it deliver to subscribed queues
-- **DynamoDB transactions** — `TransactWriteItems`, `TransactGetItems`
-- **Step Functions execution** — actually interpret the state machine ASL definition
-- **Route53** — basic hosted zones and record sets
+- **API Gateway REST API (v1)** — resource trees, methods, integration types, deployment stages; HTTP API v2 is already implemented
+- **Cognito** — user pools, sign-up/sign-in, token issuance
+- **Route53** — hosted zones, record sets, health checks
+- **ACM** — certificate provisioning and validation stubs
+- **Firehose** — delivery streams to S3/Elasticsearch
+- **More S3 operations** — object lock, replication configuration, website hosting
+- **Virtual-hosted style S3** — `bucket.localhost:4566` routing in addition to path-style
+- **Athena without DuckDB** — graceful degradation or lighter SQL engine option
 
 ---
 

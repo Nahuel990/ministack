@@ -22,6 +22,7 @@ Actions:
 """
 
 import asyncio
+import os
 import time
 import json
 import hashlib
@@ -41,8 +42,8 @@ _queue_name_to_url: dict = {}
 
 ACCOUNT_ID = "000000000000"
 REGION = "us-east-1"
-DEFAULT_HOST = "localhost"
-DEFAULT_PORT = "4566"
+DEFAULT_HOST = os.environ.get("MINISTACK_HOST", "localhost")
+DEFAULT_PORT = os.environ.get("GATEWAY_PORT", "4566")
 _DEDUP_WINDOW_S = 300  # 5 minutes
 
 

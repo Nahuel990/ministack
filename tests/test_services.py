@@ -396,10 +396,15 @@ def test_sqs_get_queue_url(sqs):
     resp = sqs.get_queue_url(QueueName="intg-sqs-geturl")
     assert "intg-sqs-geturl" in resp["QueueUrl"]
 
-def test_sqs_get_queue_url(sqs):
-    sqs.create_queue(QueueName="intg-sqs-geturl")
-    resp = sqs.get_queue_url(QueueName="intg-sqs-geturl")
-    assert "intg-sqs-geturl" in resp["QueueUrl"]
+
+def test_sqs_queue_url_reflects_env_host(sqs):
+    """QueueUrl host must come from MINISTACK_HOST env var, not hardcoded localhost."""
+    import os
+    expected_host = os.environ.get("MINISTACK_HOST", "localhost")
+    resp = sqs.create_queue(QueueName="intg-sqs-urlhost")
+    url = resp["QueueUrl"]
+    assert expected_host in url
+    assert "intg-sqs-urlhost" in url
 
 
 def test_sqs_send_receive_delete(sqs):

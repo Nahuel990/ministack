@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.4] — 2026-03-26
+
+### Fixed
+- **SQS queue URL host/port**: `QueueUrl` values now read `MINISTACK_HOST` and `GATEWAY_PORT` env vars instead of hardcoding `localhost:4566` — fixes queue URLs when running behind a custom hostname or port
+- 379 integration tests — all passing, including against Docker image
+
+---
+
 ## [1.0.3] — 2026-03-25
 
 ### Fixed
@@ -95,11 +103,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Roadmap Update
 The following roadmap items from v0.1.0 are now **completed**:
-- ✅ API Gateway (REST + HTTP APIs) — HTTP API v2 delivered
-- ✅ SNS → SQS fan-out delivery
-- ✅ DynamoDB transactions (TransactWriteItems, TransactGetItems)
-- ✅ S3 multipart upload
-- ✅ SQS FIFO queues
+- API Gateway (HTTP API v2) — full control and data plane delivered
+- SNS → SQS fan-out delivery
+- DynamoDB transactions (TransactWriteItems, TransactGetItems)
+- S3 multipart upload
+- SQS FIFO queues
+- Step Functions ASL interpreter (Pass, Task, Choice, Wait, Succeed, Fail, Parallel, Map; Retry/Catch; waitForTaskToken)
 
 ---
 
@@ -148,16 +157,11 @@ Initial public release. Built as a free, open-source alternative to LocalStack.
 
 ## Roadmap
 
-### [0.2.0] — Planned
-- API Gateway (REST + HTTP APIs)
-- SNS → SQS fan-out delivery
-- DynamoDB transactions (TransactWriteItems, TransactGetItems)
-- S3 multipart upload
-- SQS FIFO queues
-
-### [0.3.0] — Planned
+### Planned
+- API Gateway REST API (v1) — resource trees, methods, integration types, deployment stages
 - Cognito (user pools, sign-up/sign-in)
-- Step Functions ASL interpreter (actually run state machines)
 - Route53 (hosted zones, record sets)
 - ACM (certificate management)
 - Firehose
+- Virtual-hosted style S3 (`bucket.localhost:4566` routing)
+

@@ -331,6 +331,7 @@ ecs.stop_task(cluster="dev", task=task_arn)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GATEWAY_PORT` | `4566` | Port to listen on |
+| `MINISTACK_HOST` | `localhost` | Hostname used in SQS queue URLs returned to clients |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `S3_PERSIST` | `0` | Set `1` to persist S3 objects to disk |
 | `S3_DATA_DIR` | `/tmp/localstack-data/s3` | S3 persistence directory |
