@@ -25,6 +25,7 @@ from ministack.core.persistence import save_all, load_state, PERSIST_STATE
 from ministack.services import s3, sqs, sns, dynamodb, lambda_svc, secretsmanager, cloudwatch_logs
 from ministack.services import ssm, eventbridge, kinesis, cloudwatch, ses, stepfunctions
 from ministack.services import ecs, rds, elasticache, glue, athena
+from ministack.services import ec2
 from ministack.services import apigateway
 from ministack.services import firehose
 from ministack.services import apigateway_v1
@@ -66,6 +67,7 @@ SERVICE_HANDLERS = {
     "route53": route53.handle_request,
     "cognito-idp": cognito.handle_request,
     "cognito-identity": cognito.handle_request,
+    "ec2": ec2.handle_request,
 }
 
 SERVICE_NAME_ALIASES = {
@@ -372,6 +374,7 @@ def _reset_all_state():
         (firehose, firehose.reset),
         (route53, route53.reset),
         (cognito, cognito.reset),
+        (ec2, ec2.reset),
     ]:
         try:
             fn()

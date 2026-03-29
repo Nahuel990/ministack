@@ -7,6 +7,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.1] — 2026-03-29
+
+### Added
+- **Amazon EC2** (`ministack/services/ec2.py`) — full API-level emulation (no real VMs)
+  - **Instances**: `RunInstances`, `DescribeInstances`, `TerminateInstances`, `StopInstances`, `StartInstances`, `RebootInstances`
+  - **Images**: `DescribeImages` — returns 3 stub AMIs (Amazon Linux 2, Ubuntu 22.04, Windows Server 2022)
+  - **Security Groups**: `CreateSecurityGroup`, `DeleteSecurityGroup`, `DescribeSecurityGroups`, `AuthorizeSecurityGroupIngress`, `RevokeSecurityGroupIngress`, `AuthorizeSecurityGroupEgress`, `RevokeSecurityGroupEgress`
+  - **Key Pairs**: `CreateKeyPair`, `DeleteKeyPair`, `DescribeKeyPairs`, `ImportKeyPair`
+  - **VPC**: `CreateVpc`, `DeleteVpc`, `DescribeVpcs`, `ModifyVpcAttribute` — default VPC pre-created
+  - **Subnets**: `CreateSubnet`, `DeleteSubnet`, `DescribeSubnets`, `ModifySubnetAttribute` — default subnet pre-created
+  - **Internet Gateways**: `CreateInternetGateway`, `DeleteInternetGateway`, `DescribeInternetGateways`, `AttachInternetGateway`, `DetachInternetGateway`
+  - **Route Tables**: `CreateRouteTable`, `DeleteRouteTable`, `DescribeRouteTables`, `AssociateRouteTable`, `DisassociateRouteTable`, `CreateRoute`, `ReplaceRoute`, `DeleteRoute` — default route table pre-created for default VPC
+  - **Network Interfaces (ENI)**: `CreateNetworkInterface`, `DeleteNetworkInterface`, `DescribeNetworkInterfaces`, `AttachNetworkInterface`, `DetachNetworkInterface` — full botocore-compliant response shape (`availabilityZone`, `sourceDestCheck`, `interfaceType`, `privateIpAddressesSet`)
+  - **VPC Endpoints**: `CreateVpcEndpoint`, `DeleteVpcEndpoints`, `DescribeVpcEndpoints` — Gateway and Interface types; `routeTableIdSet` / `subnetIdSet` serialized correctly
+  - **Availability Zones**: `DescribeAvailabilityZones`
+  - **Elastic IPs**: `AllocateAddress`, `ReleaseAddress`, `AssociateAddress`, `DisassociateAddress`, `DescribeAddresses`
+  - **Tags**: `CreateTags`, `DeleteTags`, `DescribeTags`
+  - Default VPC, subnet, security group, internet gateway, and route table always present
+  - Rules stored but not enforced (matches LocalStack behaviour)
+  - 26 integration tests
+- **Step Functions Activities** — full worker-based activity task pattern
+  - `CreateActivity`, `DeleteActivity`, `DescribeActivity`, `ListActivities` — full CRUD
+  - `GetActivityTask` — async long-poll (up to 60 s) returning `taskToken` + `input` to worker; non-blocking (uses `asyncio.sleep` — does not stall the event loop)
+  - Activity Task state execution — when a Task state's `Resource` is an activity ARN, the execution enqueues the task and waits for a worker to call `SendTaskSuccess` or `SendTaskFailure`
+  - `ActivityAlreadyExists` raised on duplicate `CreateActivity` (matches AWS behaviour — not idempotent)
+  - `ActivityDoesNotExist` raised on `DeleteActivity`, `DescribeActivity`, `GetActivityTask` for unknown ARN
+  - Activity ARN format: `arn:aws:states:{region}:{account}:activity:{name}`
+  - 5 integration tests: CRUD, list, duplicate-name error, worker success flow, worker failure flow
+
+### Tests
+- 644 integration tests — all passing
+
+---
+
 ## [1.1.0] — 2026-03-28
 
 ### Added
@@ -51,7 +85,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Fixed `test_apigwv1_usage_plan_key_crud`: `Name`/`Enabled` → `name`/`enabled` (boto3 lowercase params)
 - Fixed `test_lambda_reset_terminates_workers`: timeout 5 s → 15 s with 3-attempt retry
 - Fixed `test_rds_snapshot_crud` / `test_rds_deletion_protection`: added `finally` cleanup so RDS containers are deleted after each test
-- 613 integration tests — all passing against Docker image
+- 613 integration tests — all passing against Docker image (618 as of v1.1.1)
 
 ---
 
@@ -325,6 +359,6 @@ Initial public release. Built as a free, open-source alternative to LocalStack.
 ## Roadmap
 
 ### Planned
-- Cognito (user pools, sign-up/sign-in)
 - ACM (certificate management)
+- State persistence for Secrets Manager, SSM, DynamoDB (`PERSIST_STATE=1` currently only covers API Gateway v1/v2)
 

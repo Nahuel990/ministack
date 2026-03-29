@@ -24,7 +24,7 @@
 
 LocalStack recently moved its core services behind a paid plan. If you relied on LocalStack Community for local development and CI/CD pipelines, MiniStack is your free alternative.
 
-- **25 AWS services** emulated on a single port (4566)
+- **26 AWS services** emulated on a single port (4566)
 - **Drop-in compatible** — works with `boto3`, AWS CLI, Terraform, CDK, Pulumi, any SDK
 - **Real infrastructure** — RDS spins up actual Postgres/MySQL containers, ElastiCache spins up real Redis, Athena runs real SQL via DuckDB, ECS runs real Docker containers
 - **Tiny footprint** — ~150MB image, ~30MB RAM at idle vs LocalStack's ~1GB image and ~500MB RAM
@@ -164,6 +164,33 @@ sfn.create_state_machine(
     definition='{"StartAt":"Hello","States":{"Hello":{"Type":"Pass","End":true}}}',
     roleArn="arn:aws:iam::000000000000:role/role",
 )
+
+# EC2
+ec2 = client("ec2")
+reservation = ec2.run_instances(
+    ImageId="ami-00000001",
+    MinCount=1,
+    MaxCount=1,
+    InstanceType="t3.micro",
+)
+instance_id = reservation["Instances"][0]["InstanceId"]
+print(instance_id)  # i-xxxxxxxxxxxxxxxxx
+
+# Security Groups
+sg = ec2.create_security_group(GroupName="my-sg", Description="My SG")
+ec2.authorize_security_group_ingress(
+    GroupId=sg["GroupId"],
+    IpPermissions=[{"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80,
+                    "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}],
+)
+
+# VPC / Subnet
+vpc = ec2.create_vpc(CidrBlock="10.0.0.0/16")
+subnet = ec2.create_subnet(
+    VpcId=vpc["Vpc"]["VpcId"],
+    CidrBlock="10.0.1.0/24",
+    AvailabilityZone="us-east-1a",
+)
 ```
 
 ---
@@ -193,7 +220,7 @@ sfn.create_state_machine(
 | **Kinesis** | CreateStream, DeleteStream, DescribeStream, ListStreams, ListShards, PutRecord, PutRecords, GetShardIterator, GetRecords, MergeShards, SplitShard, UpdateShardCount, StartStreamEncryption, StopStreamEncryption, EnableEnhancedMonitoring, DisableEnhancedMonitoring, RegisterStreamConsumer, DeregisterStreamConsumer, ListStreamConsumers, DescribeStreamConsumer, AddTagsToStream, RemoveTagsFromStream, ListTagsForStream | Partition key → shard routing |
 | **CloudWatch Metrics** | PutMetricData, GetMetricStatistics, GetMetricData, ListMetrics, PutMetricAlarm, PutCompositeAlarm, DescribeAlarms, DescribeAlarmsForMetric, DescribeAlarmHistory, DeleteAlarms, SetAlarmState, EnableAlarmActions, DisableAlarmActions, TagResource, UntagResource, ListTagsForResource, PutDashboard, GetDashboard, DeleteDashboards, ListDashboards | CBOR and JSON protocol |
 | **SES** | SendEmail, SendRawEmail, SendTemplatedEmail, SendBulkTemplatedEmail, VerifyEmailIdentity, VerifyEmailAddress, VerifyDomainIdentity, VerifyDomainDkim, ListIdentities, GetIdentityVerificationAttributes, GetIdentityDkimAttributes, DeleteIdentity, GetSendQuota, GetSendStatistics, CreateConfigurationSet, DeleteConfigurationSet, DescribeConfigurationSet, ListConfigurationSets, CreateTemplate, GetTemplate, UpdateTemplate, DeleteTemplate, ListTemplates | Emails stored in-memory, not sent |
-| **Step Functions** | CreateStateMachine, DeleteStateMachine, DescribeStateMachine, UpdateStateMachine, ListStateMachines, StartExecution, StartSyncExecution, StopExecution, DescribeExecution, DescribeStateMachineForExecution, ListExecutions, GetExecutionHistory, SendTaskSuccess, SendTaskFailure, SendTaskHeartbeat, TagResource, UntagResource, ListTagsForResource | Full ASL interpreter; Retry/Catch; waitForTaskToken; Pass/Task/Choice/Wait/Succeed/Fail/Map/Parallel |
+| **Step Functions** | CreateStateMachine, DeleteStateMachine, DescribeStateMachine, UpdateStateMachine, ListStateMachines, StartExecution, StartSyncExecution, StopExecution, DescribeExecution, DescribeStateMachineForExecution, ListExecutions, GetExecutionHistory, SendTaskSuccess, SendTaskFailure, SendTaskHeartbeat, CreateActivity, DeleteActivity, DescribeActivity, ListActivities, GetActivityTask, TagResource, UntagResource, ListTagsForResource | Full ASL interpreter; Retry/Catch; waitForTaskToken; Activities (worker pattern); Pass/Task/Choice/Wait/Succeed/Fail/Map/Parallel |
 | **API Gateway v2** | CreateApi, GetApi, GetApis, UpdateApi, DeleteApi, CreateRoute, GetRoute, GetRoutes, UpdateRoute, DeleteRoute, CreateIntegration, GetIntegration, GetIntegrations, UpdateIntegration, DeleteIntegration, CreateStage, GetStage, GetStages, UpdateStage, DeleteStage, CreateDeployment, GetDeployment, GetDeployments, DeleteDeployment, CreateAuthorizer, GetAuthorizer, GetAuthorizers, UpdateAuthorizer, DeleteAuthorizer, TagResource, UntagResource, GetTags | HTTP API (v2) protocol; Lambda proxy (AWS_PROXY) and HTTP proxy (HTTP_PROXY) integrations; data plane via `{apiId}.execute-api.localhost`; `{param}` and `{proxy+}` path matching; JWT/Lambda authorizer CRUD |
 | **API Gateway v1** | CreateRestApi, GetRestApi, GetRestApis, UpdateRestApi, DeleteRestApi, CreateResource, GetResource, GetResources, UpdateResource, DeleteResource, PutMethod, GetMethod, DeleteMethod, UpdateMethod, PutMethodResponse, GetMethodResponse, DeleteMethodResponse, PutIntegration, GetIntegration, DeleteIntegration, UpdateIntegration, PutIntegrationResponse, GetIntegrationResponse, DeleteIntegrationResponse, CreateDeployment, GetDeployment, GetDeployments, UpdateDeployment, DeleteDeployment, CreateStage, GetStage, GetStages, UpdateStage, DeleteStage, CreateAuthorizer, GetAuthorizer, GetAuthorizers, UpdateAuthorizer, DeleteAuthorizer, CreateModel, GetModel, GetModels, DeleteModel, CreateApiKey, GetApiKey, GetApiKeys, UpdateApiKey, DeleteApiKey, CreateUsagePlan, GetUsagePlan, GetUsagePlans, UpdateUsagePlan, DeleteUsagePlan, CreateUsagePlanKey, GetUsagePlanKeys, DeleteUsagePlanKey, CreateDomainName, GetDomainName, GetDomainNames, DeleteDomainName, CreateBasePathMapping, GetBasePathMapping, GetBasePathMappings, DeleteBasePathMapping, TagResource, UntagResource, GetTags | REST API (v1) protocol; Lambda proxy format 1.0 (AWS_PROXY), HTTP proxy (HTTP_PROXY), MOCK integration; data plane via `{apiId}.execute-api.localhost`; resource tree with `{param}` and `{proxy+}` path matching; JSON Patch for all PATCH operations; state persistence |
 
@@ -208,6 +235,7 @@ sfn.create_state_machine(
 | **Athena** | StartQueryExecution, GetQueryExecution, GetQueryResults, StopQueryExecution, ListQueryExecutions, BatchGetQueryExecution, CreateWorkGroup, DeleteWorkGroup, GetWorkGroup, ListWorkGroups, UpdateWorkGroup, CreateNamedQuery, DeleteNamedQuery, GetNamedQuery, ListNamedQueries, BatchGetNamedQuery, CreateDataCatalog, GetDataCatalog, ListDataCatalogs, DeleteDataCatalog, UpdateDataCatalog, CreatePreparedStatement, GetPreparedStatement, DeletePreparedStatement, ListPreparedStatements, GetTableMetadata, ListTableMetadata, TagResource, UntagResource, ListTagsForResource | Real SQL via **DuckDB** when installed (`pip install duckdb`), otherwise returns mock results; result pagination; column type metadata |
 | **Firehose** | CreateDeliveryStream, DeleteDeliveryStream, DescribeDeliveryStream, ListDeliveryStreams, PutRecord, PutRecordBatch, UpdateDestination, TagDeliveryStream, UntagDeliveryStream, ListTagsForDeliveryStream, StartDeliveryStreamEncryption, StopDeliveryStreamEncryption | S3 destinations write records to the local S3 emulator; all other destination types buffer in-memory; concurrency-safe `UpdateDestination` via `VersionId` |
 | **Route53** | CreateHostedZone, GetHostedZone, DeleteHostedZone, ListHostedZones, ListHostedZonesByName, UpdateHostedZoneComment, ChangeResourceRecordSets (CREATE/UPSERT/DELETE), ListResourceRecordSets, GetChange, CreateHealthCheck, GetHealthCheck, DeleteHealthCheck, ListHealthChecks, UpdateHealthCheck, ChangeTagsForResource, ListTagsForResource | REST/XML protocol; SOA + NS records auto-created; CallerReference idempotency; alias records, weighted/failover/latency routing; marker-based pagination |
+| **EC2** | RunInstances, DescribeInstances, TerminateInstances, StopInstances, StartInstances, RebootInstances, DescribeImages, CreateSecurityGroup, DeleteSecurityGroup, DescribeSecurityGroups, AuthorizeSecurityGroupIngress, RevokeSecurityGroupIngress, AuthorizeSecurityGroupEgress, RevokeSecurityGroupEgress, CreateKeyPair, DeleteKeyPair, DescribeKeyPairs, ImportKeyPair, CreateVpc, DeleteVpc, DescribeVpcs, ModifyVpcAttribute, CreateSubnet, DeleteSubnet, DescribeSubnets, ModifySubnetAttribute, CreateInternetGateway, DeleteInternetGateway, DescribeInternetGateways, AttachInternetGateway, DetachInternetGateway, CreateRouteTable, DeleteRouteTable, DescribeRouteTables, AssociateRouteTable, DisassociateRouteTable, CreateRoute, ReplaceRoute, DeleteRoute, CreateNetworkInterface, DeleteNetworkInterface, DescribeNetworkInterfaces, AttachNetworkInterface, DetachNetworkInterface, CreateVpcEndpoint, DeleteVpcEndpoints, DescribeVpcEndpoints, DescribeAvailabilityZones, AllocateAddress, ReleaseAddress, AssociateAddress, DisassociateAddress, DescribeAddresses, CreateTags, DeleteTags, DescribeTags | In-memory state only — no real VMs; default VPC, subnet, security group, internet gateway, and route table always present; rules stored but not enforced (matches LocalStack) |
 | **Cognito** | **User Pools**: CreateUserPool, DeleteUserPool, DescribeUserPool, ListUserPools, UpdateUserPool, CreateUserPoolClient, DeleteUserPoolClient, DescribeUserPoolClient, ListUserPoolClients, UpdateUserPoolClient, AdminCreateUser, AdminDeleteUser, AdminGetUser, ListUsers, AdminSetUserPassword, AdminUpdateUserAttributes, AdminConfirmSignUp, AdminDisableUser, AdminEnableUser, AdminResetUserPassword, AdminUserGlobalSignOut, AdminAddUserToGroup, AdminRemoveUserFromGroup, AdminListGroupsForUser, AdminListUserAuthEvents, AdminInitiateAuth, AdminRespondToAuthChallenge, InitiateAuth, RespondToAuthChallenge, GlobalSignOut, RevokeToken, SignUp, ConfirmSignUp, ForgotPassword, ConfirmForgotPassword, ChangePassword, GetUser, UpdateUserAttributes, DeleteUser, CreateGroup, DeleteGroup, GetGroup, ListGroups, ListUsersInGroup, CreateUserPoolDomain, DeleteUserPoolDomain, DescribeUserPoolDomain, GetUserPoolMfaConfig, SetUserPoolMfaConfig, AssociateSoftwareToken, VerifySoftwareToken, TagResource, UntagResource, ListTagsForResource; **Identity Pools**: CreateIdentityPool, DeleteIdentityPool, DescribeIdentityPool, ListIdentityPools, UpdateIdentityPool, GetId, GetCredentialsForIdentity, GetOpenIdToken, SetIdentityPoolRoles, GetIdentityPoolRoles, ListIdentities, DescribeIdentity, MergeDeveloperIdentities, UnlinkDeveloperIdentity, UnlinkIdentity, TagResource, UntagResource, ListTagsForResource; **OAuth2**: /oauth2/token (client_credentials) | Stub JWT tokens (structurally valid base64url JWTs); SRP auth returns PASSWORD_VERIFIER challenge; confirmation codes hardcoded (signup: 123456, forgot-password: 654321); MFA config stored in-memory |
 
 ---
@@ -398,7 +426,7 @@ MiniStack keeps Python Lambda functions warm between invocations. After the firs
                     │  │  Step Functions  API GW v1/v2    │    │
                     │  │  ECS   RDS   ElastiCache  Glue   │    │
                     │  │  Athena  Firehose  Route53        │    │
-                    │  │  Cognito                         │    │
+                    │  │  Cognito  EC2                    │    │
                     │  └──────────────────────────────────┘    │
                     │                                          │
                     │  In-Memory Storage + Optional Docker     │
@@ -421,19 +449,19 @@ pip install boto3 pytest duckdb docker cbor2
 # Start MiniStack
 docker compose up -d
 
-# Run the full test suite (613 tests across all 25 services)
+# Run the full test suite (644 tests across all 26 services)
 pytest tests/ -v
 ```
 
 Expected output:
 ```
-collected 613 items
+collected 644 items
 
 tests/test_services.py::test_s3_create_bucket PASSED
 ...
 tests/test_services.py::test_app_asgi_callable PASSED
 
-613 passed in ~60s
+644 passed in ~60s
 ```
 
 ---
@@ -477,6 +505,7 @@ provider "aws" {
     route53        = "http://localhost:4566"
     cognitoidp     = "http://localhost:4566"
     cognitoidentity = "http://localhost:4566"
+    ec2             = "http://localhost:4566"
   }
 }
 ```
@@ -526,6 +555,7 @@ config:
 | **Firehose** | ✅ | ✅ | ✅ |
 | **Route53** | ✅ | ✅ | ✅ |
 | **Cognito** | ✅ | ✅ | ✅ |
+| **EC2** | ✅ | ✅ | ✅ |
 | CloudFormation | ❌ | partial | ✅ |
 | Cost | **Free** | Was free, now paid | $35+/mo |
 | Docker image size | ~150MB | ~1GB | ~1GB |

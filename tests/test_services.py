@@ -10631,3 +10631,488 @@ def test_ses_configuration_set_crud(ses):
     ses.delete_configuration_set(ConfigurationSetName="qa-ses-config")
     sets2 = ses.list_configuration_sets()["ConfigurationSets"]
     assert not any(s["Name"] == "qa-ses-config" for s in sets2)
+
+
+# ---------------------------------------------------------------------------
+# SFN Activities
+# ---------------------------------------------------------------------------
+
+def test_sfn_activity_create_describe_delete(sfn):
+    resp = sfn.create_activity(name="qa-act-crud")
+    arn = resp["activityArn"]
+    assert ":activity:qa-act-crud" in arn
+
+    desc = sfn.describe_activity(activityArn=arn)
+    assert desc["name"] == "qa-act-crud"
+    assert desc["activityArn"] == arn
+
+    sfn.delete_activity(activityArn=arn)
+    with pytest.raises(ClientError) as exc:
+        sfn.describe_activity(activityArn=arn)
+    assert exc.value.response["Error"]["Code"] == "ActivityDoesNotExist"
+
+
+def test_sfn_activity_list(sfn):
+    sfn.create_activity(name="qa-act-list-1")
+    sfn.create_activity(name="qa-act-list-2")
+    acts = sfn.list_activities()["activities"]
+    names = [a["name"] for a in acts]
+    assert "qa-act-list-1" in names
+    assert "qa-act-list-2" in names
+
+
+def test_sfn_activity_create_already_exists(sfn):
+    sfn.create_activity(name="qa-act-idem")
+    with pytest.raises(ClientError) as exc:
+        sfn.create_activity(name="qa-act-idem")
+    assert exc.value.response["Error"]["Code"] == "ActivityAlreadyExists"
+
+
+def test_sfn_activity_worker_flow(sfn):
+    """Worker calls GetActivityTask, then SendTaskSuccess — execution succeeds."""
+    import threading
+
+    act_arn = sfn.create_activity(name="qa-act-worker")["activityArn"]
+
+    definition = json.dumps({
+        "StartAt": "DoWork",
+        "States": {
+            "DoWork": {"Type": "Task", "Resource": act_arn, "End": True},
+        },
+    })
+    sm_arn = sfn.create_state_machine(
+        name="qa-sfn-act-worker",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/r",
+    )["stateMachineArn"]
+
+    exec_arn = sfn.start_execution(
+        stateMachineArn=sm_arn, input=json.dumps({"msg": "hello"})
+    )["executionArn"]
+
+    def worker():
+        task = sfn.get_activity_task(activityArn=act_arn, workerName="test-worker")
+        assert task["taskToken"] != ""
+        assert json.loads(task["input"])["msg"] == "hello"
+        sfn.send_task_success(
+            taskToken=task["taskToken"],
+            output=json.dumps({"result": "done"}),
+        )
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout=10)
+
+    for _ in range(20):
+        time.sleep(0.3)
+        status = sfn.describe_execution(executionArn=exec_arn)["status"]
+        if status != "RUNNING":
+            break
+
+    assert sfn.describe_execution(executionArn=exec_arn)["status"] == "SUCCEEDED"
+    output = json.loads(sfn.describe_execution(executionArn=exec_arn)["output"])
+    assert output["result"] == "done"
+
+
+def test_sfn_activity_worker_failure(sfn):
+    """Worker calls GetActivityTask then SendTaskFailure — execution fails."""
+    import threading
+
+    act_arn = sfn.create_activity(name="qa-act-fail")["activityArn"]
+
+    definition = json.dumps({
+        "StartAt": "DoWork",
+        "States": {
+            "DoWork": {"Type": "Task", "Resource": act_arn, "End": True},
+        },
+    })
+    sm_arn = sfn.create_state_machine(
+        name="qa-sfn-act-fail",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/r",
+    )["stateMachineArn"]
+
+    exec_arn = sfn.start_execution(
+        stateMachineArn=sm_arn, input="{}"
+    )["executionArn"]
+
+    def worker():
+        task = sfn.get_activity_task(activityArn=act_arn, workerName="test-worker")
+        sfn.send_task_failure(
+            taskToken=task["taskToken"],
+            error="WorkerError",
+            cause="something went wrong",
+        )
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(timeout=10)
+
+    for _ in range(20):
+        time.sleep(0.3)
+        status = sfn.describe_execution(executionArn=exec_arn)["status"]
+        if status != "RUNNING":
+            break
+
+    assert sfn.describe_execution(executionArn=exec_arn)["status"] == "FAILED"
+
+
+# ---------------------------------------------------------------------------
+# EC2
+# ---------------------------------------------------------------------------
+
+def test_ec2_describe_vpcs_default(ec2):
+    resp = ec2.describe_vpcs()
+    vpcs = resp["Vpcs"]
+    assert any(v["IsDefault"] for v in vpcs)
+
+
+def test_ec2_describe_subnets_default(ec2):
+    resp = ec2.describe_subnets()
+    assert len(resp["Subnets"]) >= 1
+
+
+def test_ec2_describe_availability_zones(ec2):
+    resp = ec2.describe_availability_zones()
+    azs = [az["ZoneName"] for az in resp["AvailabilityZones"]]
+    assert any("us-east-1" in az for az in azs)
+
+
+def test_ec2_run_describe_terminate_instances(ec2):
+    resp = ec2.run_instances(ImageId="ami-00000000", MinCount=1, MaxCount=1,
+                             InstanceType="t2.micro")
+    assert len(resp["Instances"]) == 1
+    instance_id = resp["Instances"][0]["InstanceId"]
+    assert instance_id.startswith("i-")
+    assert resp["Instances"][0]["State"]["Name"] == "running"
+
+    desc = ec2.describe_instances(InstanceIds=[instance_id])
+    assert len(desc["Reservations"]) == 1
+    assert desc["Reservations"][0]["Instances"][0]["InstanceId"] == instance_id
+
+    term = ec2.terminate_instances(InstanceIds=[instance_id])
+    assert term["TerminatingInstances"][0]["CurrentState"]["Name"] == "terminated"
+
+
+def test_ec2_stop_start_instances(ec2):
+    resp = ec2.run_instances(ImageId="ami-00000000", MinCount=1, MaxCount=1)
+    iid = resp["Instances"][0]["InstanceId"]
+
+    stop = ec2.stop_instances(InstanceIds=[iid])
+    assert stop["StoppingInstances"][0]["CurrentState"]["Name"] == "stopped"
+
+    start = ec2.start_instances(InstanceIds=[iid])
+    assert start["StartingInstances"][0]["CurrentState"]["Name"] == "running"
+
+    ec2.terminate_instances(InstanceIds=[iid])
+
+
+def test_ec2_run_multiple_instances(ec2):
+    resp = ec2.run_instances(ImageId="ami-00000000", MinCount=3, MaxCount=3)
+    assert len(resp["Instances"]) == 3
+    ids = [i["InstanceId"] for i in resp["Instances"]]
+    assert len(set(ids)) == 3
+    ec2.terminate_instances(InstanceIds=ids)
+
+
+def test_ec2_describe_images(ec2):
+    resp = ec2.describe_images(Owners=["self"])
+    assert len(resp["Images"]) >= 1
+    assert all("ImageId" in img for img in resp["Images"])
+
+
+def test_ec2_security_group_crud(ec2):
+    sg_id = ec2.create_security_group(
+        GroupName="qa-ec2-sg", Description="test sg"
+    )["GroupId"]
+    assert sg_id.startswith("sg-")
+
+    desc = ec2.describe_security_groups(GroupIds=[sg_id])
+    assert desc["SecurityGroups"][0]["GroupName"] == "qa-ec2-sg"
+
+    ec2.delete_security_group(GroupId=sg_id)
+    desc2 = ec2.describe_security_groups()
+    assert not any(sg["GroupId"] == sg_id for sg in desc2["SecurityGroups"])
+
+
+def test_ec2_security_group_duplicate(ec2):
+    ec2.create_security_group(GroupName="qa-ec2-sg-dup", Description="d")
+    with pytest.raises(ClientError) as exc:
+        ec2.create_security_group(GroupName="qa-ec2-sg-dup", Description="d")
+    assert exc.value.response["Error"]["Code"] == "InvalidGroup.Duplicate"
+
+
+def test_ec2_sg_authorize_revoke_ingress(ec2):
+    sg_id = ec2.create_security_group(
+        GroupName="qa-ec2-sg-rules", Description="rules test"
+    )["GroupId"]
+
+    ec2.authorize_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[{"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}],
+    )
+    desc = ec2.describe_security_groups(GroupIds=[sg_id])
+    perms = desc["SecurityGroups"][0]["IpPermissions"]
+    assert any(p["FromPort"] == 80 for p in perms)
+
+    ec2.revoke_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[{"IpProtocol": "tcp", "FromPort": 80, "ToPort": 80,
+                        "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}],
+    )
+    desc2 = ec2.describe_security_groups(GroupIds=[sg_id])
+    assert not any(p.get("FromPort") == 80
+                   for p in desc2["SecurityGroups"][0]["IpPermissions"])
+
+    ec2.delete_security_group(GroupId=sg_id)
+
+
+def test_ec2_key_pair_crud(ec2):
+    resp = ec2.create_key_pair(KeyName="qa-ec2-key")
+    assert resp["KeyName"] == "qa-ec2-key"
+    assert "KeyMaterial" in resp
+
+    desc = ec2.describe_key_pairs(KeyNames=["qa-ec2-key"])
+    assert len(desc["KeyPairs"]) == 1
+
+    ec2.delete_key_pair(KeyName="qa-ec2-key")
+    desc2 = ec2.describe_key_pairs()
+    assert not any(kp["KeyName"] == "qa-ec2-key" for kp in desc2["KeyPairs"])
+
+
+def test_ec2_key_pair_duplicate(ec2):
+    ec2.create_key_pair(KeyName="qa-ec2-key-dup")
+    with pytest.raises(ClientError) as exc:
+        ec2.create_key_pair(KeyName="qa-ec2-key-dup")
+    assert exc.value.response["Error"]["Code"] == "InvalidKeyPair.Duplicate"
+
+
+def test_ec2_vpc_create_delete(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.1.0.0/16")["Vpc"]["VpcId"]
+    assert vpc_id.startswith("vpc-")
+
+    desc = ec2.describe_vpcs(VpcIds=[vpc_id])
+    assert desc["Vpcs"][0]["CidrBlock"] == "10.1.0.0/16"
+    assert not desc["Vpcs"][0]["IsDefault"]
+
+    ec2.delete_vpc(VpcId=vpc_id)
+    desc2 = ec2.describe_vpcs()
+    assert not any(v["VpcId"] == vpc_id for v in desc2["Vpcs"])
+
+
+def test_ec2_subnet_create_delete(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.2.0.0/16")["Vpc"]["VpcId"]
+    subnet_id = ec2.create_subnet(
+        VpcId=vpc_id, CidrBlock="10.2.1.0/24"
+    )["Subnet"]["SubnetId"]
+    assert subnet_id.startswith("subnet-")
+
+    desc = ec2.describe_subnets(SubnetIds=[subnet_id])
+    assert desc["Subnets"][0]["CidrBlock"] == "10.2.1.0/24"
+
+    ec2.delete_subnet(SubnetId=subnet_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_internet_gateway_crud(ec2):
+    igw_id = ec2.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
+    assert igw_id.startswith("igw-")
+
+    vpc_id = ec2.create_vpc(CidrBlock="10.3.0.0/16")["Vpc"]["VpcId"]
+    ec2.attach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+
+    desc = ec2.describe_internet_gateways(InternetGatewayIds=[igw_id])
+    assert len(desc["InternetGateways"][0]["Attachments"]) == 1
+
+    ec2.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+    ec2.delete_internet_gateway(InternetGatewayId=igw_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_elastic_ip_crud(ec2):
+    alloc = ec2.allocate_address(Domain="vpc")
+    alloc_id = alloc["AllocationId"]
+    assert alloc_id.startswith("eipalloc-")
+    assert "PublicIp" in alloc
+
+    resp = ec2.run_instances(ImageId="ami-00000000", MinCount=1, MaxCount=1)
+    iid = resp["Instances"][0]["InstanceId"]
+
+    assoc = ec2.associate_address(AllocationId=alloc_id, InstanceId=iid)
+    assert "AssociationId" in assoc
+
+    desc = ec2.describe_addresses(AllocationIds=[alloc_id])
+    assert desc["Addresses"][0]["InstanceId"] == iid
+
+    ec2.disassociate_address(AssociationId=assoc["AssociationId"])
+    ec2.release_address(AllocationId=alloc_id)
+    ec2.terminate_instances(InstanceIds=[iid])
+
+
+def test_ec2_tags_crud(ec2):
+    resp = ec2.run_instances(ImageId="ami-00000000", MinCount=1, MaxCount=1)
+    iid = resp["Instances"][0]["InstanceId"]
+
+    ec2.create_tags(Resources=[iid], Tags=[{"Key": "Name", "Value": "qa-box"}])
+
+    desc = ec2.describe_instances(InstanceIds=[iid])
+    tags = desc["Reservations"][0]["Instances"][0]["Tags"]
+    assert any(t["Key"] == "Name" and t["Value"] == "qa-box" for t in tags)
+
+    ec2.delete_tags(Resources=[iid], Tags=[{"Key": "Name"}])
+    desc2 = ec2.describe_instances(InstanceIds=[iid])
+    tags2 = desc2["Reservations"][0]["Instances"][0].get("Tags", [])
+    assert not any(t["Key"] == "Name" for t in tags2)
+
+    ec2.terminate_instances(InstanceIds=[iid])
+
+
+def test_ec2_modify_vpc_attribute(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.10.0.0/16")["Vpc"]["VpcId"]
+    ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsSupport={"Value": True})
+    ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsHostnames={"Value": True})
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_modify_subnet_attribute(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.11.0.0/16")["Vpc"]["VpcId"]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.11.1.0/24")["Subnet"]["SubnetId"]
+    ec2.modify_subnet_attribute(SubnetId=subnet_id, MapPublicIpOnLaunch={"Value": True})
+    desc = ec2.describe_subnets(SubnetIds=[subnet_id])
+    assert desc["Subnets"][0]["MapPublicIpOnLaunch"] is True
+    ec2.delete_subnet(SubnetId=subnet_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_route_table_crud(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.20.0.0/16")["Vpc"]["VpcId"]
+    rtb_id = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
+    assert rtb_id.startswith("rtb-")
+
+    desc = ec2.describe_route_tables(RouteTableIds=[rtb_id])
+    assert desc["RouteTables"][0]["RouteTableId"] == rtb_id
+
+    ec2.delete_route_table(RouteTableId=rtb_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_route_table_associate_disassociate(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.21.0.0/16")["Vpc"]["VpcId"]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.21.1.0/24")["Subnet"]["SubnetId"]
+    rtb_id = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
+
+    assoc_id = ec2.associate_route_table(
+        RouteTableId=rtb_id, SubnetId=subnet_id
+    )["AssociationId"]
+    assert assoc_id.startswith("rtbassoc-")
+
+    desc = ec2.describe_route_tables(RouteTableIds=[rtb_id])
+    assocs = desc["RouteTables"][0]["Associations"]
+    assert any(a["RouteTableAssociationId"] == assoc_id for a in assocs)
+
+    ec2.disassociate_route_table(AssociationId=assoc_id)
+    desc2 = ec2.describe_route_tables(RouteTableIds=[rtb_id])
+    assert not any(a["RouteTableAssociationId"] == assoc_id
+                   for a in desc2["RouteTables"][0]["Associations"])
+
+    ec2.delete_route_table(RouteTableId=rtb_id)
+    ec2.delete_subnet(SubnetId=subnet_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_route_create_replace_delete(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.22.0.0/16")["Vpc"]["VpcId"]
+    rtb_id = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
+    igw_id = ec2.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
+
+    ec2.create_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0",
+                     GatewayId=igw_id)
+    desc = ec2.describe_route_tables(RouteTableIds=[rtb_id])
+    routes = desc["RouteTables"][0]["Routes"]
+    assert any(r.get("DestinationCidrBlock") == "0.0.0.0/0" for r in routes)
+
+    ec2.replace_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0",
+                      GatewayId="local")
+
+    ec2.delete_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0")
+    desc2 = ec2.describe_route_tables(RouteTableIds=[rtb_id])
+    assert not any(r.get("DestinationCidrBlock") == "0.0.0.0/0"
+                   for r in desc2["RouteTables"][0]["Routes"])
+
+    ec2.delete_internet_gateway(InternetGatewayId=igw_id)
+    ec2.delete_route_table(RouteTableId=rtb_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_network_interface_crud(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.30.0.0/16")["Vpc"]["VpcId"]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.30.1.0/24")["Subnet"]["SubnetId"]
+
+    eni_id = ec2.create_network_interface(
+        SubnetId=subnet_id, Description="qa-eni"
+    )["NetworkInterface"]["NetworkInterfaceId"]
+    assert eni_id.startswith("eni-")
+
+    desc = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])
+    assert desc["NetworkInterfaces"][0]["Description"] == "qa-eni"
+    assert desc["NetworkInterfaces"][0]["Status"] == "available"
+
+    ec2.delete_network_interface(NetworkInterfaceId=eni_id)
+    desc2 = ec2.describe_network_interfaces()
+    assert not any(e["NetworkInterfaceId"] == eni_id for e in desc2["NetworkInterfaces"])
+
+    ec2.delete_subnet(SubnetId=subnet_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_network_interface_attach_detach(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.31.0.0/16")["Vpc"]["VpcId"]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.31.1.0/24")["Subnet"]["SubnetId"]
+    eni_id = ec2.create_network_interface(SubnetId=subnet_id)["NetworkInterface"]["NetworkInterfaceId"]
+    resp = ec2.run_instances(ImageId="ami-00000000", MinCount=1, MaxCount=1)
+    iid = resp["Instances"][0]["InstanceId"]
+
+    attach_resp = ec2.attach_network_interface(
+        NetworkInterfaceId=eni_id, InstanceId=iid, DeviceIndex=1
+    )
+    attachment_id = attach_resp["AttachmentId"]
+    assert attachment_id.startswith("eni-attach-")
+
+    desc = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])
+    assert desc["NetworkInterfaces"][0]["Status"] == "in-use"
+
+    ec2.detach_network_interface(AttachmentId=attachment_id)
+    desc2 = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])
+    assert desc2["NetworkInterfaces"][0]["Status"] == "available"
+
+    ec2.terminate_instances(InstanceIds=[iid])
+    ec2.delete_network_interface(NetworkInterfaceId=eni_id)
+    ec2.delete_subnet(SubnetId=subnet_id)
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_vpc_endpoint_crud(ec2):
+    vpc_id = ec2.create_vpc(CidrBlock="10.40.0.0/16")["Vpc"]["VpcId"]
+
+    vpce_id = ec2.create_vpc_endpoint(
+        VpcId=vpc_id,
+        ServiceName="com.amazonaws.us-east-1.s3",
+        VpcEndpointType="Gateway",
+    )["VpcEndpoint"]["VpcEndpointId"]
+    assert vpce_id.startswith("vpce-")
+
+    desc = ec2.describe_vpc_endpoints(VpcEndpointIds=[vpce_id])
+    assert desc["VpcEndpoints"][0]["ServiceName"] == "com.amazonaws.us-east-1.s3"
+    assert desc["VpcEndpoints"][0]["State"] == "available"
+
+    ec2.delete_vpc_endpoints(VpcEndpointIds=[vpce_id])
+    desc2 = ec2.describe_vpc_endpoints()
+    assert not any(e["VpcEndpointId"] == vpce_id for e in desc2["VpcEndpoints"])
+
+    ec2.delete_vpc(VpcId=vpc_id)
+
+
+def test_ec2_describe_route_tables_default(ec2):
+    desc = ec2.describe_route_tables()
+    assert any(rt["VpcId"] == "vpc-00000001" for rt in desc["RouteTables"])

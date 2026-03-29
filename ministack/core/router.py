@@ -116,6 +116,13 @@ SERVICE_PATTERNS = {
         "target_prefixes": ["AWSCognitoIdentityService"],
         "host_patterns": [r"cognito-identity\."],
     },
+    "ec2": {
+        "host_patterns": [r"ec2\."],
+        "path_patterns": [r"Action=.*Instance", r"Action=.*Security", r"Action=.*KeyPair",
+                          r"Action=.*Vpc", r"Action=.*Subnet", r"Action=.*Address",
+                          r"Action=.*Image", r"Action=.*Tag", r"Action=.*InternetGateway",
+                          r"Action=.*AvailabilityZone"],
+    },
 }
 
 
@@ -264,6 +271,35 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "CreateSnapshot": "elasticache", "DeleteSnapshot": "elasticache",
             "DescribeSnapshots": "elasticache",
             "IncreaseReplicaCount": "elasticache", "DecreaseReplicaCount": "elasticache",
+            # EC2 actions
+            "RunInstances": "ec2", "DescribeInstances": "ec2", "TerminateInstances": "ec2",
+            "StopInstances": "ec2", "StartInstances": "ec2", "RebootInstances": "ec2",
+            "DescribeImages": "ec2",
+            "CreateSecurityGroup": "ec2", "DeleteSecurityGroup": "ec2",
+            "DescribeSecurityGroups": "ec2",
+            "AuthorizeSecurityGroupIngress": "ec2", "RevokeSecurityGroupIngress": "ec2",
+            "AuthorizeSecurityGroupEgress": "ec2", "RevokeSecurityGroupEgress": "ec2",
+            "CreateKeyPair": "ec2", "DeleteKeyPair": "ec2", "DescribeKeyPairs": "ec2",
+            "ImportKeyPair": "ec2",
+            "DescribeVpcs": "ec2", "CreateVpc": "ec2", "DeleteVpc": "ec2",
+            "DescribeSubnets": "ec2", "CreateSubnet": "ec2", "DeleteSubnet": "ec2",
+            "CreateInternetGateway": "ec2", "DeleteInternetGateway": "ec2",
+            "DescribeInternetGateways": "ec2",
+            "AttachInternetGateway": "ec2", "DetachInternetGateway": "ec2",
+            "DescribeAvailabilityZones": "ec2",
+            "AllocateAddress": "ec2", "ReleaseAddress": "ec2",
+            "AssociateAddress": "ec2", "DisassociateAddress": "ec2",
+            "DescribeAddresses": "ec2",
+            "CreateTags": "ec2", "DeleteTags": "ec2", "DescribeTags": "ec2",
+            "ModifyVpcAttribute": "ec2", "ModifySubnetAttribute": "ec2",
+            "CreateRouteTable": "ec2", "DeleteRouteTable": "ec2", "DescribeRouteTables": "ec2",
+            "AssociateRouteTable": "ec2", "DisassociateRouteTable": "ec2",
+            "CreateRoute": "ec2", "ReplaceRoute": "ec2", "DeleteRoute": "ec2",
+            "CreateNetworkInterface": "ec2", "DeleteNetworkInterface": "ec2",
+            "DescribeNetworkInterfaces": "ec2",
+            "AttachNetworkInterface": "ec2", "DetachNetworkInterface": "ec2",
+            "CreateVpcEndpoint": "ec2", "DeleteVpcEndpoints": "ec2",
+            "DescribeVpcEndpoints": "ec2",
         }
         if action in action_service_map:
             return action_service_map[action]

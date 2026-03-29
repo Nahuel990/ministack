@@ -8,6 +8,8 @@ Supports: CreateStateMachine, DeleteStateMachine, DescribeStateMachine,
           DescribeExecution, DescribeStateMachineForExecution, ListExecutions,
           GetExecutionHistory,
           SendTaskSuccess, SendTaskFailure, SendTaskHeartbeat,
+          CreateActivity, DeleteActivity, DescribeActivity, ListActivities,
+          GetActivityTask,
           TagResource, UntagResource, ListTagsForResource.
 
 ASL state types: Pass, Task, Choice, Wait, Succeed, Fail, Parallel, Map.
@@ -37,6 +39,8 @@ _state_machines: dict = {}
 _executions: dict = {}
 _task_tokens: dict = {}
 _tags: dict = {}
+_activities: dict = {}
+_activity_tasks: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -71,11 +75,18 @@ async def handle_request(method, path, headers, body, query_params):
         "ListTagsForResource": _list_tags_for_resource,
         "StartSyncExecution": _start_sync_execution,
         "DescribeStateMachineForExecution": _describe_state_machine_for_execution,
+        "CreateActivity": _create_activity,
+        "DeleteActivity": _delete_activity,
+        "DescribeActivity": _describe_activity,
+        "ListActivities": _list_activities,
+        "GetActivityTask": _get_activity_task,
     }
 
     handler = handlers.get(action)
     if not handler:
         return error_response_json("InvalidAction", f"Unknown action: {action}", 400)
+    if action == "GetActivityTask":
+        return await _get_activity_task(data)
     return handler(data)
 
 
@@ -400,6 +411,76 @@ def _send_task_heartbeat(data):
 
 
 # ---------------------------------------------------------------------------
+# Activity CRUD
+# ---------------------------------------------------------------------------
+
+def _create_activity(data):
+    name = data.get("name")
+    if not name:
+        return error_response_json("ValidationException", "name is required", 400)
+
+    arn = f"arn:aws:states:{REGION}:{ACCOUNT_ID}:activity:{name}"
+    if arn in _activities:
+        return error_response_json(
+            "ActivityAlreadyExists", f"Activity already exists: {arn}", 400)
+
+    ts = now_iso()
+    _activities[arn] = {"activityArn": arn, "name": name, "creationDate": ts}
+    _activity_tasks[arn] = []
+
+    tags = data.get("tags", [])
+    if tags:
+        _tags[arn] = list(tags)
+
+    return json_response({"activityArn": arn, "creationDate": ts})
+
+
+def _delete_activity(data):
+    arn = data.get("activityArn")
+    if arn not in _activities:
+        return error_response_json(
+            "ActivityDoesNotExist", f"Activity {arn} not found", 400)
+    del _activities[arn]
+    _activity_tasks.pop(arn, None)
+    _tags.pop(arn, None)
+    return json_response({})
+
+
+def _describe_activity(data):
+    arn = data.get("activityArn")
+    act = _activities.get(arn)
+    if not act:
+        return error_response_json(
+            "ActivityDoesNotExist", f"Activity {arn} not found", 400)
+    return json_response(act)
+
+
+def _list_activities(data):
+    acts = [
+        {"activityArn": a["activityArn"], "name": a["name"], "creationDate": a["creationDate"]}
+        for a in _activities.values()
+    ]
+    return json_response({"activities": acts})
+
+
+async def _get_activity_task(data):
+    arn = data.get("activityArn")
+    if arn not in _activities:
+        return error_response_json(
+            "ActivityDoesNotExist", f"Activity {arn} not found", 400)
+
+    queue = _activity_tasks.get(arn, [])
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if queue:
+            task = queue.pop(0)
+            return json_response({"taskToken": task["taskToken"], "input": task["input"]})
+        await asyncio.sleep(0.5)
+
+    return json_response({})
+
+
+# ---------------------------------------------------------------------------
 # Tagging
 # ---------------------------------------------------------------------------
 
@@ -700,6 +781,10 @@ def _invoke_resource(resource, input_data):
     if func_name:
         return _call_lambda(func_name, input_data)
 
+    # Activity resource — enqueue task and wait for worker to call GetActivityTask + SendTask*
+    if ":activity:" in resource:
+        return _invoke_activity(resource, input_data)
+
     # Service integration dispatch
     clean = resource.replace(".sync", "").replace(".waitForTaskToken", "")
     for prefix, handler in _SERVICE_DISPATCH.items():
@@ -707,6 +792,38 @@ def _invoke_resource(resource, input_data):
             return handler(resource, input_data)
 
     return input_data
+
+
+def _invoke_activity(resource, input_data):
+    """Enqueue a task for the activity worker and block until SendTaskSuccess/Failure."""
+    arn = resource
+    if arn not in _activities:
+        raise _ExecutionError(
+            "ActivityDoesNotExist", f"Activity {arn} not found")
+
+    token = new_uuid()
+    evt = threading.Event()
+    _task_tokens[token] = {"event": evt, "result": None, "error": None, "heartbeat": None}
+
+    _activity_tasks[arn].append({
+        "taskToken": token,
+        "input": json.dumps(input_data),
+    })
+
+    timeout = 99999
+    if not evt.wait(timeout=timeout):
+        _task_tokens.pop(token, None)
+        raise _ExecutionError("States.Timeout", "Activity task timed out waiting for worker")
+
+    info = _task_tokens.pop(token, {})
+    if info.get("error"):
+        e = info["error"]
+        raise _ExecutionError(e.get("Error", "TaskFailed"), e.get("Cause", ""))
+    result_raw = info.get("result", "{}")
+    try:
+        return json.loads(result_raw) if isinstance(result_raw, str) else result_raw
+    except json.JSONDecodeError:
+        return result_raw
 
 
 def _invoke_with_callback(resource, input_data, token, state_def):
@@ -1363,3 +1480,5 @@ def reset():
     _executions.clear()
     _task_tokens.clear()
     _tags.clear()
+    _activities.clear()
+    _activity_tasks.clear()
