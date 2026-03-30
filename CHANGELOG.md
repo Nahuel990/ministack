@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.6] — 2026-03-30
+
+### Fixed
+- **XML error responses** — added `<Type>Sender</Type>` (4xx) / `<Type>Receiver</Type>` (5xx) to all XML error responses in `sqs.py` and `core/responses.py` (used by S3, SNS, IAM, STS, CloudWatch). botocore requires this element to populate typed exception classes (e.g. `client.exceptions.QueueDoesNotExist`). Without it, botocore fell back to generic `ClientError` even when the error `Code` was correct.
+
+### Tests
+- 694 integration tests — all passing
+
+---
+
 ## [1.1.5] — 2026-03-30
 
 ### Fixed

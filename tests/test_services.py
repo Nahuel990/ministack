@@ -624,7 +624,7 @@ def test_sqs_message_system_attributes(sqs):
 def test_sqs_nonexistent_queue(sqs):
     with pytest.raises(ClientError) as exc:
         sqs.get_queue_url(QueueName="intg-sqs-does-not-exist")
-    assert "NonExistentQueue" in exc.value.response["Error"]["Code"]
+    assert exc.value.response["Error"]["Code"] == "QueueDoesNotExist"
 
 
 def test_sqs_receive_empty(sqs):
@@ -12151,7 +12151,7 @@ def test_sqs_send_message_batch_limit(sqs):
     entries = [{"Id": str(i), "MessageBody": f"msg {i}"} for i in range(11)]
     with pytest.raises(ClientError) as exc_info:
         sqs.send_message_batch(QueueUrl=q, Entries=entries)
-    assert exc_info.value.response["Error"]["Code"] == "AWS.SimpleQueueService.TooManyEntriesInBatchRequest"
+    assert exc_info.value.response["Error"]["Code"] == "TooManyEntriesInBatchRequest"
     sqs.delete_queue(QueueUrl=q)
 
 
@@ -12178,3 +12178,17 @@ def test_dynamodb_batch_write_consumed_capacity(ddb):
     assert resp["ConsumedCapacity"][0]["TableName"] == "batch-cap-regression"
     assert resp["ConsumedCapacity"][0]["CapacityUnits"] == 1.0
     ddb.delete_table(TableName="batch-cap-regression")
+
+
+# ---------------------------------------------------------------------------
+# Regression: XML error responses must include <Type>Sender/Receiver</Type>
+# so botocore populates typed exception classes (e.g. client.exceptions.QueueDoesNotExist).
+# Without <Type>, botocore falls back to generic ClientError.
+# ---------------------------------------------------------------------------
+
+def test_sqs_typed_exception_queue_not_found(sqs):
+    """client.exceptions.QueueDoesNotExist must be raised (not generic ClientError)
+    when accessing a non-existent queue — requires <Type> in the XML error response."""
+    import pytest
+    with pytest.raises(sqs.exceptions.QueueDoesNotExist):
+        sqs.get_queue_url(QueueName="queue-that-does-not-exist-typed-exc")

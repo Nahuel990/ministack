@@ -207,7 +207,7 @@ def _act_get_queue_url(data: dict, _u: str) -> dict:
     name = data.get("QueueName", "")
     url = _queue_name_to_url.get(name)
     if not url:
-        raise _Err("AWS.SimpleQueueService.NonExistentQueue",
+        raise _Err("QueueDoesNotExist",
                     "The specified queue does not exist.")
     return {"QueueUrl": url}
 
@@ -448,7 +448,7 @@ def _act_send_message_batch(data: dict, qurl: str) -> dict:
     _get_q(url)
     entries = data.get("Entries", [])
     if len(entries) > 10:
-        raise _Err("AWS.SimpleQueueService.TooManyEntriesInBatchRequest",
+        raise _Err("TooManyEntriesInBatchRequest",
                    "Too many messages in a batch request. A maximum of 10 messages are allowed.")
     ok: list = []
     fail: list = []
@@ -551,7 +551,7 @@ _HANDLERS.update({
 def _get_q(url: str) -> dict:
     q = _queues.get(url)
     if q is None:
-        raise _Err("AWS.SimpleQueueService.NonExistentQueue",
+        raise _Err("QueueDoesNotExist",
                     "The specified queue does not exist for this wsdl version.")
     return q
 
