@@ -127,6 +127,9 @@ SERVICE_PATTERNS = {
                           r"Action=.*Image", r"Action=.*Tag", r"Action=.*InternetGateway",
                           r"Action=.*AvailabilityZone"],
     },
+    "elasticloadbalancing": {
+        "host_patterns": [r"elasticloadbalancing\."],
+    },
 }
 
 
@@ -170,6 +173,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "cognito-idp": "cognito-idp",
                 "cognito-identity": "cognito-identity",
                 "elasticmapreduce": "elasticmapreduce",
+                "elasticloadbalancing": "elasticloadbalancing",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
@@ -305,6 +309,33 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "AttachNetworkInterface": "ec2", "DetachNetworkInterface": "ec2",
             "CreateVpcEndpoint": "ec2", "DeleteVpcEndpoints": "ec2",
             "DescribeVpcEndpoints": "ec2",
+            # ELBv2 / ALB actions
+            "CreateLoadBalancer": "elasticloadbalancing",
+            "DescribeLoadBalancers": "elasticloadbalancing",
+            "DeleteLoadBalancer": "elasticloadbalancing",
+            "DescribeLoadBalancerAttributes": "elasticloadbalancing",
+            "ModifyLoadBalancerAttributes": "elasticloadbalancing",
+            "CreateTargetGroup": "elasticloadbalancing",
+            "DescribeTargetGroups": "elasticloadbalancing",
+            "ModifyTargetGroup": "elasticloadbalancing",
+            "DeleteTargetGroup": "elasticloadbalancing",
+            "DescribeTargetGroupAttributes": "elasticloadbalancing",
+            "ModifyTargetGroupAttributes": "elasticloadbalancing",
+            "CreateListener": "elasticloadbalancing",
+            "DescribeListeners": "elasticloadbalancing",
+            "ModifyListener": "elasticloadbalancing",
+            "DeleteListener": "elasticloadbalancing",
+            "CreateRule": "elasticloadbalancing",
+            "DescribeRules": "elasticloadbalancing",
+            "ModifyRule": "elasticloadbalancing",
+            "DeleteRule": "elasticloadbalancing",
+            "SetRulePriorities": "elasticloadbalancing",
+            "RegisterTargets": "elasticloadbalancing",
+            "DeregisterTargets": "elasticloadbalancing",
+            "DescribeTargetHealth": "elasticloadbalancing",
+            "AddTags": "elasticloadbalancing",
+            "RemoveTags": "elasticloadbalancing",
+            "DescribeTags": "elasticloadbalancing",
         }
         if action in action_service_map:
             return action_service_map[action]

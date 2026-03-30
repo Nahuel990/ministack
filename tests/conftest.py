@@ -150,6 +150,10 @@ def emr():
     return make_client("emr")
 
 @pytest.fixture(scope="session")
+def elbv2():
+    return make_client("elbv2")
+
+@pytest.fixture(scope="session")
 def sfn_sync():
     """SFN client for StartSyncExecution — forces same endpoint (boto3 normally prefixes sync-)."""
     from botocore.config import Config as BotoConfig
