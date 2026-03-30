@@ -691,7 +691,7 @@ def test_sqs_message_system_attributes(sqs):
 def test_sqs_nonexistent_queue(sqs):
     with pytest.raises(ClientError) as exc:
         sqs.get_queue_url(QueueName="intg-sqs-does-not-exist")
-    assert exc.value.response["Error"]["Code"] == "QueueDoesNotExist"
+    assert exc.value.response["Error"]["Code"] == "AWS.SimpleQueueService.NonExistentQueue"
 
 
 def test_sqs_receive_empty(sqs):
@@ -805,7 +805,7 @@ def test_sns_publish_nonexistent_topic(sns):
     fake_arn = "arn:aws:sns:us-east-1:000000000000:intg-sns-nonexist"
     with pytest.raises(ClientError) as exc:
         sns.publish(TopicArn=fake_arn, Message="fail")
-    assert exc.value.response["Error"]["Code"] == "NotFound"
+    assert exc.value.response["Error"]["Code"] == "NotFoundException"
 
 
 def test_sns_sqs_fanout(sns, sqs):
@@ -13814,7 +13814,7 @@ def test_sqs_send_message_batch_limit(sqs):
     entries = [{"Id": str(i), "MessageBody": f"msg {i}"} for i in range(11)]
     with pytest.raises(ClientError) as exc_info:
         sqs.send_message_batch(QueueUrl=q, Entries=entries)
-    assert exc_info.value.response["Error"]["Code"] == "TooManyEntriesInBatchRequest"
+    assert exc_info.value.response["Error"]["Code"] == "AWS.SimpleQueueService.TooManyEntriesInBatchRequest"
     sqs.delete_queue(QueueUrl=q)
 
 
@@ -13855,3 +13855,270 @@ def test_sqs_typed_exception_queue_not_found(sqs):
     import pytest
     with pytest.raises(sqs.exceptions.QueueDoesNotExist):
         sqs.get_queue_url(QueueName="queue-that-does-not-exist-typed-exc")
+
+
+# ---------------------------------------------------------------------------
+# Regression: SQS awsQueryCompatible — x-amzn-query-error header
+# botocore reads this header and overrides Error.Code with the legacy
+# AWS.SimpleQueueService.* code so callers checking the old namespaced
+# strings still work against MiniStack exactly as they do against real AWS.
+# ---------------------------------------------------------------------------
+
+def test_sqs_query_compat_header_nonexistent_queue(sqs):
+    """Error.Code must be the legacy 'AWS.SimpleQueueService.NonExistentQueue'
+    (not 'QueueDoesNotExist') when x-amzn-query-error header is present."""
+    with pytest.raises(ClientError) as exc:
+        sqs.get_queue_url(QueueName="queue-compat-header-test-xyz")
+    code = exc.value.response["Error"]["Code"]
+    assert code == "AWS.SimpleQueueService.NonExistentQueue", (
+        f"Expected legacy query-compat code, got '{code}'"
+    )
+
+
+def test_sqs_query_compat_header_batch_limit(sqs):
+    """TooManyEntriesInBatchRequest must surface as the legacy namespaced code."""
+    q = sqs.create_queue(QueueName="compat-batch-limit-q")["QueueUrl"]
+    entries = [{"Id": str(i), "MessageBody": f"m{i}"} for i in range(11)]
+    with pytest.raises(ClientError) as exc:
+        sqs.send_message_batch(QueueUrl=q, Entries=entries)
+    code = exc.value.response["Error"]["Code"]
+    assert code == "AWS.SimpleQueueService.TooManyEntriesInBatchRequest", (
+        f"Expected legacy query-compat code, got '{code}'"
+    )
+    sqs.delete_queue(QueueUrl=q)
+
+
+# ---------------------------------------------------------------------------
+# VPC gaps: NAT Gateways
+# ---------------------------------------------------------------------------
+
+def test_ec2_nat_gateway_crud(ec2):
+    vpc = ec2.create_vpc(CidrBlock="10.100.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+    subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.100.1.0/24")
+    subnet_id = subnet["Subnet"]["SubnetId"]
+
+    resp = ec2.create_nat_gateway(SubnetId=subnet_id, ConnectivityType="private")
+    nat_id = resp["NatGateway"]["NatGatewayId"]
+    assert nat_id.startswith("nat-")
+    assert resp["NatGateway"]["State"] == "available"
+
+    desc = ec2.describe_nat_gateways(NatGatewayIds=[nat_id])
+    assert len(desc["NatGateways"]) == 1
+    assert desc["NatGateways"][0]["NatGatewayId"] == nat_id
+    assert desc["NatGateways"][0]["SubnetId"] == subnet_id
+
+    ec2.delete_nat_gateway(NatGatewayId=nat_id)
+    desc2 = ec2.describe_nat_gateways(NatGatewayIds=[nat_id])
+    assert desc2["NatGateways"][0]["State"] == "deleted"
+
+
+def test_ec2_nat_gateway_filter_by_vpc(ec2):
+    vpc = ec2.create_vpc(CidrBlock="10.101.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+    subnet = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.101.1.0/24")
+    subnet_id = subnet["Subnet"]["SubnetId"]
+    ec2.create_nat_gateway(SubnetId=subnet_id, ConnectivityType="private")
+
+    desc = ec2.describe_nat_gateways(
+        Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+    )
+    assert all(n["VpcId"] == vpc_id for n in desc["NatGateways"])
+
+
+# ---------------------------------------------------------------------------
+# VPC gaps: Network ACLs
+# ---------------------------------------------------------------------------
+
+def test_ec2_network_acl_crud(ec2):
+    vpc = ec2.create_vpc(CidrBlock="10.102.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+
+    resp = ec2.create_network_acl(VpcId=vpc_id)
+    acl_id = resp["NetworkAcl"]["NetworkAclId"]
+    assert acl_id.startswith("acl-")
+    assert resp["NetworkAcl"]["VpcId"] == vpc_id
+    assert resp["NetworkAcl"]["IsDefault"] is False
+
+    desc = ec2.describe_network_acls(NetworkAclIds=[acl_id])
+    assert len(desc["NetworkAcls"]) == 1
+    assert desc["NetworkAcls"][0]["NetworkAclId"] == acl_id
+
+    ec2.create_network_acl_entry(
+        NetworkAclId=acl_id,
+        RuleNumber=100,
+        Protocol="-1",
+        RuleAction="allow",
+        Egress=False,
+        CidrBlock="0.0.0.0/0",
+    )
+    desc2 = ec2.describe_network_acls(NetworkAclIds=[acl_id])
+    assert len(desc2["NetworkAcls"][0]["Entries"]) == 1
+
+    ec2.delete_network_acl_entry(NetworkAclId=acl_id, RuleNumber=100, Egress=False)
+    desc3 = ec2.describe_network_acls(NetworkAclIds=[acl_id])
+    assert len(desc3["NetworkAcls"][0]["Entries"]) == 0
+
+    ec2.delete_network_acl(NetworkAclId=acl_id)
+    desc4 = ec2.describe_network_acls(NetworkAclIds=[acl_id])
+    assert len(desc4["NetworkAcls"]) == 0
+
+
+def test_ec2_network_acl_replace_entry(ec2):
+    vpc = ec2.create_vpc(CidrBlock="10.103.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+    resp = ec2.create_network_acl(VpcId=vpc_id)
+    acl_id = resp["NetworkAcl"]["NetworkAclId"]
+
+    ec2.create_network_acl_entry(
+        NetworkAclId=acl_id, RuleNumber=200, Protocol="-1",
+        RuleAction="deny", Egress=False, CidrBlock="10.0.0.0/8"
+    )
+    ec2.replace_network_acl_entry(
+        NetworkAclId=acl_id, RuleNumber=200, Protocol="-1",
+        RuleAction="allow", Egress=False, CidrBlock="10.0.0.0/8"
+    )
+    desc = ec2.describe_network_acls(NetworkAclIds=[acl_id])
+    entries = desc["NetworkAcls"][0]["Entries"]
+    assert len(entries) == 1
+    assert entries[0]["RuleAction"] == "allow"
+
+
+# ---------------------------------------------------------------------------
+# VPC gaps: Flow Logs
+# ---------------------------------------------------------------------------
+
+def test_ec2_flow_logs_crud(ec2):
+    vpc = ec2.create_vpc(CidrBlock="10.104.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+
+    resp = ec2.create_flow_logs(
+        ResourceIds=[vpc_id],
+        ResourceType="VPC",
+        TrafficType="ALL",
+        LogDestinationType="cloud-watch-logs",
+        LogGroupName="/aws/vpc/flowlogs",
+    )
+    assert resp["Unsuccessful"] == []
+    fl_ids = resp["FlowLogIds"]
+    assert len(fl_ids) == 1
+    assert fl_ids[0].startswith("fl-")
+
+    desc = ec2.describe_flow_logs(FlowLogIds=fl_ids)
+    assert len(desc["FlowLogs"]) == 1
+    assert desc["FlowLogs"][0]["FlowLogId"] == fl_ids[0]
+    assert desc["FlowLogs"][0]["FlowLogStatus"] == "ACTIVE"
+
+    ec2.delete_flow_logs(FlowLogIds=fl_ids)
+    desc2 = ec2.describe_flow_logs(FlowLogIds=fl_ids)
+    assert len(desc2["FlowLogs"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# VPC gaps: VPC Peering Connections
+# ---------------------------------------------------------------------------
+
+def test_ec2_vpc_peering_crud(ec2):
+    vpc1 = ec2.create_vpc(CidrBlock="10.105.0.0/16")
+    vpc2 = ec2.create_vpc(CidrBlock="10.106.0.0/16")
+    vpc_id1 = vpc1["Vpc"]["VpcId"]
+    vpc_id2 = vpc2["Vpc"]["VpcId"]
+
+    resp = ec2.create_vpc_peering_connection(VpcId=vpc_id1, PeerVpcId=vpc_id2)
+    pcx = resp["VpcPeeringConnection"]
+    pcx_id = pcx["VpcPeeringConnectionId"]
+    assert pcx_id.startswith("pcx-")
+    assert pcx["Status"]["Code"] == "pending-acceptance"
+
+    accepted = ec2.accept_vpc_peering_connection(VpcPeeringConnectionId=pcx_id)
+    assert accepted["VpcPeeringConnection"]["Status"]["Code"] == "active"
+
+    desc = ec2.describe_vpc_peering_connections(VpcPeeringConnectionIds=[pcx_id])
+    assert len(desc["VpcPeeringConnections"]) == 1
+    assert desc["VpcPeeringConnections"][0]["Status"]["Code"] == "active"
+
+    ec2.delete_vpc_peering_connection(VpcPeeringConnectionId=pcx_id)
+    desc2 = ec2.describe_vpc_peering_connections(VpcPeeringConnectionIds=[pcx_id])
+    assert desc2["VpcPeeringConnections"][0]["Status"]["Code"] == "deleted"
+
+
+def test_ec2_vpc_peering_not_found(ec2):
+    from botocore.exceptions import ClientError
+    with pytest.raises(ClientError) as exc:
+        ec2.accept_vpc_peering_connection(VpcPeeringConnectionId="pcx-nonexistent")
+    assert "NotFound" in exc.value.response["Error"]["Code"]
+
+
+# ---------------------------------------------------------------------------
+# VPC gaps: DHCP Options
+# ---------------------------------------------------------------------------
+
+def test_ec2_dhcp_options_crud(ec2):
+    resp = ec2.create_dhcp_options(
+        DhcpConfigurations=[
+            {"Key": "domain-name", "Values": ["example.internal"]},
+            {"Key": "domain-name-servers", "Values": ["10.0.0.1", "10.0.0.2"]},
+        ]
+    )
+    dopt = resp["DhcpOptions"]
+    dopt_id = dopt["DhcpOptionsId"]
+    assert dopt_id.startswith("dopt-")
+
+    desc = ec2.describe_dhcp_options(DhcpOptionsIds=[dopt_id])
+    assert len(desc["DhcpOptions"]) == 1
+    configs = {c["Key"]: [v["Value"] for v in c["Values"]]
+               for c in desc["DhcpOptions"][0]["DhcpConfigurations"]}
+    assert configs["domain-name"] == ["example.internal"]
+    assert "10.0.0.1" in configs["domain-name-servers"]
+
+    vpc = ec2.create_vpc(CidrBlock="10.107.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+    ec2.associate_dhcp_options(DhcpOptionsId=dopt_id, VpcId=vpc_id)
+
+    ec2.delete_dhcp_options(DhcpOptionsId=dopt_id)
+    desc2 = ec2.describe_dhcp_options(DhcpOptionsIds=[dopt_id])
+    assert len(desc2["DhcpOptions"]) == 0
+
+
+def test_ec2_dhcp_options_not_found(ec2):
+    from botocore.exceptions import ClientError
+    with pytest.raises(ClientError) as exc:
+        ec2.delete_dhcp_options(DhcpOptionsId="dopt-nonexistent")
+    assert "NotFound" in exc.value.response["Error"]["Code"]
+
+
+# ---------------------------------------------------------------------------
+# VPC gaps: Egress-Only Internet Gateways
+# ---------------------------------------------------------------------------
+
+def test_ec2_egress_only_igw_crud(ec2):
+    vpc = ec2.create_vpc(CidrBlock="10.108.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+
+    resp = ec2.create_egress_only_internet_gateway(VpcId=vpc_id)
+    eigw = resp["EgressOnlyInternetGateway"]
+    eigw_id = eigw["EgressOnlyInternetGatewayId"]
+    assert eigw_id.startswith("eigw-")
+    assert eigw["Attachments"][0]["State"] == "attached"
+    assert eigw["Attachments"][0]["VpcId"] == vpc_id
+
+    desc = ec2.describe_egress_only_internet_gateways(
+        EgressOnlyInternetGatewayIds=[eigw_id]
+    )
+    assert len(desc["EgressOnlyInternetGateways"]) == 1
+    assert desc["EgressOnlyInternetGateways"][0]["EgressOnlyInternetGatewayId"] == eigw_id
+
+    ec2.delete_egress_only_internet_gateway(EgressOnlyInternetGatewayId=eigw_id)
+    desc2 = ec2.describe_egress_only_internet_gateways(
+        EgressOnlyInternetGatewayIds=[eigw_id]
+    )
+    assert len(desc2["EgressOnlyInternetGateways"]) == 0
+
+
+def test_ec2_egress_only_igw_not_found(ec2):
+    from botocore.exceptions import ClientError
+    with pytest.raises(ClientError) as exc:
+        ec2.delete_egress_only_internet_gateway(
+            EgressOnlyInternetGatewayId="eigw-nonexistent"
+        )
+    assert "NotFound" in exc.value.response["Error"]["Code"]
