@@ -55,9 +55,12 @@ def _make_group_arn(name):
 
 
 def _resolve_group_by_arn(arn):
-    """Return the group name whose ARN matches, or None."""
+    """Return the group name whose ARN matches, or None.
+    Accepts both 'arn:...:log-group:name' and 'arn:...:log-group:name:*'
+    since Terraform and the AWS console use both forms."""
+    arn_normalized = arn.rstrip(":*")
     for name, g in _log_groups.items():
-        if g["arn"] == arn:
+        if g["arn"].rstrip(":*") == arn_normalized:
             return name
     return None
 

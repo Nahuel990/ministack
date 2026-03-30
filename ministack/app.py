@@ -16,9 +16,12 @@ from urllib.parse import parse_qs, urlparse
 
 # Matches host headers like "{apiId}.execute-api.localhost" or "{apiId}.execute-api.localhost:4566"
 _EXECUTE_API_RE = re.compile(r"^([a-f0-9]{8})\.execute-api\.localhost(?::\d+)?$")
-# Matches virtual-hosted S3: "{bucket}.localhost" or "{bucket}.localhost:4566"
-# Must not match execute-api or other known sub-services
-_S3_VHOST_RE = re.compile(r"^([^.]+)\.localhost(?::\d+)?$")
+# Matches virtual-hosted S3:
+#   "{bucket}.localhost" or "{bucket}.localhost:4566"          (boto3/SDK default)
+#   "{bucket}.s3.localhost" or "{bucket}.s3.localhost:4566"    (Terraform AWS provider v4+)
+# Does NOT match execute-api, alb, or other sub-service hostnames.
+_S3_VHOST_RE = re.compile(r"^([^.]+)(?:\.s3)?\.localhost(?::\d+)?$")
+_S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache)\.")
 
 from ministack.core.router import detect_service, extract_region, extract_account_id
 from ministack.core.persistence import save_all, load_state, PERSIST_STATE
@@ -255,7 +258,7 @@ async def app(scope, receive, send):
 
     # Virtual-hosted S3: {bucket}.localhost[:{port}] — rewrite to path-style and forward to S3
     _s3_vhost = _S3_VHOST_RE.match(host)
-    if _s3_vhost and not _execute_match:
+    if _s3_vhost and not _execute_match and not _S3_VHOST_EXCLUDE_RE.search(host):
         bucket = _s3_vhost.group(1)
         _non_s3_hosts = {"s3", "sqs", "sns", "dynamodb", "lambda", "iam", "sts",
                          "secretsmanager", "logs", "ssm", "events", "kinesis",

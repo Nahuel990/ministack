@@ -12089,3 +12089,92 @@ def test_efs_backup_policy(efs):
     )
     resp = efs.describe_backup_policy(FileSystemId=fs_id)
     assert resp["BackupPolicy"]["Status"] == "ENABLED"
+
+
+# ---------------------------------------------------------------------------
+# Regression: API Gateway v1 createdDate must be a Unix timestamp (number),
+# not an ISO string. Terraform AWS provider errors with:
+# "expected Timestamp to be a JSON Number, got string instead"
+# ---------------------------------------------------------------------------
+
+def test_apigwv1_created_date_is_unix_timestamp(apigw_v1):
+    resp = apigw_v1.create_rest_api(name="tf-date-test")
+    created = resp["createdDate"]
+    # boto3 parses numeric timestamps as datetime.datetime — if it were a string
+    # botocore would raise a deserialization error before we even get here.
+    import datetime
+    assert isinstance(created, datetime.datetime), (
+        f"createdDate should be datetime (parsed from Unix int), got {type(created)}"
+    )
+    apigw_v1.delete_rest_api(restApiId=resp["id"])
+
+
+def test_apigwv2_created_date_is_unix_timestamp(apigw):
+    resp = apigw.create_api(Name="tf-date-test-v2", ProtocolType="HTTP")
+    created = resp["CreatedDate"]
+    import datetime
+    assert isinstance(created, datetime.datetime), (
+        f"CreatedDate should be datetime (parsed from Unix int), got {type(created)}"
+    )
+    apigw.delete_api(ApiId=resp["ApiId"])
+
+
+# ---------------------------------------------------------------------------
+# Regression: CloudWatch Logs ListTagsForResource fails when the ARN passed
+# by Terraform lacks the trailing ':*' that MiniStack appends when storing.
+# ---------------------------------------------------------------------------
+
+def test_logs_list_tags_for_resource_arn_without_star(logs):
+    name = "/tf/regression/arn-no-star"
+    logs.create_log_group(logGroupName=name, tags={"env": "test"})
+    # Get the ARN as stored (includes :*)
+    groups = logs.describe_log_groups(logGroupNamePrefix=name)["logGroups"]
+    stored_arn = groups[0]["arn"]
+    assert stored_arn.endswith(":*"), f"Expected stored ARN to end with :*, got {stored_arn}"
+
+    # Terraform sends the ARN without :* — this must not raise ResourceNotFoundException
+    arn_no_star = stored_arn[:-2]  # strip ':*'
+    resp = logs.list_tags_for_resource(resourceArn=arn_no_star)
+    assert resp["tags"]["env"] == "test"
+    logs.delete_log_group(logGroupName=name)
+
+
+# ---------------------------------------------------------------------------
+# Regression: SQS SendMessageBatch must reject batches larger than 10 entries.
+# AWS returns TooManyEntriesInBatchRequest; MiniStack was silently accepting them.
+# ---------------------------------------------------------------------------
+
+def test_sqs_send_message_batch_limit(sqs):
+    import pytest
+    from botocore.exceptions import ClientError
+    q = sqs.create_queue(QueueName="batch-limit-regression")["QueueUrl"]
+    entries = [{"Id": str(i), "MessageBody": f"msg {i}"} for i in range(11)]
+    with pytest.raises(ClientError) as exc_info:
+        sqs.send_message_batch(QueueUrl=q, Entries=entries)
+    assert exc_info.value.response["Error"]["Code"] == "AWS.SimpleQueueService.TooManyEntriesInBatchRequest"
+    sqs.delete_queue(QueueUrl=q)
+
+
+# ---------------------------------------------------------------------------
+# Regression: DynamoDB BatchWriteItem must include ConsumedCapacity list when
+# ReturnConsumedCapacity="TOTAL" is set. Was returning the key absent entirely.
+# ---------------------------------------------------------------------------
+
+def test_dynamodb_batch_write_consumed_capacity(ddb):
+    ddb.create_table(
+        TableName="batch-cap-regression",
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    resp = ddb.batch_write_item(
+        RequestItems={"batch-cap-regression": [
+            {"PutRequest": {"Item": {"pk": {"S": "k1"}}}},
+        ]},
+        ReturnConsumedCapacity="TOTAL",
+    )
+    assert "ConsumedCapacity" in resp, "ConsumedCapacity must be present when ReturnConsumedCapacity=TOTAL"
+    assert isinstance(resp["ConsumedCapacity"], list), "ConsumedCapacity must be a list for BatchWriteItem"
+    assert resp["ConsumedCapacity"][0]["TableName"] == "batch-cap-regression"
+    assert resp["ConsumedCapacity"][0]["CapacityUnits"] == 1.0
+    ddb.delete_table(TableName="batch-cap-regression")

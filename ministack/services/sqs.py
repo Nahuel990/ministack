@@ -446,9 +446,13 @@ def _act_purge_queue(data: dict, qurl: str) -> dict:
 def _act_send_message_batch(data: dict, qurl: str) -> dict:
     url = data.get("QueueUrl", qurl)
     _get_q(url)
+    entries = data.get("Entries", [])
+    if len(entries) > 10:
+        raise _Err("AWS.SimpleQueueService.TooManyEntriesInBatchRequest",
+                   "Too many messages in a batch request. A maximum of 10 messages are allowed.")
     ok: list = []
     fail: list = []
-    for e in data.get("Entries", []):
+    for e in entries:
         try:
             sub: dict = {
                 "QueueUrl": url,

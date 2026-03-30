@@ -412,7 +412,7 @@ def _create_api(data):
         "name": data.get("name", "unnamed"),
         "protocolType": data.get("protocolType", "HTTP"),
         "apiEndpoint": f"http://{api_id}.execute-api.localhost:4566",
-        "createdDate": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "createdDate": int(time.time()),
         "routeSelectionExpression": data.get("routeSelectionExpression", "$request.method $request.path"),
         "tags": data.get("tags", {}),
         "corsConfiguration": data.get("corsConfiguration", {}),
@@ -567,8 +567,8 @@ def _create_stage(api_id, data):
     stage = {
         "stageName": stage_name,
         "autoDeploy": data.get("autoDeploy", False),
-        "createdDate": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "lastUpdatedDate": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "createdDate": int(time.time()),
+        "lastUpdatedDate": int(time.time()),
         "stageVariables": data.get("stageVariables", {}),
         "description": data.get("description", ""),
         "defaultRouteSettings": data.get("defaultRouteSettings", {}),
@@ -598,7 +598,7 @@ def _update_stage(api_id, stage_name, data):
               "defaultRouteSettings", "routeSettings"):
         if k in data:
             stage[k] = data[k]
-    stage["lastUpdatedDate"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    stage["lastUpdatedDate"] = int(time.time())
     return _apigw_response(stage)
 
 
@@ -616,7 +616,7 @@ def _create_deployment(api_id, data):
     deployment = {
         "deploymentId": deployment_id,
         "deploymentStatus": "DEPLOYED",
-        "createdDate": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "createdDate": int(time.time()),
         "description": data.get("description", ""),
     }
     _deployments.setdefault(api_id, {})[deployment_id] = deployment

@@ -547,7 +547,15 @@ def _batch_write_item(data):
                     return key_err
                 table["items"].get(pk_val, {}).pop(sk_val, None)
         _update_counts(table)
-    return json_response({"UnprocessedItems": unprocessed})
+    result = {"UnprocessedItems": unprocessed}
+    rc = data.get("ReturnConsumedCapacity", "NONE")
+    if rc != "NONE":
+        result["ConsumedCapacity"] = [
+            {"TableName": t, "CapacityUnits": 1.0}
+            for t in request_items
+            if t in _tables
+        ]
+    return json_response(result)
 
 
 def _batch_get_item(data):
