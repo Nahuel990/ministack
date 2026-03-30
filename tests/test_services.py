@@ -10379,6 +10379,161 @@ def test_cognito_force_change_password_challenge(cognito_idp):
 
 
 # ---------------------------------------------------------------------------
+# Cognito TOTP MFA
+# ---------------------------------------------------------------------------
+
+
+def test_cognito_totp_full_flow(cognito_idp):
+    """Full TOTP MFA flow: SetUserPoolMfaConfig ON → AssociateSoftwareToken →
+    VerifySoftwareToken → InitiateAuth returns SOFTWARE_TOKEN_MFA challenge →
+    RespondToAuthChallenge with any code returns tokens."""
+    pid = cognito_idp.create_user_pool(PoolName="qa-totp-full")["UserPool"]["Id"]
+    cid = cognito_idp.create_user_pool_client(
+        UserPoolId=pid,
+        ClientName="qa-totp-app",
+        ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+    )["UserPoolClient"]["ClientId"]
+
+    # Enable TOTP MFA on the pool
+    cognito_idp.set_user_pool_mfa_config(
+        UserPoolId=pid,
+        SoftwareTokenMfaConfiguration={"Enabled": True},
+        MfaConfiguration="ON",
+    )
+    cfg = cognito_idp.get_user_pool_mfa_config(UserPoolId=pid)
+    assert cfg["MfaConfiguration"] == "ON"
+    assert cfg["SoftwareTokenMfaConfiguration"]["Enabled"] is True
+
+    # Create and confirm user
+    cognito_idp.admin_create_user(UserPoolId=pid, Username="totp-user", TemporaryPassword="Tmp1!")
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="totp-user", Password="Perm1!", Permanent=True)
+
+    # Enroll TOTP: associate → get tokens first (MFA not yet enrolled, pool is ON but no enrollment)
+    # Pool ON with no enrollment → auth succeeds so user can enroll
+    auth = cognito_idp.admin_initiate_auth(
+        UserPoolId=pid, ClientId=cid,
+        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "totp-user", "PASSWORD": "Perm1!"},
+    )
+    access_token = auth["AuthenticationResult"]["AccessToken"]
+
+    # Associate software token
+    assoc = cognito_idp.associate_software_token(AccessToken=access_token)
+    assert "SecretCode" in assoc
+    assert len(assoc["SecretCode"]) > 0
+
+    # Verify (accept any code)
+    verify = cognito_idp.verify_software_token(AccessToken=access_token, UserCode="123456")
+    assert verify["Status"] == "SUCCESS"
+
+    # Now auth should return SOFTWARE_TOKEN_MFA challenge
+    auth2 = cognito_idp.admin_initiate_auth(
+        UserPoolId=pid, ClientId=cid,
+        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "totp-user", "PASSWORD": "Perm1!"},
+    )
+    assert auth2.get("ChallengeName") == "SOFTWARE_TOKEN_MFA"
+    assert "Session" in auth2
+
+    # Respond with any TOTP code → get tokens
+    result = cognito_idp.admin_respond_to_auth_challenge(
+        UserPoolId=pid, ClientId=cid,
+        ChallengeName="SOFTWARE_TOKEN_MFA",
+        ChallengeResponses={"USERNAME": "totp-user", "SOFTWARE_TOKEN_MFA_CODE": "123456"},
+    )
+    assert "AuthenticationResult" in result
+    assert "AccessToken" in result["AuthenticationResult"]
+
+
+def test_cognito_totp_optional_mfa(cognito_idp):
+    """OPTIONAL MFA: users without TOTP enrolled go straight to tokens;
+    users with TOTP enrolled get the challenge."""
+    pid = cognito_idp.create_user_pool(PoolName="qa-totp-optional")["UserPool"]["Id"]
+    cid = cognito_idp.create_user_pool_client(
+        UserPoolId=pid, ClientName="qa-totp-opt-app",
+        ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+    )["UserPoolClient"]["ClientId"]
+
+    cognito_idp.set_user_pool_mfa_config(
+        UserPoolId=pid,
+        SoftwareTokenMfaConfiguration={"Enabled": True},
+        MfaConfiguration="OPTIONAL",
+    )
+
+    # User without MFA enrolled
+    cognito_idp.admin_create_user(UserPoolId=pid, Username="no-mfa-user", TemporaryPassword="Tmp1!")
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="no-mfa-user", Password="Perm1!", Permanent=True)
+    auth = cognito_idp.admin_initiate_auth(
+        UserPoolId=pid, ClientId=cid,
+        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "no-mfa-user", "PASSWORD": "Perm1!"},
+    )
+    assert "AuthenticationResult" in auth  # no challenge — not enrolled
+
+    # User with MFA enrolled via AdminSetUserMFAPreference
+    cognito_idp.admin_create_user(UserPoolId=pid, Username="mfa-user", TemporaryPassword="Tmp1!")
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="mfa-user", Password="Perm1!", Permanent=True)
+    cognito_idp.admin_set_user_mfa_preference(
+        UserPoolId=pid, Username="mfa-user",
+        SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
+    )
+    auth2 = cognito_idp.admin_initiate_auth(
+        UserPoolId=pid, ClientId=cid,
+        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "mfa-user", "PASSWORD": "Perm1!"},
+    )
+    assert auth2.get("ChallengeName") == "SOFTWARE_TOKEN_MFA"
+
+
+def test_cognito_admin_get_user_mfa_fields(cognito_idp):
+    """AdminGetUser returns correct UserMFASettingList and PreferredMfaSetting."""
+    pid = cognito_idp.create_user_pool(PoolName="qa-totp-getuser")["UserPool"]["Id"]
+    cognito_idp.admin_create_user(UserPoolId=pid, Username="mfa-check-user", TemporaryPassword="Tmp1!")
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="mfa-check-user", Password="Perm1!", Permanent=True)
+
+    # Before enrollment
+    u = cognito_idp.admin_get_user(UserPoolId=pid, Username="mfa-check-user")
+    assert u["UserMFASettingList"] == []
+    assert u["PreferredMfaSetting"] == ""
+
+    # After enrollment
+    cognito_idp.admin_set_user_mfa_preference(
+        UserPoolId=pid, Username="mfa-check-user",
+        SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
+    )
+    u2 = cognito_idp.admin_get_user(UserPoolId=pid, Username="mfa-check-user")
+    assert "SOFTWARE_TOKEN_MFA" in u2["UserMFASettingList"]
+    assert u2["PreferredMfaSetting"] == "SOFTWARE_TOKEN_MFA"
+
+
+def test_cognito_set_user_mfa_preference_via_token(cognito_idp):
+    """SetUserMFAPreference (public, uses AccessToken) enrolls TOTP on the user."""
+    pid = cognito_idp.create_user_pool(PoolName="qa-totp-selfenroll")["UserPool"]["Id"]
+    cid = cognito_idp.create_user_pool_client(
+        UserPoolId=pid, ClientName="qa-totp-self-app",
+        ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+    )["UserPoolClient"]["ClientId"]
+    cognito_idp.admin_create_user(UserPoolId=pid, Username="self-enroll", TemporaryPassword="Tmp1!")
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="self-enroll", Password="Perm1!", Permanent=True)
+
+    auth = cognito_idp.admin_initiate_auth(
+        UserPoolId=pid, ClientId=cid,
+        AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "self-enroll", "PASSWORD": "Perm1!"},
+    )
+    access_token = auth["AuthenticationResult"]["AccessToken"]
+
+    cognito_idp.set_user_mfa_preference(
+        AccessToken=access_token,
+        SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
+    )
+
+    u = cognito_idp.admin_get_user(UserPoolId=pid, Username="self-enroll")
+    assert "SOFTWARE_TOKEN_MFA" in u["UserMFASettingList"]
+    assert u["PreferredMfaSetting"] == "SOFTWARE_TOKEN_MFA"
+
+
+# ---------------------------------------------------------------------------
 # DYNAMODB — edge cases
 # ---------------------------------------------------------------------------
 
@@ -12045,6 +12200,65 @@ def test_athena_data_catalog_crud(athena):
     athena.delete_data_catalog(Name="qa-athena-catalog")
     catalogs2 = athena.list_data_catalogs()["DataCatalogsSummary"]
     assert not any(c["CatalogName"] == "qa-athena-catalog" for c in catalogs2)
+
+
+# ---------------------------------------------------------------------------
+# Athena engine control + /_ministack/config endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_athena_engine_mock_via_config(athena):
+    """Switching ATHENA_ENGINE to 'mock' via /_ministack/config returns mock results."""
+    import urllib.request, json as _json
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+    req = urllib.request.Request(
+        f"{endpoint}/_ministack/config",
+        data=_json.dumps({"athena.ATHENA_ENGINE": "mock"}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    resp = _json.loads(urllib.request.urlopen(req, timeout=5).read())
+    assert resp["applied"].get("athena.ATHENA_ENGINE") == "mock"
+
+    # Query executes and succeeds in mock mode
+    qid = athena.start_query_execution(
+        QueryString="SELECT 1",
+        ResultConfiguration={"OutputLocation": "s3://athena-results/"},
+    )["QueryExecutionId"]
+    import time as _time
+    for _ in range(10):
+        state = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]["Status"]["State"]
+        if state in ("SUCCEEDED", "FAILED"):
+            break
+        _time.sleep(0.2)
+    assert state == "SUCCEEDED"
+
+    # Reset back to auto
+    req2 = urllib.request.Request(
+        f"{endpoint}/_ministack/config",
+        data=_json.dumps({"athena.ATHENA_ENGINE": "auto"}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    urllib.request.urlopen(req2, timeout=5)
+
+
+def test_ministack_config_invalid_key_ignored():
+    """/_ministack/config silently ignores unknown keys and only applies valid ones."""
+    import urllib.request, json as _json
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+    req = urllib.request.Request(
+        f"{endpoint}/_ministack/config",
+        data=_json.dumps({
+            "nonexistent_module.VAR": "val",
+            "athena.ATHENA_ENGINE": "auto",
+        }).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    resp = _json.loads(urllib.request.urlopen(req, timeout=5).read())
+    assert "nonexistent_module.VAR" not in resp["applied"]
+    assert resp["applied"].get("athena.ATHENA_ENGINE") == "auto"
 
 
 # ---------------------------------------------------------------------------
