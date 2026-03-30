@@ -7,6 +7,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.2] — 2026-03-29
+
+### Added
+- **Amazon EMR** (`ministack/services/emr.py`) — full control plane emulation (no real Spark/Hadoop)
+  - **Clusters**: `RunJobFlow`, `DescribeCluster`, `ListClusters`, `TerminateJobFlows`, `ModifyCluster`, `SetTerminationProtection`, `SetVisibleToAllUsers`
+  - **Steps**: `AddJobFlowSteps`, `DescribeStep`, `ListSteps`, `CancelSteps` — steps stored as COMPLETED immediately (emulator behaviour)
+  - **Instance Fleets**: `AddInstanceFleet`, `ListInstanceFleets`, `ModifyInstanceFleet`
+  - **Instance Groups**: `AddInstanceGroups`, `ListInstanceGroups`, `ModifyInstanceGroups`
+  - **Bootstrap Actions**: `ListBootstrapActions`
+  - **Tags**: `AddTags`, `RemoveTags`
+  - **Block Public Access**: `GetBlockPublicAccessConfiguration`, `PutBlockPublicAccessConfiguration`
+  - All three instance config modes: simple (`MasterInstanceType`/`SlaveInstanceType`/`InstanceCount`), `InstanceGroups`, `InstanceFleets`
+  - `KeepJobFlowAliveWhenNoSteps=True` → `WAITING`; `False` → `TERMINATED`
+  - `TerminationProtected=True` raises `ValidationException` on `TerminateJobFlows`
+  - JSON protocol via `X-Amz-Target: ElasticMapReduce.{Op}`, credential scope `elasticmapreduce`
+  - Pro-only on LocalStack — free in MiniStack
+  - 12 integration tests
+
+### Tests
+- 656 integration tests — all passing
+
+---
+
 ## [1.1.1] — 2026-03-29
 
 ### Added

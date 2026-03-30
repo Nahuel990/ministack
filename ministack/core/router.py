@@ -116,6 +116,10 @@ SERVICE_PATTERNS = {
         "target_prefixes": ["AWSCognitoIdentityService"],
         "host_patterns": [r"cognito-identity\."],
     },
+    "elasticmapreduce": {
+        "target_prefixes": ["ElasticMapReduce"],
+        "host_patterns": [r"elasticmapreduce\."],
+    },
     "ec2": {
         "host_patterns": [r"ec2\."],
         "path_patterns": [r"Action=.*Instance", r"Action=.*Security", r"Action=.*KeyPair",
@@ -165,6 +169,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "route53": "route53",
                 "cognito-idp": "cognito-idp",
                 "cognito-identity": "cognito-identity",
+                "elasticmapreduce": "elasticmapreduce",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
