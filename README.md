@@ -24,7 +24,7 @@
 
 LocalStack recently moved its core services behind a paid plan. If you relied on LocalStack Community for local development and CI/CD pipelines, MiniStack is your free alternative.
 
-- **26 AWS services** emulated on a single port (4566)
+- **30 AWS services** emulated on a single port (4566)
 - **Drop-in compatible** — works with `boto3`, AWS CLI, Terraform, CDK, Pulumi, any SDK
 - **Real infrastructure** — RDS spins up actual Postgres/MySQL containers, ElastiCache spins up real Redis, Athena runs real SQL via DuckDB, ECS runs real Docker containers
 - **Tiny footprint** — ~150MB image, ~30MB RAM at idle vs LocalStack's ~1GB image and ~500MB RAM
@@ -512,6 +512,7 @@ provider "aws" {
     ec2             = "http://localhost:4566"
     emr             = "http://localhost:4566"
     efs             = "http://localhost:4566"
+    elbv2           = "http://localhost:4566"
   }
 }
 ```

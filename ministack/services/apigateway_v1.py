@@ -75,9 +75,11 @@ import logging
 from ministack.core.responses import new_uuid
 
 
-def _now_iso():
-    """Return current UTC time as ISO 8601 string matching AWS format."""
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+def _now_unix():
+    """Return current UTC time as Unix timestamp (float).
+    API Gateway v1 createdDate/lastUpdatedDate fields must be numbers, not strings.
+    Terraform's AWS provider deserializes them as JSON Number and errors on ISO strings."""
+    return int(time.time())
 
 logger = logging.getLogger("apigateway_v1")
 
@@ -747,7 +749,7 @@ def _create_rest_api(data):
         "id": api_id,
         "name": data.get("name", "unnamed"),
         "description": data.get("description", ""),
-        "createdDate": _now_iso(),
+        "createdDate": _now_unix(),
         "version": data.get("version", ""),
         "binaryMediaTypes": data.get("binaryMediaTypes", []),
         "minimumCompressionSize": data.get("minimumCompressionSize"),
@@ -1097,7 +1099,7 @@ def _create_deployment(api_id, data):
     deployment = {
         "id": deployment_id,
         "description": data.get("description", ""),
-        "createdDate": _now_iso(),
+        "createdDate": _now_unix(),
         "apiSummary": _build_api_summary(api_id),
     }
     _deployments_v1.setdefault(api_id, {})[deployment_id] = deployment
@@ -1108,14 +1110,14 @@ def _create_deployment(api_id, data):
         existing_stage = _stages_v1.get(api_id, {}).get(stage_name)
         if existing_stage:
             existing_stage["deploymentId"] = deployment_id
-            existing_stage["lastUpdatedDate"] = _now_iso()
+            existing_stage["lastUpdatedDate"] = _now_unix()
         else:
             stage = {
                 "stageName": stage_name,
                 "deploymentId": deployment_id,
                 "description": data.get("stageDescription", ""),
-                "createdDate": _now_iso(),
-                "lastUpdatedDate": _now_iso(),
+                "createdDate": _now_unix(),
+                "lastUpdatedDate": _now_unix(),
                 "variables": data.get("variables", {}),
                 "methodSettings": {},
                 "accessLogSettings": {},
@@ -1171,8 +1173,8 @@ def _create_stage(api_id, data):
         "stageName": stage_name,
         "deploymentId": data.get("deploymentId", ""),
         "description": data.get("description", ""),
-        "createdDate": _now_iso(),
-        "lastUpdatedDate": _now_iso(),
+        "createdDate": _now_unix(),
+        "lastUpdatedDate": _now_unix(),
         "variables": data.get("variables", {}),
         "methodSettings": data.get("methodSettings", {}),
         "accessLogSettings": data.get("accessLogSettings", {}),
@@ -1205,7 +1207,7 @@ def _update_stage(api_id, stage_name, data):
         return _v1_error("NotFoundException", f"Invalid Stage identifier specified", 404)
     patch_ops = data.get("patchOperations", [])
     _apply_patch(stage, patch_ops)
-    stage["lastUpdatedDate"] = _now_iso()
+    stage["lastUpdatedDate"] = _now_unix()
     return _v1_response(stage)
 
 
@@ -1315,8 +1317,8 @@ def _create_api_key(data):
         "name": data.get("name", ""),
         "description": data.get("description", ""),
         "enabled": data.get("enabled", True),
-        "createdDate": _now_iso(),
-        "lastUpdatedDate": _now_iso(),
+        "createdDate": _now_unix(),
+        "lastUpdatedDate": _now_unix(),
         "value": key_value,
         "stageKeys": data.get("stageKeys", []),
         "tags": data.get("tags", {}),
@@ -1342,7 +1344,7 @@ def _update_api_key(key_id, data):
         return _v1_error("NotFoundException", f"Invalid API Key identifier specified", 404)
     patch_ops = data.get("patchOperations", [])
     _apply_patch(key, patch_ops)
-    key["lastUpdatedDate"] = _now_iso()
+    key["lastUpdatedDate"] = _now_unix()
     return _v1_response(key)
 
 

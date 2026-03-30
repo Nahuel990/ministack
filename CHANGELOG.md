@@ -7,6 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.5] — 2026-03-30
+
+### Fixed
+- **API Gateway v1** — `createdDate` / `lastUpdatedDate` fields now returned as Unix timestamps (integers) instead of ISO strings. Terraform AWS provider v4+ deserializes these as JSON Numbers and raised `expected Timestamp to be a JSON Number, got string instead` on `CreateRestApi`.
+- **API Gateway v2** — same fix applied to `createdDate` / `lastUpdatedDate` on APIs and stages.
+- **S3 virtual-hosted style** — host pattern now also matches `{bucket}.s3.localhost[:{port}]` in addition to `{bucket}.localhost[:{port}]`. Terraform AWS provider v4+ uses the `.s3.` subdomain when `force_path_style = false`.
+- **CloudWatch Logs `ListTagsForResource`** — ARN lookup now accepts both `arn:...:log-group:{name}` and `arn:...:log-group:{name}:*`. Terraform passes the ARN without the trailing `:*` that MiniStack appends internally, causing `ResourceNotFoundException`.
+- **SQS `SendMessageBatch`** — now rejects batches with more than 10 entries with `AWS.SimpleQueueService.TooManyEntriesInBatchRequest`, matching real AWS behaviour. Previously MiniStack silently accepted oversized batches.
+- **DynamoDB `BatchWriteItem`** — now includes `ConsumedCapacity` as a list in the response when `ReturnConsumedCapacity` is set to `TOTAL` or `INDEXES`. Previously the field was absent entirely.
+
+### Tests
+- 5 regression tests added (one per fix above) — 693 integration tests total, all passing
+
+---
+
 ## [1.1.4] — 2026-03-30
 
 ### Added
