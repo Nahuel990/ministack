@@ -373,6 +373,363 @@ def test_s3_object_tagging(s3):
     assert tags["priority"] == "high"
 
 
+def test_s3_object_lock_configuration(s3):
+    bkt = "intg-s3-objlock-cfg"
+    s3.create_bucket(
+        Bucket=bkt,
+        ObjectLockEnabledForBucket=True,
+    )
+    resp = s3.get_object_lock_configuration(Bucket=bkt)
+    assert resp["ObjectLockConfiguration"]["ObjectLockEnabled"] == "Enabled"
+
+    s3.put_object_lock_configuration(
+        Bucket=bkt,
+        ObjectLockConfiguration={
+            "ObjectLockEnabled": "Enabled",
+            "Rule": {
+                "DefaultRetention": {
+                    "Mode": "GOVERNANCE",
+                    "Days": 30,
+                }
+            },
+        },
+    )
+    resp = s3.get_object_lock_configuration(Bucket=bkt)
+    ret = resp["ObjectLockConfiguration"]["Rule"]["DefaultRetention"]
+    assert ret["Mode"] == "GOVERNANCE"
+    assert ret["Days"] == 30
+
+
+def test_s3_object_lock_requires_versioning(s3):
+    bkt = "intg-s3-objlock-nover"
+    s3.create_bucket(Bucket=bkt)
+    with pytest.raises(ClientError) as exc:
+        s3.put_object_lock_configuration(
+            Bucket=bkt,
+            ObjectLockConfiguration={
+                "ObjectLockEnabled": "Enabled",
+            },
+        )
+    assert exc.value.response["Error"]["Code"] == "InvalidBucketState"
+
+
+def test_s3_object_retention(s3):
+    bkt = "intg-s3-retention"
+    s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
+    s3.put_object(Bucket=bkt, Key="doc.txt", Body=b"hello")
+
+    from datetime import datetime, timezone, timedelta
+
+    retain_until = datetime.now(timezone.utc) + timedelta(days=1)
+    s3.put_object_retention(
+        Bucket=bkt,
+        Key="doc.txt",
+        Retention={"Mode": "GOVERNANCE", "RetainUntilDate": retain_until},
+    )
+    resp = s3.get_object_retention(Bucket=bkt, Key="doc.txt")
+    assert resp["Retention"]["Mode"] == "GOVERNANCE"
+    assert "RetainUntilDate" in resp["Retention"]
+
+
+def test_s3_object_legal_hold(s3):
+    bkt = "intg-s3-legalhold"
+    s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
+    s3.put_object(Bucket=bkt, Key="evidence.txt", Body=b"data")
+
+    s3.put_object_legal_hold(
+        Bucket=bkt,
+        Key="evidence.txt",
+        LegalHold={"Status": "ON"},
+    )
+    resp = s3.get_object_legal_hold(Bucket=bkt, Key="evidence.txt")
+    assert resp["LegalHold"]["Status"] == "ON"
+
+    s3.put_object_legal_hold(
+        Bucket=bkt,
+        Key="evidence.txt",
+        LegalHold={"Status": "OFF"},
+    )
+    resp = s3.get_object_legal_hold(Bucket=bkt, Key="evidence.txt")
+    assert resp["LegalHold"]["Status"] == "OFF"
+
+
+def test_s3_object_lock_prevents_delete(s3):
+    bkt = "intg-s3-lock-del"
+    s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
+    s3.put_object(Bucket=bkt, Key="locked.txt", Body=b"immutable")
+
+    s3.put_object_legal_hold(
+        Bucket=bkt,
+        Key="locked.txt",
+        LegalHold={"Status": "ON"},
+    )
+    with pytest.raises(ClientError) as exc:
+        s3.delete_object(Bucket=bkt, Key="locked.txt")
+    assert exc.value.response["Error"]["Code"] == "AccessDenied"
+
+    # Remove legal hold, add governance retention
+    s3.put_object_legal_hold(
+        Bucket=bkt,
+        Key="locked.txt",
+        LegalHold={"Status": "OFF"},
+    )
+    from datetime import datetime, timezone, timedelta
+
+    retain_until = datetime.now(timezone.utc) + timedelta(days=1)
+    s3.put_object_retention(
+        Bucket=bkt,
+        Key="locked.txt",
+        Retention={"Mode": "GOVERNANCE", "RetainUntilDate": retain_until},
+    )
+    with pytest.raises(ClientError) as exc:
+        s3.delete_object(Bucket=bkt, Key="locked.txt")
+    assert exc.value.response["Error"]["Code"] == "AccessDenied"
+
+    # Bypass governance retention
+    s3.delete_object(
+        Bucket=bkt,
+        Key="locked.txt",
+        BypassGovernanceRetention=True,
+    )
+    with pytest.raises(ClientError):
+        s3.head_object(Bucket=bkt, Key="locked.txt")
+
+
+def test_s3_bucket_replication(s3):
+    src = "intg-s3-repl-src"
+    s3.create_bucket(Bucket=src)
+    s3.put_bucket_versioning(
+        Bucket=src, VersioningConfiguration={"Status": "Enabled"}
+    )
+    s3.put_bucket_replication(
+        Bucket=src,
+        ReplicationConfiguration={
+            "Role": "arn:aws:iam::012345678901:role/repl",
+            "Rules": [
+                {
+                    "Status": "Enabled",
+                    "Destination": {"Bucket": "arn:aws:s3:::intg-s3-repl-dst"},
+                }
+            ],
+        },
+    )
+    resp = s3.get_bucket_replication(Bucket=src)
+    assert resp["ReplicationConfiguration"]["Role"] == "arn:aws:iam::012345678901:role/repl"
+    assert len(resp["ReplicationConfiguration"]["Rules"]) == 1
+
+    s3.delete_bucket_replication(Bucket=src)
+    with pytest.raises(ClientError) as exc:
+        s3.get_bucket_replication(Bucket=src)
+    assert exc.value.response["Error"]["Code"] == "ReplicationConfigurationNotFoundError"
+
+
+def test_s3_replication_requires_versioning(s3):
+    bkt = "intg-s3-repl-nover"
+    s3.create_bucket(Bucket=bkt)
+    with pytest.raises(ClientError) as exc:
+        s3.put_bucket_replication(
+            Bucket=bkt,
+            ReplicationConfiguration={
+                "Role": "arn:aws:iam::012345678901:role/repl",
+                "Rules": [
+                    {
+                        "Status": "Enabled",
+                        "Destination": {"Bucket": "arn:aws:s3:::somewhere"},
+                    }
+                ],
+            },
+        )
+    assert exc.value.response["Error"]["Code"] == "InvalidRequest"
+
+
+def test_s3_put_object_with_lock_headers(s3):
+    bkt = "intg-s3-put-lock-hdr"
+    s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
+    from datetime import datetime, timezone, timedelta
+
+    retain_until = datetime.now(timezone.utc) + timedelta(days=5)
+    s3.put_object(
+        Bucket=bkt,
+        Key="locked-via-header.txt",
+        Body=b"data",
+        ObjectLockMode="GOVERNANCE",
+        ObjectLockRetainUntilDate=retain_until,
+        ObjectLockLegalHoldStatus="ON",
+    )
+    ret = s3.get_object_retention(Bucket=bkt, Key="locked-via-header.txt")
+    assert ret["Retention"]["Mode"] == "GOVERNANCE"
+
+    hold = s3.get_object_legal_hold(Bucket=bkt, Key="locked-via-header.txt")
+    assert hold["LegalHold"]["Status"] == "ON"
+
+
+def test_s3_put_object_with_tagging_header(s3):
+    bkt = "intg-s3-put-tag-hdr"
+    s3.create_bucket(Bucket=bkt)
+    s3.put_object(
+        Bucket=bkt,
+        Key="tagged-inline.txt",
+        Body=b"hello",
+        Tagging="env=prod&team=backend",
+    )
+    resp = s3.get_object_tagging(Bucket=bkt, Key="tagged-inline.txt")
+    tags = {t["Key"]: t["Value"] for t in resp["TagSet"]}
+    assert tags["env"] == "prod"
+    assert tags["team"] == "backend"
+
+
+def test_s3_default_retention_applied(s3):
+    bkt = "intg-s3-default-ret"
+    s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
+    s3.put_object_lock_configuration(
+        Bucket=bkt,
+        ObjectLockConfiguration={
+            "ObjectLockEnabled": "Enabled",
+            "Rule": {
+                "DefaultRetention": {
+                    "Mode": "COMPLIANCE",
+                    "Days": 7,
+                }
+            },
+        },
+    )
+    s3.put_object(Bucket=bkt, Key="auto-locked.txt", Body=b"data")
+    ret = s3.get_object_retention(Bucket=bkt, Key="auto-locked.txt")
+    assert ret["Retention"]["Mode"] == "COMPLIANCE"
+    assert "RetainUntilDate" in ret["Retention"]
+
+
+def test_s3_batch_delete_enforces_lock(s3):
+    bkt = "intg-s3-batch-lock"
+    s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
+    s3.put_object(Bucket=bkt, Key="a.txt", Body=b"a")
+    s3.put_object(Bucket=bkt, Key="b.txt", Body=b"b")
+    s3.put_object_legal_hold(
+        Bucket=bkt, Key="a.txt", LegalHold={"Status": "ON"}
+    )
+    resp = s3.delete_objects(
+        Bucket=bkt,
+        Delete={"Objects": [{"Key": "a.txt"}, {"Key": "b.txt"}]},
+    )
+    deleted_keys = [d["Key"] for d in resp.get("Deleted", [])]
+    error_keys = [e["Key"] for e in resp.get("Errors", [])]
+    assert "b.txt" in deleted_keys
+    assert "a.txt" in error_keys
+
+
+def test_s3_copy_preserves_tags_and_lock(s3):
+    src = "intg-s3-copy-tag-src"
+    dst = "intg-s3-copy-tag-dst"
+    s3.create_bucket(Bucket=src, ObjectLockEnabledForBucket=True)
+    s3.create_bucket(Bucket=dst, ObjectLockEnabledForBucket=True)
+    s3.put_object(Bucket=src, Key="orig.txt", Body=b"data")
+    s3.put_object_tagging(
+        Bucket=src,
+        Key="orig.txt",
+        Tagging={"TagSet": [{"Key": "env", "Value": "staging"}]},
+    )
+    s3.put_object_legal_hold(
+        Bucket=src, Key="orig.txt", LegalHold={"Status": "ON"}
+    )
+    s3.copy_object(
+        Bucket=dst, Key="copy.txt", CopySource=f"{src}/orig.txt"
+    )
+    tags = s3.get_object_tagging(Bucket=dst, Key="copy.txt")
+    tag_map = {t["Key"]: t["Value"] for t in tags["TagSet"]}
+    assert tag_map["env"] == "staging"
+
+    hold = s3.get_object_legal_hold(Bucket=dst, Key="copy.txt")
+    assert hold["LegalHold"]["Status"] == "ON"
+
+
+def test_s3_copy_replace_tags(s3):
+    bkt = "intg-s3-copy-repl-tag"
+    s3.create_bucket(Bucket=bkt)
+    s3.put_object(Bucket=bkt, Key="src.txt", Body=b"data")
+    s3.put_object_tagging(
+        Bucket=bkt,
+        Key="src.txt",
+        Tagging={"TagSet": [{"Key": "old", "Value": "val"}]},
+    )
+    s3.copy_object(
+        Bucket=bkt,
+        Key="dst.txt",
+        CopySource=f"{bkt}/src.txt",
+        TaggingDirective="REPLACE",
+        Tagging="new=val2",
+    )
+    tags = s3.get_object_tagging(Bucket=bkt, Key="dst.txt")
+    tag_map = {t["Key"]: t["Value"] for t in tags["TagSet"]}
+    assert "old" not in tag_map
+    assert tag_map["new"] == "val2"
+
+
+def test_s3_tag_count_limit(s3):
+    bkt = "intg-s3-tag-limit"
+    s3.create_bucket(Bucket=bkt)
+    s3.put_object(Bucket=bkt, Key="toomany.txt", Body=b"x")
+    with pytest.raises(ClientError) as exc:
+        s3.put_object_tagging(
+            Bucket=bkt,
+            Key="toomany.txt",
+            Tagging={
+                "TagSet": [
+                    {"Key": f"k{i}", "Value": f"v{i}"} for i in range(11)
+                ]
+            },
+        )
+    assert exc.value.response["Error"]["Code"] == "BadRequest"
+
+
+def test_s3_replication_validates_dest_versioning(s3):
+    src = "intg-s3-repl-val-src"
+    dst = "intg-s3-repl-val-dst"
+    s3.create_bucket(Bucket=src)
+    s3.create_bucket(Bucket=dst)
+    s3.put_bucket_versioning(
+        Bucket=src, VersioningConfiguration={"Status": "Enabled"}
+    )
+    # dst has no versioning
+    with pytest.raises(ClientError) as exc:
+        s3.put_bucket_replication(
+            Bucket=src,
+            ReplicationConfiguration={
+                "Role": "arn:aws:iam::012345678901:role/repl",
+                "Rules": [
+                    {
+                        "Status": "Enabled",
+                        "Destination": {"Bucket": f"arn:aws:s3:::{dst}"},
+                    }
+                ],
+            },
+        )
+    assert exc.value.response["Error"]["Code"] == "InvalidRequest"
+
+
+def test_s3_head_object_returns_lock_headers(s3):
+    bkt = "intg-s3-head-lock-hdr"
+    s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
+    from datetime import datetime, timezone, timedelta
+
+    retain_until = datetime.now(timezone.utc) + timedelta(days=3)
+    s3.put_object(
+        Bucket=bkt,
+        Key="locked.txt",
+        Body=b"data",
+        ObjectLockMode="GOVERNANCE",
+        ObjectLockRetainUntilDate=retain_until,
+        ObjectLockLegalHoldStatus="ON",
+    )
+    resp = s3.head_object(Bucket=bkt, Key="locked.txt")
+    assert resp["ObjectLockMode"] == "GOVERNANCE"
+    assert "ObjectLockRetainUntilDate" in resp
+    assert resp["ObjectLockLegalHoldStatus"] == "ON"
+
+    get_resp = s3.get_object(Bucket=bkt, Key="locked.txt")
+    assert get_resp["ObjectLockMode"] == "GOVERNANCE"
+    assert get_resp["ObjectLockLegalHoldStatus"] == "ON"
+
+
 # ========== SQS ==========
 
 

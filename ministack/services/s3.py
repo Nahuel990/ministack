@@ -11,12 +11,18 @@ Supports: CreateBucket, DeleteBucket, ListBuckets, HeadBucket,
           Bucket sub-resources (Policy, Versioning, Encryption, Lifecycle,
           CORS, ACL, Tagging, Notification, Logging, Accelerate, RequestPayment,
           Website),
+          Object Lock (PutObjectLockConfiguration, GetObjectLockConfiguration,
+          PutObjectRetention, GetObjectRetention,
+          PutObjectLegalHold, GetObjectLegalHold),
+          Replication (PutBucketReplication, GetBucketReplication,
+          DeleteBucketReplication),
           Range requests (206 Partial Content),
           Content-MD5 validation, encoding-type=url,
           x-amz-metadata-directive, x-amz-copy-source-if-match preconditions.
 Storage: In-memory (optionally backed by S3_DATA_DIR).
 """
 
+import datetime as _dt
 import os
 import re
 import base64
@@ -25,10 +31,16 @@ import json
 import logging
 import threading
 import time
-from urllib.parse import quote as url_quote, unquote as url_unquote
+from urllib.parse import quote as url_quote, unquote as url_unquote, parse_qs as _parse_qs
 from xml.etree.ElementTree import Element, SubElement, tostring, fromstring
 
-from ministack.core.responses import md5_hash, sha256_hash, now_iso, new_uuid, iso_to_rfc7231
+from ministack.core.responses import (
+    md5_hash,
+    sha256_hash,
+    now_iso,
+    new_uuid,
+    iso_to_rfc7231,
+)
 
 logger = logging.getLogger("s3")
 
@@ -54,6 +66,11 @@ _bucket_accelerate_config: dict = {}
 _bucket_request_payment_config: dict = {}
 
 _object_tags: dict = {}
+
+_bucket_object_lock: dict = {}
+_bucket_replication: dict = {}
+_object_retention: dict = {}
+_object_legal_hold: dict = {}
 
 _multipart_uploads: dict = {}
 
@@ -101,7 +118,9 @@ def _ensure_bucket(name: str):
 
 
 def _no_such_bucket(name: str) -> tuple:
-    return _error("NoSuchBucket", "The specified bucket does not exist", 404, f"/{name}")
+    return _error(
+        "NoSuchBucket", "The specified bucket does not exist", 404, f"/{name}"
+    )
 
 
 def _validate_bucket_name(name: str) -> bool:
@@ -163,7 +182,9 @@ def _validate_content_md5(headers: dict, body: bytes):
     try:
         expected = base64.b64decode(md5_header)
     except Exception:
-        return _error("InvalidDigest", "The Content-MD5 you specified is not valid.", 400)
+        return _error(
+            "InvalidDigest", "The Content-MD5 you specified is not valid.", 400
+        )
     actual = hashlib.md5(body).digest()
     if expected != actual:
         return _error(
@@ -189,7 +210,9 @@ def _parse_tags_xml(body: bytes) -> dict:
         if local == "Tag":
             key_text = val_text = None
             for child in tag_el:
-                child_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                child_local = (
+                    child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                )
                 if child_local == "Key":
                     key_text = child.text
                 elif child_local == "Value":
@@ -228,7 +251,7 @@ def _build_object_record(body: bytes, headers: dict) -> dict:
     }
 
 
-def _object_response_headers(obj: dict) -> dict:
+def _object_response_headers(obj: dict, bucket_name: str = "", key: str = "") -> dict:
     h = {
         "Content-Type": obj["content_type"],
         "ETag": obj["etag"],
@@ -238,9 +261,17 @@ def _object_response_headers(obj: dict) -> dict:
     }
     if obj.get("content_encoding"):
         h["Content-Encoding"] = obj["content_encoding"]
-    for key, val in obj.get("preserved_headers", {}).items():
-        h[key] = val
+    for k, val in obj.get("preserved_headers", {}).items():
+        h[k] = val
     h.update(obj.get("metadata", {}))
+    if bucket_name and key:
+        retention = _object_retention.get((bucket_name, key))
+        if retention:
+            h["x-amz-object-lock-mode"] = retention["Mode"]
+            h["x-amz-object-lock-retain-until-date"] = retention["RetainUntilDate"]
+        hold = _object_legal_hold.get((bucket_name, key))
+        if hold:
+            h["x-amz-object-lock-legal-hold"] = hold
     return h
 
 
@@ -248,7 +279,10 @@ def _object_response_headers(obj: dict) -> dict:
 # Request router
 # ---------------------------------------------------------------------------
 
-async def handle_request(method: str, path: str, headers: dict, body: bytes, query_params: dict) -> tuple:
+
+async def handle_request(
+    method: str, path: str, headers: dict, body: bytes, query_params: dict
+) -> tuple:
     bucket, key = _parse_bucket_key(path, headers)
 
     result = _dispatch(method, bucket, key, headers, body, query_params)
@@ -264,7 +298,9 @@ async def handle_request(method: str, path: str, headers: dict, body: bytes, que
     return status, resp_headers, resp_body
 
 
-def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, query_params: dict) -> tuple:
+def _dispatch(
+    method: str, bucket: str, key: str, headers: dict, body: bytes, query_params: dict
+) -> tuple:
     if method == "GET" and not bucket:
         return _list_buckets()
 
@@ -275,6 +311,10 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
                 return _list_parts(bucket, key, query_params)
             if "tagging" in query_params:
                 return _get_object_tagging(bucket, key)
+            if "retention" in query_params:
+                return _get_object_retention(bucket, key)
+            if "legal-hold" in query_params:
+                return _get_object_legal_hold(bucket, key)
             return _get_object(bucket, key, headers)
 
         if method == "PUT":
@@ -282,6 +322,10 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
                 return _upload_part(bucket, key, body, query_params, headers)
             if "tagging" in query_params:
                 return _put_object_tagging(bucket, key, body)
+            if "retention" in query_params:
+                return _put_object_retention(bucket, key, body, headers)
+            if "legal-hold" in query_params:
+                return _put_object_legal_hold(bucket, key, body)
             if "x-amz-copy-source" in headers:
                 return _copy_object(bucket, key, headers)
             return _put_object(bucket, key, body, headers)
@@ -291,7 +335,11 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
                 return _create_multipart_upload(bucket, key, headers)
             if "uploadId" in query_params:
                 return _complete_multipart_upload(bucket, key, body, query_params)
-            return _error("MethodNotAllowed", "The specified method is not allowed against this resource.", 405)
+            return _error(
+                "MethodNotAllowed",
+                "The specified method is not allowed against this resource.",
+                405,
+            )
 
         if method == "HEAD":
             return _head_object(bucket, key)
@@ -301,13 +349,21 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
                 return _abort_multipart_upload(bucket, key, query_params)
             if "tagging" in query_params:
                 return _delete_object_tagging(bucket, key)
-            return _delete_object(bucket, key)
+            return _delete_object(bucket, key, headers)
 
-        return _error("MethodNotAllowed", "The specified method is not allowed against this resource.", 405)
+        return _error(
+            "MethodNotAllowed",
+            "The specified method is not allowed against this resource.",
+            405,
+        )
 
     # ---- Routes without key (bucket-level) ----
     if not bucket:
-        return _error("MethodNotAllowed", "The specified method is not allowed against this resource.", 405)
+        return _error(
+            "MethodNotAllowed",
+            "The specified method is not allowed against this resource.",
+            405,
+        )
 
     if method == "GET":
         if "uploads" in query_params:
@@ -342,6 +398,10 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
             return _get_bucket_request_payment(bucket)
         if "website" in query_params:
             return _get_bucket_website(bucket)
+        if "object-lock" in query_params:
+            return _get_object_lock_configuration(bucket)
+        if "replication" in query_params:
+            return _get_bucket_replication(bucket)
         return _list_objects_v1(bucket, query_params)
 
     if method == "PUT":
@@ -369,7 +429,11 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
             return _put_bucket_accelerate(bucket, body)
         if "requestPayment" in query_params:
             return _put_bucket_request_payment(bucket, body)
-        return _create_bucket(bucket, body)
+        if "object-lock" in query_params:
+            return _put_object_lock_configuration(bucket, body)
+        if "replication" in query_params:
+            return _put_bucket_replication(bucket, body)
+        return _create_bucket(bucket, body, headers)
 
     if method == "DELETE":
         if "policy" in query_params:
@@ -384,6 +448,8 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
             return _delete_bucket_encryption(bucket)
         if "website" in query_params:
             return _delete_bucket_website(bucket)
+        if "replication" in query_params:
+            return _delete_bucket_replication(bucket)
         return _delete_bucket(bucket)
 
     if method == "HEAD":
@@ -391,15 +457,24 @@ def _dispatch(method: str, bucket: str, key: str, headers: dict, body: bytes, qu
 
     if method == "POST":
         if "delete" in query_params:
-            return _delete_objects(bucket, body)
-        return _error("MethodNotAllowed", "The specified method is not allowed against this resource.", 405)
+            return _delete_objects(bucket, body, headers)
+        return _error(
+            "MethodNotAllowed",
+            "The specified method is not allowed against this resource.",
+            405,
+        )
 
-    return _error("MethodNotAllowed", "The specified method is not allowed against this resource.", 405)
+    return _error(
+        "MethodNotAllowed",
+        "The specified method is not allowed against this resource.",
+        405,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Bucket operations
 # ---------------------------------------------------------------------------
+
 
 def _list_buckets():
     root = Element("ListAllMyBucketsResult", xmlns=S3_NS)
@@ -414,9 +489,12 @@ def _list_buckets():
     return 200, {"Content-Type": "application/xml"}, _xml_body(root)
 
 
-def _create_bucket(name: str, body: bytes):
+def _create_bucket(name: str, body: bytes, headers: dict = None):
+    headers = headers or {}
     if not _validate_bucket_name(name):
-        return _error("InvalidBucketName", "The specified bucket is not valid.", 400, f"/{name}")
+        return _error(
+            "InvalidBucketName", "The specified bucket is not valid.", 400, f"/{name}"
+        )
     if name in _buckets:
         return _error(
             "BucketAlreadyOwnedByYou",
@@ -436,6 +514,11 @@ def _create_bucket(name: str, body: bytes):
             pass
 
     _buckets[name] = {"created": now_iso(), "objects": {}, "region": region}
+
+    if headers.get("x-amz-bucket-object-lock-enabled", "").lower() == "true":
+        _bucket_object_lock[name] = {"enabled": True, "default_retention": None}
+        _bucket_versioning[name] = "Enabled"
+
     if PERSIST:
         os.makedirs(os.path.join(DATA_DIR, name), exist_ok=True)
     return 200, {"Location": f"/{name}"}, b""
@@ -446,7 +529,12 @@ def _delete_bucket(name: str):
     if bucket is None:
         return _no_such_bucket(name)
     if bucket["objects"]:
-        return _error("BucketNotEmpty", "The bucket you tried to delete is not empty", 409, f"/{name}")
+        return _error(
+            "BucketNotEmpty",
+            "The bucket you tried to delete is not empty",
+            409,
+            f"/{name}",
+        )
     del _buckets[name]
     _bucket_policies.pop(name, None)
     _bucket_notifications.pop(name, None)
@@ -460,16 +548,28 @@ def _delete_bucket(name: str):
     _bucket_logging_config.pop(name, None)
     _bucket_accelerate_config.pop(name, None)
     _bucket_request_payment_config.pop(name, None)
+    _bucket_object_lock.pop(name, None)
+    _bucket_replication.pop(name, None)
+    for k in [k for k in _object_tags if k[0] == name]:
+        del _object_tags[k]
+    for k in [k for k in _object_retention if k[0] == name]:
+        del _object_retention[k]
+    for k in [k for k in _object_legal_hold if k[0] == name]:
+        del _object_legal_hold[k]
     return 204, {}, b""
 
 
 def _head_bucket(name: str):
     if name not in _buckets:
         return _no_such_bucket(name)
-    return 200, {
-        "Content-Type": "application/xml",
-        "x-amz-bucket-region": _buckets[name].get("region") or "us-east-1",
-    }, b""
+    return (
+        200,
+        {
+            "Content-Type": "application/xml",
+            "x-amz-bucket-region": _buckets[name].get("region") or "us-east-1",
+        },
+        b"",
+    )
 
 
 def _get_bucket_location(name: str):
@@ -487,12 +587,15 @@ def _get_bucket_location(name: str):
 # Bucket sub-resources
 # ---------------------------------------------------------------------------
 
+
 def _get_bucket_policy(name: str):
     if name not in _buckets:
         return _no_such_bucket(name)
     policy = _bucket_policies.get(name)
     if not policy:
-        return _error("NoSuchBucketPolicy", "The bucket policy does not exist", 404, f"/{name}")
+        return _error(
+            "NoSuchBucketPolicy", "The bucket policy does not exist", 404, f"/{name}"
+        )
     return 200, {"Content-Type": "application/json"}, policy.encode("utf-8")
 
 
@@ -595,7 +698,12 @@ def _get_bucket_cors(name: str):
     config = _bucket_cors.get(name)
     if config:
         return 200, {"Content-Type": "application/xml"}, config
-    return _error("NoSuchCORSConfiguration", "The CORS configuration does not exist", 404, f"/{name}")
+    return _error(
+        "NoSuchCORSConfiguration",
+        "The CORS configuration does not exist",
+        404,
+        f"/{name}",
+    )
 
 
 def _put_bucket_cors(name: str, body: bytes):
@@ -658,9 +766,12 @@ def _put_bucket_tagging(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
     try:
-        _bucket_tags[name] = _parse_tags_xml(body)
+        tags = _parse_tags_xml(body)
     except Exception:
         return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+    if len(tags) > 50:
+        return _error("BadRequest", "Object tags cannot be greater than 50", 400)
+    _bucket_tags[name] = tags
     return 204, {}, b""
 
 
@@ -746,8 +857,12 @@ def _get_bucket_website(name: str):
     stored = _bucket_websites.get(name)
     if stored:
         return 200, {"Content-Type": "application/xml"}, stored
-    return _error("NoSuchWebsiteConfiguration",
-                  "The specified bucket does not have a website configuration", 404, f"/{name}")
+    return _error(
+        "NoSuchWebsiteConfiguration",
+        "The specified bucket does not have a website configuration",
+        404,
+        f"/{name}",
+    )
 
 
 def _put_bucket_website(name: str, body: bytes):
@@ -781,7 +896,9 @@ def _list_object_versions(bucket_name: str, query_params: dict):
     SubElement(root, "VersionIdMarker").text = version_id_marker
     SubElement(root, "MaxKeys").text = str(max_keys)
 
-    keys = sorted(k for k in bucket["objects"] if k.startswith(prefix) and k > key_marker)
+    keys = sorted(
+        k for k in bucket["objects"] if k.startswith(prefix) and k > key_marker
+    )
     is_truncated = len(keys) > max_keys
     SubElement(root, "IsTruncated").text = "true" if is_truncated else "false"
 
@@ -806,6 +923,7 @@ def _list_object_versions(bucket_name: str, query_params: dict):
 # S3 Event Notifications
 # ---------------------------------------------------------------------------
 
+
 def _parse_notification_config(bucket_name: str) -> list[dict]:
     """Parse the raw notification XML into structured config dicts."""
     raw = _bucket_notifications.get(bucket_name)
@@ -820,14 +938,16 @@ def _parse_notification_config(bucket_name: str) -> list[dict]:
     configs: list[dict] = []
 
     _CONFIG_MAP = {
-        "QueueConfiguration":           ("sqs",    ("Queue",)),
-        "TopicConfiguration":           ("sns",    ("Topic",)),
-        "CloudFunctionConfiguration":   ("lambda", ("CloudFunction", "Function")),
-        "LambdaFunctionConfiguration":  ("lambda", ("Function", "CloudFunction")),
+        "QueueConfiguration": ("sqs", ("Queue",)),
+        "TopicConfiguration": ("sns", ("Topic",)),
+        "CloudFunctionConfiguration": ("lambda", ("CloudFunction", "Function")),
+        "LambdaFunctionConfiguration": ("lambda", ("Function", "CloudFunction")),
     }
 
     for tag_suffix, (target_type, arn_tags) in _CONFIG_MAP.items():
-        for cfg_el in list(root.findall(f"{{{S3_NS}}}{tag_suffix}")) + list(root.findall(tag_suffix)):
+        for cfg_el in list(root.findall(f"{{{S3_NS}}}{tag_suffix}")) + list(
+            root.findall(tag_suffix)
+        ):
             arn = ""
             for at in arn_tags:
                 el = _find_xml_tag(cfg_el, at)
@@ -838,10 +958,12 @@ def _parse_notification_config(bucket_name: str) -> list[dict]:
                 continue
 
             id_el = _find_xml_tag(cfg_el, "Id")
-            config_id = (id_el.text if id_el is not None and id_el.text else new_uuid())
+            config_id = id_el.text if id_el is not None and id_el.text else new_uuid()
 
             events: list[str] = []
-            for ev_el in list(cfg_el.findall(f"{{{S3_NS}}}Event")) + list(cfg_el.findall("Event")):
+            for ev_el in list(cfg_el.findall(f"{{{S3_NS}}}Event")) + list(
+                cfg_el.findall("Event")
+            ):
                 if ev_el.text:
                     events.append(ev_el.text.strip())
 
@@ -851,8 +973,9 @@ def _parse_notification_config(bucket_name: str) -> list[dict]:
             if filter_el is not None:
                 s3key_el = _find_xml_tag(filter_el, "S3Key")
                 if s3key_el is not None:
-                    for rule_el in (list(s3key_el.findall(f"{{{S3_NS}}}FilterRule"))
-                                    + list(s3key_el.findall("FilterRule"))):
+                    for rule_el in list(
+                        s3key_el.findall(f"{{{S3_NS}}}FilterRule")
+                    ) + list(s3key_el.findall("FilterRule")):
                         name_el = _find_xml_tag(rule_el, "Name")
                         val_el = _find_xml_tag(rule_el, "Value")
                         if name_el is not None and name_el.text and val_el is not None:
@@ -863,14 +986,16 @@ def _parse_notification_config(bucket_name: str) -> list[dict]:
                             elif rule_name == "suffix":
                                 filter_suffix = rule_val
 
-            configs.append({
-                "type": target_type,
-                "arn": arn,
-                "id": config_id,
-                "events": events,
-                "filter_prefix": filter_prefix,
-                "filter_suffix": filter_suffix,
-            })
+            configs.append(
+                {
+                    "type": target_type,
+                    "arn": arn,
+                    "id": config_id,
+                    "events": events,
+                    "filter_prefix": filter_prefix,
+                    "filter_suffix": filter_suffix,
+                }
+            )
 
     return configs
 
@@ -900,8 +1025,9 @@ def _key_matches_filter(key: str, prefix: str | None, suffix: str | None) -> boo
     return True
 
 
-def _fire_s3_event(bucket_name: str, key: str, event_name: str,
-                   size: int = 0, etag: str = "") -> None:
+def _fire_s3_event(
+    bucket_name: str, key: str, event_name: str, size: int = 0, etag: str = ""
+) -> None:
     """Build and deliver an S3 event notification. Best-effort — errors are logged."""
     try:
         configs = _parse_notification_config(bucket_name)
@@ -914,41 +1040,45 @@ def _fire_s3_event(bucket_name: str, key: str, event_name: str,
         clean_etag = etag.strip('"')
 
         event_payload = {
-            "Records": [{
-                "eventVersion": "2.1",
-                "eventSource": "aws:s3",
-                "awsRegion": "us-east-1",
-                "eventTime": event_time,
-                "eventName": short_event,
-                "userIdentity": {"principalId": "EXAMPLE"},
-                "requestParameters": {"sourceIPAddress": "127.0.0.1"},
-                "responseElements": {
-                    "x-amz-request-id": request_id,
-                    "x-amz-id-2": "EXAMPLE",
-                },
-                "s3": {
-                    "s3SchemaVersion": "1.0",
-                    "configurationId": "",
-                    "bucket": {
-                        "name": bucket_name,
-                        "ownerIdentity": {"principalId": "EXAMPLE"},
-                        "arn": f"arn:aws:s3:::{bucket_name}",
+            "Records": [
+                {
+                    "eventVersion": "2.1",
+                    "eventSource": "aws:s3",
+                    "awsRegion": "us-east-1",
+                    "eventTime": event_time,
+                    "eventName": short_event,
+                    "userIdentity": {"principalId": "EXAMPLE"},
+                    "requestParameters": {"sourceIPAddress": "127.0.0.1"},
+                    "responseElements": {
+                        "x-amz-request-id": request_id,
+                        "x-amz-id-2": "EXAMPLE",
                     },
-                    "object": {
-                        "key": key,
-                        "size": size,
-                        "eTag": clean_etag,
-                        "sequencer": "0",
+                    "s3": {
+                        "s3SchemaVersion": "1.0",
+                        "configurationId": "",
+                        "bucket": {
+                            "name": bucket_name,
+                            "ownerIdentity": {"principalId": "EXAMPLE"},
+                            "arn": f"arn:aws:s3:::{bucket_name}",
+                        },
+                        "object": {
+                            "key": key,
+                            "size": size,
+                            "eTag": clean_etag,
+                            "sequencer": "0",
+                        },
                     },
-                },
-            }],
+                }
+            ],
         }
 
         for cfg in configs:
             try:
                 if not _event_matches(event_name, cfg["events"]):
                     continue
-                if not _key_matches_filter(key, cfg["filter_prefix"], cfg["filter_suffix"]):
+                if not _key_matches_filter(
+                    key, cfg["filter_prefix"], cfg["filter_suffix"]
+                ):
                     continue
 
                 payload = dict(event_payload)
@@ -963,10 +1093,14 @@ def _fire_s3_event(bucket_name: str, key: str, event_name: str,
                 elif cfg["type"] == "lambda":
                     _deliver_event_to_lambda(cfg["arn"], payload)
             except Exception:
-                logger.exception("S3 notification delivery failed for config %s", cfg.get("id"))
+                logger.exception(
+                    "S3 notification delivery failed for config %s", cfg.get("id")
+                )
 
     except Exception:
-        logger.exception("S3 event notification fire failed for %s/%s", bucket_name, key)
+        logger.exception(
+            "S3 event notification fire failed for %s/%s", bucket_name, key
+        )
 
 
 def _deliver_event_to_sqs(arn: str, event_payload: dict) -> None:
@@ -1025,8 +1159,9 @@ def _deliver_event_to_lambda(arn: str, event_payload: dict) -> None:
     logger.info("S3 notification → Lambda %s", func_name)
 
 
-def _fire_s3_event_async(bucket_name: str, key: str, event_name: str,
-                         size: int = 0, etag: str = "") -> None:
+def _fire_s3_event_async(
+    bucket_name: str, key: str, event_name: str, size: int = 0, etag: str = ""
+) -> None:
     """Fire S3 event notification in a background thread (non-blocking)."""
     if bucket_name not in _bucket_notifications:
         return
@@ -1042,6 +1177,7 @@ def _fire_s3_event_async(bucket_name: str, key: str, event_name: str,
 # Object operations
 # ---------------------------------------------------------------------------
 
+
 def _put_object(bucket_name: str, key: str, body: bytes, headers: dict):
     bucket = _ensure_bucket(bucket_name)
     if bucket is None:
@@ -1054,13 +1190,58 @@ def _put_object(bucket_name: str, key: str, body: bytes, headers: dict):
     obj = _build_object_record(body, headers)
     bucket["objects"][key] = obj
 
+    # --- Object Lock headers on PutObject ---
+    _apply_object_lock_from_headers(bucket_name, key, headers)
+
+    # --- x-amz-tagging header on PutObject ---
+    tagging_header = headers.get("x-amz-tagging", "")
+    if tagging_header:
+        tags = {k: v[0] for k, v in _parse_qs(tagging_header).items()}
+        if len(tags) > 10:
+            return _error("BadRequest", "Object tags cannot be greater than 10", 400)
+        _object_tags[(bucket_name, key)] = tags
+
     if PERSIST:
         _persist_object(bucket_name, key, obj)
 
-    _fire_s3_event_async(bucket_name, key, "s3:ObjectCreated:Put",
-                         size=obj["size"], etag=obj["etag"])
+    _fire_s3_event_async(
+        bucket_name, key, "s3:ObjectCreated:Put", size=obj["size"], etag=obj["etag"]
+    )
 
     return 200, {"ETag": obj["etag"]}, b""
+
+
+def _apply_object_lock_from_headers(bucket_name: str, key: str, headers: dict):
+    lock_mode = headers.get("x-amz-object-lock-mode", "")
+    lock_until = headers.get("x-amz-object-lock-retain-until-date", "")
+    lock_legal = headers.get("x-amz-object-lock-legal-hold", "") or headers.get("x-amz-object-lock-legal-hold-status", "")
+
+    if lock_mode and lock_until:
+        _object_retention[(bucket_name, key)] = {
+            "Mode": lock_mode,
+            "RetainUntilDate": lock_until,
+        }
+    elif not lock_mode and not lock_until:
+        # Apply bucket default retention if no explicit retention
+        lock_cfg = _bucket_object_lock.get(bucket_name)
+        if lock_cfg and lock_cfg.get("default_retention"):
+            dr = lock_cfg["default_retention"]
+            days = dr.get("Days", 0)
+            years = dr.get("Years", 0)
+            now = _dt.datetime.now(_dt.timezone.utc)
+            if days:
+                until = now + _dt.timedelta(days=days)
+            elif years:
+                until = now.replace(year=now.year + years)
+            else:
+                return
+            _object_retention[(bucket_name, key)] = {
+                "Mode": dr["Mode"],
+                "RetainUntilDate": until.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            }
+
+    if lock_legal in ("ON", "OFF"):
+        _object_legal_hold[(bucket_name, key)] = lock_legal
 
 
 def _get_object(bucket_name: str, key: str, headers: dict):
@@ -1068,10 +1249,15 @@ def _get_object(bucket_name: str, key: str, headers: dict):
     if bucket is None:
         return _no_such_bucket(bucket_name)
     if key not in bucket["objects"]:
-        return _error("NoSuchKey", "The specified key does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     obj = bucket["objects"][key]
-    resp_headers = _object_response_headers(obj)
+    resp_headers = _object_response_headers(obj, bucket_name, key)
 
     range_header = headers.get("range", "")
     if range_header:
@@ -1079,7 +1265,10 @@ def _get_object(bucket_name: str, key: str, headers: dict):
         if rng is None:
             return (
                 416,
-                {"Content-Type": "application/xml", "Content-Range": f"bytes */{obj['size']}"},
+                {
+                    "Content-Type": "application/xml",
+                    "Content-Range": f"bytes */{obj['size']}",
+                },
                 _xml_body(_range_error_xml(bucket_name, key)),
             )
         start, end = rng
@@ -1105,27 +1294,72 @@ def _head_object(bucket_name: str, key: str):
     if bucket is None:
         return _no_such_bucket(bucket_name)
     if key not in bucket["objects"]:
-        return _error("NoSuchKey", "The specified key does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     obj = bucket["objects"][key]
-    return 200, _object_response_headers(obj), b""
+    return 200, _object_response_headers(obj, bucket_name, key), b""
 
 
-def _delete_object(bucket_name: str, key: str):
+def _delete_object(bucket_name: str, key: str, headers: dict | None = None):
+    headers = headers or {}
     bucket = _ensure_bucket(bucket_name)
     if bucket is None:
         return _no_such_bucket(bucket_name)
+
+    if key in bucket["objects"]:
+        lock_err = _check_object_lock(bucket_name, key, headers)
+        if lock_err:
+            return lock_err
+
     existed = key in bucket["objects"]
     bucket["objects"].pop(key, None)
     _object_tags.pop((bucket_name, key), None)
+    _object_retention.pop((bucket_name, key), None)
+    _object_legal_hold.pop((bucket_name, key), None)
 
     if existed:
         _fire_s3_event_async(bucket_name, key, "s3:ObjectRemoved:Delete")
 
-    versioning = _bucket_versioning.get(bucket_name, {}).get("Status", "")
+    versioning = _bucket_versioning.get(bucket_name, "")
     if versioning in ("Enabled", "Suspended"):
         return 204, {"x-amz-delete-marker": "true", "x-amz-version-id": "null"}, b""
     return 204, {}, b""
+
+
+def _check_object_lock(bucket_name: str, key: str, headers: dict) -> tuple | None:
+    hold = _object_legal_hold.get((bucket_name, key))
+    if hold == "ON":
+        return _error(
+            "AccessDenied",
+            "Access Denied because object protected by object lock.",
+            403,
+        )
+
+    retention = _object_retention.get((bucket_name, key))
+    if retention:
+        retain_until = retention.get("RetainUntilDate", "")
+        if retain_until and retain_until > now_iso():
+            mode = retention.get("Mode", "")
+            if mode == "COMPLIANCE":
+                return _error(
+                    "AccessDenied",
+                    "Access Denied because object protected by object lock.",
+                    403,
+                )
+            if mode == "GOVERNANCE":
+                bypass = headers.get("x-amz-bypass-governance-retention", "").lower()
+                if bypass != "true":
+                    return _error(
+                        "AccessDenied",
+                        "Access Denied because object protected by object lock.",
+                        403,
+                    )
+    return None
 
 
 def _copy_object(bucket_name: str, dest_key: str, headers: dict):
@@ -1143,7 +1377,12 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
     if src_bucket is None:
         return _no_such_bucket(src_bucket_name)
     if src_key not in src_bucket["objects"]:
-        return _error("NoSuchKey", "The specified key does not exist.", 404, f"/{src_bucket_name}/{src_key}")
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{src_bucket_name}/{src_key}",
+        )
 
     dest_bucket = _ensure_bucket(bucket_name)
     if dest_bucket is None:
@@ -1154,18 +1393,28 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
     # Precondition: x-amz-copy-source-if-match
     if_match = headers.get("x-amz-copy-source-if-match", "")
     if if_match and if_match.strip('"') != src_obj["etag"].strip('"'):
-        return _error("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", 412)
+        return _error(
+            "PreconditionFailed",
+            "At least one of the pre-conditions you specified did not hold",
+            412,
+        )
 
     # Precondition: x-amz-copy-source-if-none-match — 412 for PUT-like operations.
     if_none_match = headers.get("x-amz-copy-source-if-none-match", "")
     if if_none_match and if_none_match.strip('"') == src_obj["etag"].strip('"'):
-        return _error("PreconditionFailed", "At least one of the pre-conditions you specified did not hold", 412)
+        return _error(
+            "PreconditionFailed",
+            "At least one of the pre-conditions you specified did not hold",
+            412,
+        )
 
     directive = headers.get("x-amz-metadata-directive", "COPY").upper()
     if directive == "REPLACE":
         metadata = _extract_user_metadata(headers)
         content_type = headers.get("content-type", src_obj["content_type"])
-        content_encoding = headers.get("content-encoding", src_obj.get("content_encoding"))
+        content_encoding = headers.get(
+            "content-encoding", src_obj.get("content_encoding")
+        )
         preserved = {}
         for h in _PRESERVED_HEADERS:
             val = headers.get(h)
@@ -1191,11 +1440,46 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
     }
     dest_bucket["objects"][dest_key] = dest_obj
 
+    # --- Preserve / replace tags ---
+    tagging_directive = headers.get("x-amz-tagging-directive", "COPY").upper()
+    if tagging_directive == "REPLACE":
+        tagging_header = headers.get("x-amz-tagging", "")
+        if tagging_header:
+            _object_tags[(bucket_name, dest_key)] = {
+                k: v[0] for k, v in _parse_qs(tagging_header).items()
+            }
+        else:
+            _object_tags.pop((bucket_name, dest_key), None)
+    else:
+        src_tags = _object_tags.get((src_bucket_name, src_key))
+        if src_tags:
+            _object_tags[(bucket_name, dest_key)] = dict(src_tags)
+        else:
+            _object_tags.pop((bucket_name, dest_key), None)
+
+    # --- Preserve lock / retention ---
+    src_retention = _object_retention.get((src_bucket_name, src_key))
+    if src_retention:
+        _object_retention[(bucket_name, dest_key)] = dict(src_retention)
+    else:
+        _object_retention.pop((bucket_name, dest_key), None)
+
+    src_hold = _object_legal_hold.get((src_bucket_name, src_key))
+    if src_hold:
+        _object_legal_hold[(bucket_name, dest_key)] = src_hold
+    else:
+        _object_legal_hold.pop((bucket_name, dest_key), None)
+
     if PERSIST:
         _persist_object(bucket_name, dest_key, dest_obj)
 
-    _fire_s3_event_async(bucket_name, dest_key, "s3:ObjectCreated:Copy",
-                         size=dest_obj["size"], etag=new_etag)
+    _fire_s3_event_async(
+        bucket_name,
+        dest_key,
+        "s3:ObjectCreated:Copy",
+        size=dest_obj["size"],
+        etag=new_etag,
+    )
 
     root = Element("CopyObjectResult", xmlns=S3_NS)
     SubElement(root, "LastModified").text = last_modified
@@ -1207,12 +1491,18 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
 # Object tagging
 # ---------------------------------------------------------------------------
 
+
 def _get_object_tagging(bucket_name: str, key: str):
     bucket = _ensure_bucket(bucket_name)
     if bucket is None:
         return _no_such_bucket(bucket_name)
     if key not in bucket["objects"]:
-        return _error("NoSuchKey", "The specified key does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     tags = _object_tags.get((bucket_name, key), {})
     root = Element("Tagging", xmlns=S3_NS)
@@ -1229,11 +1519,19 @@ def _put_object_tagging(bucket_name: str, key: str, body: bytes):
     if bucket is None:
         return _no_such_bucket(bucket_name)
     if key not in bucket["objects"]:
-        return _error("NoSuchKey", "The specified key does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
     try:
-        _object_tags[(bucket_name, key)] = _parse_tags_xml(body)
+        tags = _parse_tags_xml(body)
     except Exception:
         return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+    if len(tags) > 10:
+        return _error("BadRequest", "Object tags cannot be greater than 10", 400)
+    _object_tags[(bucket_name, key)] = tags
     return 200, {"Content-Type": "application/xml"}, b""
 
 
@@ -1242,8 +1540,380 @@ def _delete_object_tagging(bucket_name: str, key: str):
     if bucket is None:
         return _no_such_bucket(bucket_name)
     if key not in bucket["objects"]:
-        return _error("NoSuchKey", "The specified key does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
     _object_tags.pop((bucket_name, key), None)
+    return 204, {}, b""
+
+
+# ---------------------------------------------------------------------------
+# Object Lock
+# ---------------------------------------------------------------------------
+
+
+def _get_object_lock_configuration(bucket_name: str):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+
+    lock = _bucket_object_lock.get(bucket_name)
+    if not lock:
+        return _error(
+            "ObjectLockConfigurationNotFoundError",
+            "Object Lock configuration does not exist for this bucket",
+            404,
+            f"/{bucket_name}",
+        )
+
+    root = Element("ObjectLockConfiguration", xmlns=S3_NS)
+    SubElement(root, "ObjectLockEnabled").text = "Enabled"
+    retention = lock.get("default_retention")
+    if retention:
+        rule_el = SubElement(root, "Rule")
+        ret_el = SubElement(rule_el, "DefaultRetention")
+        SubElement(ret_el, "Mode").text = retention["Mode"]
+        if "Days" in retention:
+            SubElement(ret_el, "Days").text = str(retention["Days"])
+        if "Years" in retention:
+            SubElement(ret_el, "Years").text = str(retention["Years"])
+    return 200, {"Content-Type": "application/xml"}, _xml_body(root)
+
+
+def _put_object_lock_configuration(bucket_name: str, body: bytes):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+
+    versioning = _bucket_versioning.get(bucket_name, "")
+    if versioning != "Enabled":
+        return _error(
+            "InvalidBucketState",
+            "Versioning must be 'Enabled' on the bucket to apply a Object Lock configuration",
+            409,
+            f"/{bucket_name}",
+        )
+
+    try:
+        xml_root = fromstring(body)
+    except Exception:
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    enabled_el = _find_xml_tag(xml_root, "ObjectLockEnabled")
+    if enabled_el is None or enabled_el.text != "Enabled":
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    default_retention = None
+    rule_el = _find_xml_tag(xml_root, "Rule")
+    if rule_el is not None:
+        ret_el = _find_xml_tag(rule_el, "DefaultRetention")
+        if ret_el is None:
+            return _error(
+                "MalformedXML", "The XML you provided was not well-formed", 400
+            )
+
+        mode_el = _find_xml_tag(ret_el, "Mode")
+        days_el = _find_xml_tag(ret_el, "Days")
+        years_el = _find_xml_tag(ret_el, "Years")
+
+        if mode_el is None or mode_el.text not in ("GOVERNANCE", "COMPLIANCE"):
+            return _error(
+                "MalformedXML", "The XML you provided was not well-formed", 400
+            )
+
+        has_days = days_el is not None and days_el.text
+        has_years = years_el is not None and years_el.text
+        if (has_days and has_years) or (not has_days and not has_years):
+            return _error(
+                "MalformedXML", "The XML you provided was not well-formed", 400
+            )
+
+        default_retention = {"Mode": mode_el.text}
+        try:
+            if has_days:
+                default_retention["Days"] = int(days_el.text)
+            if has_years:
+                default_retention["Years"] = int(years_el.text)
+        except (ValueError, TypeError):
+            return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    _bucket_object_lock[bucket_name] = {
+        "enabled": True,
+        "default_retention": default_retention,
+    }
+    return 200, {"Content-Type": "application/xml"}, b""
+
+
+def _get_object_retention(bucket_name: str, key: str):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+    if key not in bucket["objects"]:
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
+
+    lock = _bucket_object_lock.get(bucket_name)
+    if not lock:
+        return _error(
+            "InvalidRequest", "Bucket is missing Object Lock Configuration", 400
+        )
+
+    retention = _object_retention.get((bucket_name, key))
+    if not retention:
+        return _error(
+            "NoSuchObjectLockConfiguration",
+            "The specified object does not have a ObjectLock configuration",
+            404,
+        )
+
+    root = Element("Retention", xmlns=S3_NS)
+    SubElement(root, "Mode").text = retention["Mode"]
+    SubElement(root, "RetainUntilDate").text = retention["RetainUntilDate"]
+    return 200, {"Content-Type": "application/xml"}, _xml_body(root)
+
+
+def _put_object_retention(bucket_name: str, key: str, body: bytes, headers: dict):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+    if key not in bucket["objects"]:
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
+
+    lock = _bucket_object_lock.get(bucket_name)
+    if not lock:
+        return _error(
+            "InvalidRequest", "Bucket is missing Object Lock Configuration", 400
+        )
+
+    try:
+        xml_root = fromstring(body)
+    except Exception:
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    mode_el = _find_xml_tag(xml_root, "Mode")
+    date_el = _find_xml_tag(xml_root, "RetainUntilDate")
+
+    if mode_el is None or mode_el.text not in ("GOVERNANCE", "COMPLIANCE"):
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+    if date_el is None or not date_el.text:
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    retain_until = date_el.text
+
+    existing = _object_retention.get((bucket_name, key))
+    if existing:
+        is_reducing = existing.get("RetainUntilDate", "") > retain_until or (
+            mode_el.text == "GOVERNANCE" and existing.get("Mode") == "COMPLIANCE"
+        )
+        if is_reducing:
+            if existing.get("Mode") == "COMPLIANCE":
+                return _error(
+                    "AccessDenied",
+                    "Access Denied because object protected by object lock.",
+                    403,
+                )
+            if existing.get("Mode") == "GOVERNANCE":
+                bypass = headers.get("x-amz-bypass-governance-retention", "").lower()
+                if bypass != "true":
+                    return _error(
+                        "AccessDenied",
+                        "Access Denied because object protected by object lock.",
+                        403,
+                    )
+
+    _object_retention[(bucket_name, key)] = {
+        "Mode": mode_el.text,
+        "RetainUntilDate": retain_until,
+    }
+    return 200, {"Content-Type": "application/xml"}, b""
+
+
+def _get_object_legal_hold(bucket_name: str, key: str):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+    if key not in bucket["objects"]:
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
+
+    lock = _bucket_object_lock.get(bucket_name)
+    if not lock:
+        return _error(
+            "InvalidRequest", "Bucket is missing Object Lock Configuration", 400
+        )
+
+    status = _object_legal_hold.get((bucket_name, key))
+    if status is None:
+        return _error(
+            "NoSuchObjectLockConfiguration",
+            "The specified object does not have a ObjectLock configuration",
+            404,
+        )
+
+    root = Element("LegalHold", xmlns=S3_NS)
+    SubElement(root, "Status").text = status
+    return 200, {"Content-Type": "application/xml"}, _xml_body(root)
+
+
+def _put_object_legal_hold(bucket_name: str, key: str, body: bytes):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+    if key not in bucket["objects"]:
+        return _error(
+            "NoSuchKey",
+            "The specified key does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
+
+    lock = _bucket_object_lock.get(bucket_name)
+    if not lock:
+        return _error(
+            "InvalidRequest", "Bucket is missing Object Lock Configuration", 400
+        )
+
+    try:
+        xml_root = fromstring(body)
+    except Exception:
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    status_el = _find_xml_tag(xml_root, "Status")
+    if status_el is None or status_el.text not in ("ON", "OFF"):
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    _object_legal_hold[(bucket_name, key)] = status_el.text
+    return 200, {"Content-Type": "application/xml"}, b""
+
+
+# ---------------------------------------------------------------------------
+# Replication Configuration
+# ---------------------------------------------------------------------------
+
+
+def _put_bucket_replication(bucket_name: str, body: bytes):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+
+    versioning = _bucket_versioning.get(bucket_name, "")
+    if versioning != "Enabled":
+        return _error(
+            "InvalidRequest",
+            "Versioning must be 'Enabled' on the bucket to apply a replication configuration",
+            400,
+            f"/{bucket_name}",
+        )
+
+    try:
+        xml_root = fromstring(body)
+    except Exception:
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    role_el = _find_xml_tag(xml_root, "Role")
+    role = role_el.text if role_el is not None and role_el.text else ""
+
+    rules = []
+    for rule_el in list(xml_root.findall("{%s}Rule" % S3_NS)) or list(
+        xml_root.findall("Rule")
+    ):
+        rule: dict = {}
+        id_el = _find_xml_tag(rule_el, "ID")
+        rule["ID"] = id_el.text if id_el is not None and id_el.text else new_uuid()[:8]
+        status_el = _find_xml_tag(rule_el, "Status")
+        rule["Status"] = (
+            status_el.text if status_el is not None and status_el.text else "Enabled"
+        )
+        prefix_el = _find_xml_tag(rule_el, "Prefix")
+        if prefix_el is not None and prefix_el.text is not None:
+            rule["Prefix"] = prefix_el.text
+        dest_el = _find_xml_tag(rule_el, "Destination")
+        if dest_el is not None:
+            dest: dict = {}
+            bucket_el = _find_xml_tag(dest_el, "Bucket")
+            if bucket_el is not None and bucket_el.text:
+                dest["Bucket"] = bucket_el.text
+                # Validate destination bucket
+                dest_name = (
+                    bucket_el.text.split(":::")[-1]
+                    if ":::" in bucket_el.text
+                    else bucket_el.text
+                )
+                dest_bucket = _ensure_bucket(dest_name)
+                if dest_bucket is not None:
+                    dest_versioning = _bucket_versioning.get(dest_name, "")
+                    if dest_versioning != "Enabled":
+                        return _error(
+                            "InvalidRequest",
+                            "Destination bucket must have versioning enabled.",
+                            400,
+                        )
+            sc_el = _find_xml_tag(dest_el, "StorageClass")
+            if sc_el is not None and sc_el.text:
+                dest["StorageClass"] = sc_el.text
+            rule["Destination"] = dest
+        rules.append(rule)
+
+    if not rules:
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
+
+    _bucket_replication[bucket_name] = {"Role": role, "Rules": rules}
+    return 200, {"Content-Type": "application/xml"}, b""
+
+
+def _get_bucket_replication(bucket_name: str):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+
+    repl = _bucket_replication.get(bucket_name)
+    if repl is None:
+        return _error(
+            "ReplicationConfigurationNotFoundError",
+            "The replication configuration was not found",
+            404,
+            f"/{bucket_name}",
+        )
+
+    root = Element("ReplicationConfiguration", xmlns=S3_NS)
+    SubElement(root, "Role").text = repl.get("Role", "")
+    for rule in repl.get("Rules", []):
+        rule_el = SubElement(root, "Rule")
+        SubElement(rule_el, "ID").text = rule.get("ID", "")
+        SubElement(rule_el, "Status").text = rule.get("Status", "Enabled")
+        if "Prefix" in rule:
+            SubElement(rule_el, "Prefix").text = rule["Prefix"]
+        dest = rule.get("Destination", {})
+        if dest:
+            dest_el = SubElement(rule_el, "Destination")
+            if "Bucket" in dest:
+                SubElement(dest_el, "Bucket").text = dest["Bucket"]
+            if "StorageClass" in dest:
+                SubElement(dest_el, "StorageClass").text = dest["StorageClass"]
+    return 200, {"Content-Type": "application/xml"}, _xml_body(root)
+
+
+def _delete_bucket_replication(bucket_name: str):
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+    _bucket_replication.pop(bucket_name, None)
     return 204, {}, b""
 
 
@@ -1251,7 +1921,10 @@ def _delete_object_tagging(bucket_name: str, key: str):
 # List objects
 # ---------------------------------------------------------------------------
 
-def _collect_list_entries(bucket_objects: dict, prefix: str, delimiter: str, max_keys: int, start_after: str):
+
+def _collect_list_entries(
+    bucket_objects: dict, prefix: str, delimiter: str, max_keys: int, start_after: str
+):
     """Walk sorted keys, collecting contents and common prefixes with correct
     pagination.  When a key falls under a common-prefix group the iterator
     advances past *all* remaining keys in that group so the next page's
@@ -1259,7 +1932,9 @@ def _collect_list_entries(bucket_objects: dict, prefix: str, delimiter: str, max
 
     Returns (contents, common_prefixes, is_truncated, next_marker).
     """
-    all_keys = sorted(k for k in bucket_objects if k.startswith(prefix) and k > start_after)
+    all_keys = sorted(
+        k for k in bucket_objects if k.startswith(prefix) and k > start_after
+    )
     contents: list[str] = []
     common_prefixes: set[str] = set()
     is_truncated = False
@@ -1271,7 +1946,7 @@ def _collect_list_entries(bucket_objects: dict, prefix: str, delimiter: str, max
         k = all_keys[i]
 
         if delimiter:
-            suffix = k[len(prefix):]
+            suffix = k[len(prefix) :]
             delim_idx = suffix.find(delimiter)
             if delim_idx >= 0:
                 cp = prefix + suffix[: delim_idx + len(delimiter)]
@@ -1315,15 +1990,25 @@ def _list_objects_v1(bucket_name: str, query_params: dict):
     encode = encoding_type == "url"
 
     contents, common_prefixes, is_truncated, next_marker = _collect_list_entries(
-        bucket["objects"], prefix, delimiter, max_keys, marker,
+        bucket["objects"],
+        prefix,
+        delimiter,
+        max_keys,
+        marker,
     )
 
     root = Element("ListBucketResult", xmlns=S3_NS)
     SubElement(root, "Name").text = bucket_name
-    SubElement(root, "Prefix").text = _url_encode(prefix) if encode and prefix else prefix
-    SubElement(root, "Marker").text = _url_encode(marker) if encode and marker else marker
+    SubElement(root, "Prefix").text = (
+        _url_encode(prefix) if encode and prefix else prefix
+    )
+    SubElement(root, "Marker").text = (
+        _url_encode(marker) if encode and marker else marker
+    )
     if delimiter:
-        SubElement(root, "Delimiter").text = _url_encode(delimiter) if encode else delimiter
+        SubElement(root, "Delimiter").text = (
+            _url_encode(delimiter) if encode else delimiter
+        )
     if encoding_type:
         SubElement(root, "EncodingType").text = encoding_type
     SubElement(root, "MaxKeys").text = str(max_keys)
@@ -1331,7 +2016,9 @@ def _list_objects_v1(bucket_name: str, query_params: dict):
 
     # AWS only returns NextMarker when delimiter is specified.
     if is_truncated and next_marker and delimiter:
-        SubElement(root, "NextMarker").text = _url_encode(next_marker) if encode else next_marker
+        SubElement(root, "NextMarker").text = (
+            _url_encode(next_marker) if encode else next_marker
+        )
 
     for k in contents:
         obj = bucket["objects"][k]
@@ -1375,14 +2062,22 @@ def _list_objects_v2(bucket_name: str, query_params: dict):
         effective_start = start_after
 
     contents, common_prefixes, is_truncated, next_marker = _collect_list_entries(
-        bucket["objects"], prefix, delimiter, max_keys, effective_start,
+        bucket["objects"],
+        prefix,
+        delimiter,
+        max_keys,
+        effective_start,
     )
 
     root = Element("ListBucketResult", xmlns=S3_NS)
     SubElement(root, "Name").text = bucket_name
-    SubElement(root, "Prefix").text = _url_encode(prefix) if encode and prefix else prefix
+    SubElement(root, "Prefix").text = (
+        _url_encode(prefix) if encode and prefix else prefix
+    )
     if delimiter:
-        SubElement(root, "Delimiter").text = _url_encode(delimiter) if encode else delimiter
+        SubElement(root, "Delimiter").text = (
+            _url_encode(delimiter) if encode else delimiter
+        )
     if encoding_type:
         SubElement(root, "EncodingType").text = encoding_type
     SubElement(root, "MaxKeys").text = str(max_keys)
@@ -1392,7 +2087,9 @@ def _list_objects_v2(bucket_name: str, query_params: dict):
     if continuation:
         SubElement(root, "ContinuationToken").text = continuation
     if start_after:
-        SubElement(root, "StartAfter").text = _url_encode(start_after) if encode else start_after
+        SubElement(root, "StartAfter").text = (
+            _url_encode(start_after) if encode else start_after
+        )
 
     if is_truncated and next_marker:
         token = base64.b64encode(next_marker.encode("utf-8")).decode("utf-8")
@@ -1422,12 +2119,17 @@ def _list_objects_v2(bucket_name: str, query_params: dict):
 # Batch delete
 # ---------------------------------------------------------------------------
 
-def _delete_objects(bucket_name: str, body: bytes):
+
+def _delete_objects(bucket_name: str, body: bytes, headers: dict = None):
+    headers = headers or {}
     bucket = _ensure_bucket(bucket_name)
     if bucket is None:
         return _no_such_bucket(bucket_name)
 
-    xml_root = fromstring(body)
+    try:
+        xml_root = fromstring(body)
+    except Exception:
+        return _error("MalformedXML", "The XML you provided was not well-formed", 400)
 
     quiet = False
     quiet_el = _find_xml_tag(xml_root, "Quiet")
@@ -1435,12 +2137,28 @@ def _delete_objects(bucket_name: str, body: bytes):
         quiet = True
 
     deleted_keys: list[str] = []
-    for obj_el in list(xml_root.findall("{%s}Object" % S3_NS)) or list(xml_root.findall("Object")):
+    errors: list[tuple] = []
+    for obj_el in list(xml_root.findall("{%s}Object" % S3_NS)) or list(
+        xml_root.findall("Object")
+    ):
         key_el = _find_xml_tag(obj_el, "Key")
         if key_el is not None and key_el.text:
             k = key_el.text
+            if k in bucket["objects"]:
+                lock_err = _check_object_lock(bucket_name, k, headers)
+                if lock_err:
+                    errors.append(
+                        (
+                            k,
+                            "AccessDenied",
+                            "Access Denied because object protected by object lock.",
+                        )
+                    )
+                    continue
             bucket["objects"].pop(k, None)
             _object_tags.pop((bucket_name, k), None)
+            _object_retention.pop((bucket_name, k), None)
+            _object_legal_hold.pop((bucket_name, k), None)
             deleted_keys.append(k)
 
     resp = Element("DeleteResult", xmlns=S3_NS)
@@ -1448,6 +2166,11 @@ def _delete_objects(bucket_name: str, body: bytes):
         for k in deleted_keys:
             d = SubElement(resp, "Deleted")
             SubElement(d, "Key").text = k
+    for k, code, msg in errors:
+        e = SubElement(resp, "Error")
+        SubElement(e, "Key").text = k
+        SubElement(e, "Code").text = code
+        SubElement(e, "Message").text = msg
 
     return 200, {"Content-Type": "application/xml"}, _xml_body(resp)
 
@@ -1455,6 +2178,7 @@ def _delete_objects(bucket_name: str, body: bytes):
 # ---------------------------------------------------------------------------
 # Multipart upload
 # ---------------------------------------------------------------------------
+
 
 def _create_multipart_upload(bucket_name: str, key: str, headers: dict):
     bucket = _ensure_bucket(bucket_name)
@@ -1489,7 +2213,9 @@ def _create_multipart_upload(bucket_name: str, key: str, headers: dict):
     return 200, {"Content-Type": "application/xml"}, _xml_body(root)
 
 
-def _upload_part(bucket_name: str, key: str, body: bytes, query_params: dict, headers: dict):
+def _upload_part(
+    bucket_name: str, key: str, body: bytes, query_params: dict, headers: dict
+):
     bucket = _ensure_bucket(bucket_name)
     if bucket is None:
         return _no_such_bucket(bucket_name)
@@ -1498,40 +2224,75 @@ def _upload_part(bucket_name: str, key: str, body: bytes, query_params: dict, he
     part_number = _qp(query_params, "partNumber")
 
     if upload_id not in _multipart_uploads:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     upload = _multipart_uploads[upload_id]
     if upload["bucket"] != bucket_name or upload["key"] != key:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     try:
         pn = int(part_number)
     except (ValueError, TypeError):
-        return _error("InvalidArgument", "Part number must be an integer between 1 and 10000, inclusive.", 400)
+        return _error(
+            "InvalidArgument",
+            "Part number must be an integer between 1 and 10000, inclusive.",
+            400,
+        )
     if pn < 1 or pn > 10000:
-        return _error("InvalidArgument", "Part number must be an integer between 1 and 10000, inclusive.", 400)
+        return _error(
+            "InvalidArgument",
+            "Part number must be an integer between 1 and 10000, inclusive.",
+            400,
+        )
 
     md5_err = _validate_content_md5(headers, body)
     if md5_err:
         return md5_err
 
     etag = f'"{md5_hash(body)}"'
-    upload["parts"][pn] = {"body": body, "etag": etag, "size": len(body), "last_modified": now_iso()}
+    upload["parts"][pn] = {
+        "body": body,
+        "etag": etag,
+        "size": len(body),
+        "last_modified": now_iso(),
+    }
     return 200, {"ETag": etag}, b""
 
 
-def _complete_multipart_upload(bucket_name: str, key: str, body: bytes, query_params: dict):
+def _complete_multipart_upload(
+    bucket_name: str, key: str, body: bytes, query_params: dict
+):
     bucket = _ensure_bucket(bucket_name)
     if bucket is None:
         return _no_such_bucket(bucket_name)
 
     upload_id = _qp(query_params, "uploadId")
     if upload_id not in _multipart_uploads:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     upload = _multipart_uploads[upload_id]
     if upload["bucket"] != bucket_name or upload["key"] != key:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     xml_root = fromstring(body)
     ordered_parts: list[tuple[int, str | None]] = []
@@ -1540,7 +2301,9 @@ def _complete_multipart_upload(bucket_name: str, key: str, body: bytes, query_pa
         if local == "Part":
             pn_text = etag_text = None
             for child in part_el:
-                child_local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                child_local = (
+                    child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                )
                 if child_local == "PartNumber":
                     pn_text = child.text
                 elif child_local == "ETag":
@@ -1554,7 +2317,11 @@ def _complete_multipart_upload(bucket_name: str, key: str, body: bytes, query_pa
     combined = b""
     for pn, req_etag in ordered_parts:
         if pn not in upload["parts"]:
-            return _error("InvalidPart", "One or more of the specified parts could not be found.", 400)
+            return _error(
+                "InvalidPart",
+                "One or more of the specified parts could not be found.",
+                400,
+            )
         stored = upload["parts"][pn]
         if req_etag and req_etag.strip('"') != stored["etag"].strip('"'):
             return _error(
@@ -1586,8 +2353,13 @@ def _complete_multipart_upload(bucket_name: str, key: str, body: bytes, query_pa
 
     del _multipart_uploads[upload_id]
 
-    _fire_s3_event_async(bucket_name, key, "s3:ObjectCreated:CompleteMultipartUpload",
-                         size=obj["size"], etag=final_etag)
+    _fire_s3_event_async(
+        bucket_name,
+        key,
+        "s3:ObjectCreated:CompleteMultipartUpload",
+        size=obj["size"],
+        etag=final_etag,
+    )
 
     root = Element("CompleteMultipartUploadResult", xmlns=S3_NS)
     SubElement(root, "Location").text = f"http://s3.amazonaws.com/{bucket_name}/{key}"
@@ -1604,11 +2376,21 @@ def _abort_multipart_upload(bucket_name: str, key: str, query_params: dict):
 
     upload_id = _qp(query_params, "uploadId")
     if upload_id not in _multipart_uploads:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     upload = _multipart_uploads[upload_id]
     if upload["bucket"] != bucket_name or upload["key"] != key:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     del _multipart_uploads[upload_id]
     return 204, {}, b""
@@ -1643,7 +2425,12 @@ def _list_multipart_uploads(bucket_name: str, query_params: dict):
             continue
         if key_marker and upload["key"] < key_marker:
             continue
-        if key_marker and upload["key"] == key_marker and upload_id_marker and uid <= upload_id_marker:
+        if (
+            key_marker
+            and upload["key"] == key_marker
+            and upload_id_marker
+            and uid <= upload_id_marker
+        ):
             continue
         uploads.append((uid, upload))
 
@@ -1680,11 +2467,21 @@ def _list_parts(bucket_name: str, key: str, query_params: dict):
 
     upload_id = _qp(query_params, "uploadId")
     if upload_id not in _multipart_uploads:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     upload = _multipart_uploads[upload_id]
     if upload["bucket"] != bucket_name or upload["key"] != key:
-        return _error("NoSuchUpload", "The specified multipart upload does not exist.", 404, f"/{bucket_name}/{key}")
+        return _error(
+            "NoSuchUpload",
+            "The specified multipart upload does not exist.",
+            404,
+            f"/{bucket_name}/{key}",
+        )
 
     max_parts = int(_qp(query_params, "max-parts", "1000"))
     part_marker = int(_qp(query_params, "part-number-marker", "0"))
@@ -1726,6 +2523,7 @@ def _list_parts(bucket_name: str, key: str, query_params: dict):
 # Persistence
 # ---------------------------------------------------------------------------
 
+
 def _persist_object(bucket: str, key: str, obj):
     try:
         fpath = os.path.join(DATA_DIR, bucket, key)
@@ -1758,7 +2556,11 @@ def _load_persisted_data():
             if not os.path.isdir(bucket_path):
                 continue
             if bucket_name not in _buckets:
-                _buckets[bucket_name] = {"created": now_iso(), "objects": {}, "region": None}
+                _buckets[bucket_name] = {
+                    "created": now_iso(),
+                    "objects": {},
+                    "region": None,
+                }
             bucket = _buckets[bucket_name]
             for dirpath, _dirnames, filenames in os.walk(bucket_path):
                 for fname in filenames:
@@ -1778,7 +2580,9 @@ def _load_persisted_data():
                             pass
                     bucket["objects"][key] = {
                         "body": data,
-                        "content_type": meta.get("content_type", "application/octet-stream"),
+                        "content_type": meta.get(
+                            "content_type", "application/octet-stream"
+                        ),
                         "content_encoding": meta.get("content_encoding"),
                         "etag": meta.get("etag") or f'"{md5_hash(data)}"',
                         "last_modified": meta.get("last_modified") or now_iso(),
@@ -1801,9 +2605,30 @@ def reset():
     global _bucket_acl, _bucket_websites, _bucket_logging_config
     global _bucket_accelerate_config, _bucket_request_payment_config
     global _object_tags, _multipart_uploads
-    for d in (_buckets, _bucket_policies, _bucket_notifications, _bucket_tags,
-              _bucket_versioning, _bucket_encryption, _bucket_lifecycle, _bucket_cors,
-              _bucket_acl, _bucket_websites, _bucket_logging_config,
-              _bucket_accelerate_config, _bucket_request_payment_config,
-              _object_tags, _multipart_uploads):
+    global \
+        _bucket_object_lock, \
+        _bucket_replication, \
+        _object_retention, \
+        _object_legal_hold
+    for d in (
+        _buckets,
+        _bucket_policies,
+        _bucket_notifications,
+        _bucket_tags,
+        _bucket_versioning,
+        _bucket_encryption,
+        _bucket_lifecycle,
+        _bucket_cors,
+        _bucket_acl,
+        _bucket_websites,
+        _bucket_logging_config,
+        _bucket_accelerate_config,
+        _bucket_request_payment_config,
+        _object_tags,
+        _multipart_uploads,
+        _bucket_object_lock,
+        _bucket_replication,
+        _object_retention,
+        _object_legal_hold,
+    ):
         d.clear()
