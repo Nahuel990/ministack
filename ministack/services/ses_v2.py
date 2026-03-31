@@ -4,14 +4,15 @@ REST/JSON API via path /v2/email/...
 Supports: SendEmail, CreateEmailIdentity, GetEmailIdentity, DeleteEmailIdentity,
           ListEmailIdentities, CreateConfigurationSet, GetConfigurationSet,
           DeleteConfigurationSet, ListConfigurationSets, GetAccount,
-          ListSuppressedDestinations, PutAccountSuppressionAttributes.
+          ListSuppressedDestinations, PutAccountSuppressionAttributes,
+          TagResource, UntagResource, ListTagsForResource.
 """
 
 import json
 import logging
 import re
 
-from ministack.core.responses import error_response_json, json_response, new_uuid, now_iso
+from ministack.core.responses import json_response, new_uuid, now_iso
 
 logger = logging.getLogger("ses-v2")
 
@@ -20,7 +21,7 @@ REGION = "us-east-1"
 
 _identities: dict = {}        # identity -> dict
 _config_sets: dict = {}       # name -> dict
-_suppression_list: list = []  # list of suppressed addresses
+_ses_tags: dict = {}          # resource_arn -> [tags]
 
 
 def _json_err(code, message, status=400):
@@ -131,10 +132,30 @@ async def handle_request(method, path, headers, body, query_params):
             _config_sets.pop(name, None)
             return json_response({})
 
+    # GET/POST/DELETE /v2/email/tags  (ListTagsForResource / TagResource / UntagResource)
+    if sub == "/tags" and method == "GET":
+        arn = query_params.get("ResourceArn", [""])[0] if isinstance(query_params.get("ResourceArn"), list) else query_params.get("ResourceArn", "")
+        return json_response({"Tags": _ses_tags.get(arn, [])})
+
+    m = re.match(r"^/tags$", sub)
+    if m and method == "POST":
+        arn = data.get("ResourceArn", "")
+        existing = {t["Key"]: t for t in _ses_tags.get(arn, [])}
+        for tag in data.get("Tags", []):
+            existing[tag["Key"]] = tag
+        _ses_tags[arn] = list(existing.values())
+        return json_response({})
+
+    if sub == "/tags" and method == "DELETE":
+        arn = query_params.get("ResourceArn", [""])[0] if isinstance(query_params.get("ResourceArn"), list) else query_params.get("ResourceArn", "")
+        remove_keys = set(query_params.get("TagKeys", []))
+        _ses_tags[arn] = [t for t in _ses_tags.get(arn, []) if t["Key"] not in remove_keys]
+        return json_response({})
+
     return _json_err("NotFoundException", f"Unknown SES v2 path: {method} {path}", 404)
 
 
 def reset():
     _identities.clear()
     _config_sets.clear()
-    _suppression_list.clear()
+    _ses_tags.clear()

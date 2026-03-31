@@ -588,7 +588,6 @@ config:
 | **ACM** | ✅ | ✅ | ✅ |
 | **SES v2** | ✅ | ✅ | ✅ |
 | **WAF v2** | ✅ | Paid | ✅ |
-| **Lambda Layers** | ✅ | ✅ | ✅ |
 | CloudFormation | ❌ | partial | ✅ |
 | Cost | **Free** | Was free, now paid | $35+/mo |
 | Docker image size | ~150MB | ~1GB | ~1GB |

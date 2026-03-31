@@ -26,6 +26,7 @@ _S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache)\.")
 from ministack.core.persistence import PERSIST_STATE, load_state, save_all
 from ministack.core.router import detect_service, extract_account_id, extract_region
 from ministack.services import (
+    acm,
     alb,
     apigateway,
     apigateway_v1,
@@ -50,12 +51,11 @@ from ministack.services import (
     secretsmanager,
     ses,
     ses_v2,
-    acm,
-    waf,
     sns,
     sqs,
     ssm,
     stepfunctions,
+    waf,
 )
 from ministack.services.iam_sts import handle_iam_request, handle_sts_request
 
@@ -149,7 +149,7 @@ BANNER = r"""
 
  Local AWS Service Emulator — Port {port}
  Services: S3, SQS, SNS, DynamoDB, Lambda, IAM, STS, SecretsManager, CloudWatch Logs,
-          SSM, EventBridge, Kinesis, CloudWatch, SES, Step Functions,
+          SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
           Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2
 """
