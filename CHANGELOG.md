@@ -11,9 +11,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **ACM (Certificate Manager)** — full control plane: `RequestCertificate`, `DescribeCertificate`, `ListCertificates`, `DeleteCertificate`, `GetCertificate`, `ImportCertificate`, `AddTagsToCertificate`, `RemoveTagsFromCertificate`, `ListTagsForCertificate`, `UpdateCertificateOptions`, `RenewCertificate`, `ResendValidationEmail`; certificates issued immediately with status `ISSUED` and DNS validation records; compatible with Terraform `aws_acm_certificate` and CDK `Certificate`
-- **SES v2** — REST API at `/v2/email/`: `SendEmail`, `CreateEmailIdentity`, `GetEmailIdentity`, `DeleteEmailIdentity`, `ListEmailIdentities`, `CreateConfigurationSet`, `GetConfigurationSet`, `DeleteConfigurationSet`, `ListConfigurationSets`, `GetAccount`, `ListSuppressedDestinations`; identities auto-verified; compatible with Terraform `aws_sesv2_email_identity` and CDK `EmailIdentity`
-- **WAF v2** — full control plane: WebACL CRUD, IPSet CRUD, RuleGroup CRUD, `AssociateWebACL`/`DisassociateWebACL`, `GetWebACLForResource`, `ListResourcesForWebACL`, `TagResource`/`UntagResource`/`ListTagsForResource`, `CheckCapacity`, `DescribeManagedRuleGroup`; rules stored but not enforced; compatible with Terraform `aws_wafv2_web_acl` and CDK `CfnWebACL`
-- **Lambda Layers** — already implemented: `PublishLayerVersion`, `GetLayerVersion`, `GetLayerVersionByArn`, `ListLayerVersions`, `ListLayers`, `DeleteLayerVersion`, `GetLayerVersionPolicy`, `AddLayerVersionPermission`, `RemoveLayerVersionPermission`
+- **SES v2** — REST API at `/v2/email/`: `SendEmail`, `CreateEmailIdentity`, `GetEmailIdentity`, `DeleteEmailIdentity`, `ListEmailIdentities`, `CreateConfigurationSet`, `GetConfigurationSet`, `DeleteConfigurationSet`, `ListConfigurationSets`, `GetAccount`, `ListSuppressedDestinations`, `TagResource`, `UntagResource`, `ListTagsForResource`; identities auto-verified; compatible with Terraform `aws_sesv2_email_identity` and CDK `EmailIdentity`
+- **WAF v2** — full control plane: WebACL CRUD, IPSet CRUD, RuleGroup CRUD (including `UpdateRuleGroup`), `AssociateWebACL`/`DisassociateWebACL`, `GetWebACLForResource`, `ListResourcesForWebACL`, `TagResource`/`UntagResource`/`ListTagsForResource`, `CheckCapacity`, `DescribeManagedRuleGroup`; LockToken enforced on Update/Delete; rules stored but not enforced; compatible with Terraform `aws_wafv2_web_acl` and CDK `CfnWebACL`
+- **Lambda Layers** — `PublishLayerVersion`, `GetLayerVersion`, `ListLayerVersions`, `ListLayers`, `DeleteLayerVersion`; layer zip content stored in-memory and injected into function execution environment
+
+### Fixed
+- **WAF v2 `GetWebACL`/`GetIPSet`/`GetRuleGroup`** — `LockToken` was incorrectly included inside the resource body; now only returned at the top level, matching real AWS and fixing CDK/Terraform Update flows
+- **WAF v2 `GetWebACLForResource`** — now returns `WAFNonexistentItemException` when no association exists, matching real AWS behaviour
+- **SES v2 `TagResource`/`UntagResource`/`ListTagsForResource`** — added; Terraform calls these after `CreateEmailIdentity`
 
 ### Tests
 - 763 tests total, all passing
