@@ -698,6 +698,18 @@ def _run_task(data):
 
         docker_client = _get_docker()
         if docker_client and td:
+            # Detect the Docker network Ministack is running on,
+            # so ECS containers can reach sibling services (S3, etc.)
+            ecs_network = None
+            try:
+                self_container = docker_client.containers.get(os.environ.get("HOSTNAME", ""))
+                nets = list(self_container.attrs["NetworkSettings"]["Networks"].keys())
+                if nets:
+                    ecs_network = nets[0]
+                    logger.debug(f"ECS: detected Ministack network: {ecs_network}")
+            except Exception:
+                logger.debug("ECS: could not detect Ministack network, using default")
+
             for i, cdef in enumerate(td.get("containerDefinitions", [])):
                 env_override = {}
                 for ov in container_overrides:
@@ -720,6 +732,7 @@ def _run_task(data):
                         ports=port_bindings or None,
                         name=f"ministack-ecs-{task_id[:8]}-{cdef['name']}",
                         labels={"ministack": "ecs", "task_arn": task_arn},
+                        network=ecs_network,
                     )
                     task["_docker_ids"].append(container.id)
                     if i < len(task["containers"]):
