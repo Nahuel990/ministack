@@ -135,6 +135,16 @@ SERVICE_PATTERNS = {
     "elasticloadbalancing": {
         "host_patterns": [r"elasticloadbalancing\."],
     },
+    "acm": {
+        "target_prefixes": ["CertificateManager"],
+        "host_patterns": [r"acm\."],
+        "credential_scope": "acm",
+    },
+    "wafv2": {
+        "target_prefixes": ["AWSWAF_20190729"],
+        "host_patterns": [r"wafv2\."],
+        "credential_scope": "wafv2",
+    },
 }
 
 
@@ -175,6 +185,8 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "athena": "athena",
                 "kinesis-firehose": "firehose",
                 "route53": "route53",
+                "acm": "acm",
+                "wafv2": "wafv2",
                 "cognito-idp": "cognito-idp",
                 "cognito-identity": "cognito-identity",
                 "elasticmapreduce": "elasticmapreduce",

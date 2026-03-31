@@ -170,6 +170,7 @@ pytest tests/ -v -k "cognito"
 - [ ] Detection patterns added to `ministack/core/router.py`
 - [ ] Fixture added to `tests/conftest.py`
 - [ ] Tests added and passing (`pytest tests/ -v`)
+- [ ] Linting passes (`ruff check ministack/`)
 - [ ] Service added to the table in `README.md`
 - [ ] Entry added to `CHANGELOG.md`
 - [ ] Version bumped in `pyproject.toml`
@@ -180,11 +181,11 @@ pytest tests/ -v -k "cognito"
 
 High-value contributions right now:
 
-- **ACM** — certificate provisioning and validation stubs
-- **More S3 operations** — object lock, replication configuration, object tagging
-- **SES v2** — `ses:SendEmail` with the v2 API shapes
-- **Lambda layers** — `PublishLayerVersion`, `GetLayerVersion`, `ListLayerVersions`
-- **More Cognito flows** — hosted UI, federated identity providers
+- **CloudFront** — distribution CRUD, invalidations, origin configuration
+- **CodeBuild / CodePipeline** — CI/CD pipeline stubs
+- **AppSync** — GraphQL API CRUD
+- **SQS FIFO** — message group / deduplication support
+- **More Cognito flows** — hosted UI, federated identity providers, custom auth triggers
 
 ---
 

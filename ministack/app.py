@@ -26,6 +26,7 @@ _S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache)\.")
 from ministack.core.persistence import PERSIST_STATE, load_state, save_all
 from ministack.core.router import detect_service, extract_account_id, extract_region
 from ministack.services import (
+    acm,
     alb,
     apigateway,
     apigateway_v1,
@@ -49,10 +50,12 @@ from ministack.services import (
     s3,
     secretsmanager,
     ses,
+    ses_v2,
     sns,
     sqs,
     ssm,
     stepfunctions,
+    waf,
 )
 from ministack.services.iam_sts import handle_iam_request, handle_sts_request
 
@@ -79,6 +82,8 @@ SERVICE_HANDLERS = {
     "kinesis": kinesis.handle_request,
     "monitoring": cloudwatch.handle_request,
     "ses": ses.handle_request,
+    "acm": acm.handle_request,
+    "wafv2": waf.handle_request,
     "states": stepfunctions.handle_request,
     "ecs": ecs.handle_request,
     "rds": rds.handle_request,
@@ -144,7 +149,7 @@ BANNER = r"""
 
  Local AWS Service Emulator — Port {port}
  Services: S3, SQS, SNS, DynamoDB, Lambda, IAM, STS, SecretsManager, CloudWatch Logs,
-          SSM, EventBridge, Kinesis, CloudWatch, SES, Step Functions,
+          SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
           Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2
 """
@@ -220,6 +225,12 @@ async def app(scope, receive, send):
                 "Content-Type": "application/json",
                 "x-amzn-requestid": request_id,
             }, b"{}")
+        return
+
+    # SES v2 REST API — /v2/email/...
+    if path.startswith("/v2/email"):
+        status, resp_headers, resp_body = await ses_v2.handle_request(method, path, headers, body, query_params)
+        await _send_response(send, status, resp_headers, resp_body)
         return
 
     if path in ("/_localstack/health", "/health", "/_ministack/health"):
@@ -486,6 +497,9 @@ def _reset_all_state():
         (ec2, ec2.reset),
         (emr, emr.reset),
         (alb, alb.reset),
+        (acm, acm.reset),
+        (ses_v2, ses_v2.reset),
+        (waf, waf.reset),
         (efs, efs.reset),
     ]:
         try:

@@ -176,6 +176,18 @@ def efs():
     return make_client("efs")
 
 @pytest.fixture(scope="session")
+def acm_client():
+    return make_client("acm")
+
+@pytest.fixture(scope="session")
+def wafv2():
+    return make_client("wafv2")
+
+@pytest.fixture(scope="session")
+def sesv2():
+    return make_client("sesv2")
+
+@pytest.fixture(scope="session")
 def sfn_sync():
     """SFN client for StartSyncExecution — forces same endpoint (boto3 normally prefixes sync-)."""
     from botocore.config import Config as BotoConfig
