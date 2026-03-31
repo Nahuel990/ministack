@@ -15193,3 +15193,485 @@ def test_waf_tags(wafv2):
     wafv2.untag_resource(ResourceARN=arn, TagKeys=["env"])
     tags_resp3 = wafv2.list_tags_for_resource(ResourceARN=arn)
     assert not any(t["Key"] == "env" for t in tags_resp3["TagInfoForResource"]["TagList"])
+# ========== CloudFormation ==========
+
+
+def _wait_stack(cfn, name, timeout=10):
+    """Poll until stack reaches terminal status."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        stacks = cfn.describe_stacks(StackName=name)["Stacks"]
+        status = stacks[0]["StackStatus"]
+        if not status.endswith("_IN_PROGRESS"):
+            return stacks[0]
+        time.sleep(0.5)
+    raise TimeoutError(f"Stack {name} stuck at {status}")
+
+
+def test_cfn_create_describe_delete_stack(cfn, s3):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t01-bucket"},
+            }
+        },
+    }
+    cfn.create_stack(StackName="cfn-t01", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-t01")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    s3.head_bucket(Bucket="cfn-t01-bucket")
+
+    cfn.delete_stack(StackName="cfn-t01")
+    _wait_stack(cfn, "cfn-t01")
+
+    with pytest.raises(ClientError):
+        s3.head_bucket(Bucket="cfn-t01-bucket")
+
+
+def test_cfn_stack_with_parameters(cfn, sqs):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Parameters": {
+            "QueueName": {
+                "Type": "String",
+                "Default": "cfn-t02-default",
+            }
+        },
+        "Resources": {
+            "Queue": {
+                "Type": "AWS::SQS::Queue",
+                "Properties": {"QueueName": {"Ref": "QueueName"}},
+            }
+        },
+    }
+    cfn.create_stack(StackName="cfn-t02a", TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t02a")
+
+    urls = sqs.list_queues(QueueNamePrefix="cfn-t02-default").get("QueueUrls", [])
+    assert any("cfn-t02-default" in u for u in urls)
+
+    cfn.create_stack(
+        StackName="cfn-t02b",
+        TemplateBody=json.dumps(template),
+        Parameters=[{"ParameterKey": "QueueName", "ParameterValue": "cfn-t02-custom"}],
+    )
+    _wait_stack(cfn, "cfn-t02b")
+
+    urls = sqs.list_queues(QueueNamePrefix="cfn-t02-custom").get("QueueUrls", [])
+    assert any("cfn-t02-custom" in u for u in urls)
+
+
+def test_cfn_intrinsic_ref_getatt(cfn, ssm):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "MyQueue": {
+                "Type": "AWS::SQS::Queue",
+                "Properties": {"QueueName": "cfn-t03-queue"},
+            },
+            "Param": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Name": "cfn-t03-param",
+                    "Type": "String",
+                    "Value": {"Fn::GetAtt": ["MyQueue", "Arn"]},
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t03", TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t03")
+
+    val = ssm.get_parameter(Name="cfn-t03-param")["Parameter"]["Value"]
+    assert val.startswith("arn:aws:sqs:")
+
+
+def test_cfn_conditions(cfn, s3):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Parameters": {
+            "Create": {"Type": "String", "Default": "yes"},
+        },
+        "Conditions": {
+            "ShouldCreate": {"Fn::Equals": [{"Ref": "Create"}, "yes"]},
+        },
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Condition": "ShouldCreate",
+                "Properties": {"BucketName": "cfn-t04-cond"},
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t04a", TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t04a")
+    s3.head_bucket(Bucket="cfn-t04-cond")
+
+    # Delete first stack so the bucket name is freed
+    cfn.delete_stack(StackName="cfn-t04a")
+    _wait_stack(cfn, "cfn-t04a")
+
+    cfn.create_stack(
+        StackName="cfn-t04b",
+        TemplateBody=json.dumps(template),
+        Parameters=[{"ParameterKey": "Create", "ParameterValue": "no"}],
+    )
+    stack = _wait_stack(cfn, "cfn-t04b")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    with pytest.raises(ClientError):
+        s3.head_bucket(Bucket="cfn-t04-cond")
+
+
+def test_cfn_outputs_exports(cfn):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t05-exports"},
+            },
+        },
+        "Outputs": {
+            "BucketOut": {
+                "Value": {"Ref": "Bucket"},
+                "Export": {"Name": "cfn-t05-bucket-export"},
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t05", TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t05")
+
+    exports = cfn.list_exports()["Exports"]
+    assert any(e["Name"] == "cfn-t05-bucket-export" for e in exports)
+
+
+def test_cfn_fn_sub(cfn, ssm):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "MyBucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t06-src"},
+            },
+            "Param": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Name": "cfn-t06-param",
+                    "Type": "String",
+                    "Value": {"Fn::Sub": "${MyBucket}-replica"},
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t06", TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t06")
+
+    val = ssm.get_parameter(Name="cfn-t06-param")["Parameter"]["Value"]
+    assert val == "cfn-t06-src-replica"
+
+
+def test_cfn_multi_resource_dependencies(cfn):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Role": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "RoleName": "cfn-t07-role",
+                    "AssumeRolePolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Principal": {"Service": "lambda.amazonaws.com"},
+                                "Action": "sts:AssumeRole",
+                            }
+                        ],
+                    },
+                },
+            },
+            "Func": {
+                "Type": "AWS::Lambda::Function",
+                "Properties": {
+                    "FunctionName": "cfn-t07-func",
+                    "Runtime": "python3.9",
+                    "Handler": "index.handler",
+                    "Role": {"Fn::GetAtt": ["Role", "Arn"]},
+                    "Code": {"ZipFile": "def handler(e,c): return {}"},
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t07", TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t07")
+
+    from tests.conftest import make_client
+    iam = make_client("iam")
+    lam = make_client("lambda")
+    role = iam.get_role(RoleName="cfn-t07-role")["Role"]
+    func = lam.get_function(FunctionName="cfn-t07-func")["Configuration"]
+    assert func["Role"] == role["Arn"]
+
+
+def test_cfn_change_set_lifecycle(cfn):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t08-cs"},
+            },
+        },
+    }
+    cfn.create_change_set(
+        StackName="cfn-t08",
+        ChangeSetName="cfn-t08-cs1",
+        TemplateBody=json.dumps(template),
+        ChangeSetType="CREATE",
+    )
+    time.sleep(1)
+
+    cs = cfn.describe_change_set(StackName="cfn-t08", ChangeSetName="cfn-t08-cs1")
+    assert cs["ChangeSetName"] == "cfn-t08-cs1"
+
+    cfn.execute_change_set(StackName="cfn-t08", ChangeSetName="cfn-t08-cs1")
+    stack = _wait_stack(cfn, "cfn-t08")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+
+def test_cfn_update_stack(cfn, s3):
+    template_v1 = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "BucketA": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t09-a"},
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t09", TemplateBody=json.dumps(template_v1))
+    _wait_stack(cfn, "cfn-t09")
+
+    template_v2 = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "BucketA": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t09-a"},
+            },
+            "BucketB": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t09-b"},
+            },
+        },
+    }
+    cfn.update_stack(StackName="cfn-t09", TemplateBody=json.dumps(template_v2))
+    stack = _wait_stack(cfn, "cfn-t09")
+    assert stack["StackStatus"] == "UPDATE_COMPLETE"
+
+    s3.head_bucket(Bucket="cfn-t09-a")
+    s3.head_bucket(Bucket="cfn-t09-b")
+
+
+def test_cfn_delete_nonexistent_stack(cfn):
+    # AWS returns 200 for deleting non-existent stacks (idempotent)
+    cfn.delete_stack(StackName="cfn-nonexistent-xyz")
+    # But describing it should fail
+    with pytest.raises(ClientError):
+        cfn.describe_stacks(StackName="cfn-nonexistent-xyz")
+
+
+def test_cfn_validate_template(cfn):
+    valid_template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Parameters": {
+            "Env": {"Type": "String", "Default": "dev"},
+        },
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t11-validate"},
+            },
+        },
+    }
+    result = cfn.validate_template(TemplateBody=json.dumps(valid_template))
+    assert any(p["ParameterKey"] == "Env" for p in result["Parameters"])
+
+    invalid_template = {"AWSTemplateFormatVersion": "2010-09-09"}
+    with pytest.raises(ClientError):
+        cfn.validate_template(TemplateBody=json.dumps(invalid_template))
+
+
+def test_cfn_list_stacks(cfn):
+    for name in ("cfn-t12-a", "cfn-t12-b"):
+        template = {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Resources": {
+                "Bucket": {
+                    "Type": "AWS::S3::Bucket",
+                    "Properties": {"BucketName": f"{name}-bucket"},
+                },
+            },
+        }
+        cfn.create_stack(StackName=name, TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t12-a")
+    _wait_stack(cfn, "cfn-t12-b")
+
+    summaries = cfn.list_stacks()["StackSummaries"]
+    names = [s["StackName"] for s in summaries]
+    assert "cfn-t12-a" in names
+    assert "cfn-t12-b" in names
+
+
+def test_cfn_stack_events(cfn):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t13-events"},
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t13", TemplateBody=json.dumps(template))
+    _wait_stack(cfn, "cfn-t13")
+
+    events = cfn.describe_stack_events(StackName="cfn-t13")["StackEvents"]
+    assert len(events) > 0
+    assert all("ResourceStatus" in e for e in events)
+
+
+def test_cfn_yaml_template(cfn, s3):
+    yaml_body = """
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: cfn-t14-yaml
+"""
+    cfn.create_stack(StackName="cfn-t14", TemplateBody=yaml_body)
+    _wait_stack(cfn, "cfn-t14")
+
+    s3.head_bucket(Bucket="cfn-t14-yaml")
+
+
+def test_cfn_rollback_on_failure(cfn, s3):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t15-rollback"},
+            },
+            "Bad": {
+                "Type": "AWS::Fake::Nope",
+                "Properties": {},
+            },
+        },
+    }
+    cfn.create_stack(
+        StackName="cfn-t15",
+        TemplateBody=json.dumps(template),
+        DisableRollback=False,
+    )
+    stack = _wait_stack(cfn, "cfn-t15")
+    assert stack["StackStatus"] == "ROLLBACK_COMPLETE"
+
+    with pytest.raises(ClientError):
+        s3.head_bucket(Bucket="cfn-t15-rollback")
+
+
+def test_cfn_import_nonexistent_export(cfn):
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Param": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Name": "cfn-t16-param",
+                    "Type": "String",
+                    "Value": {"Fn::ImportValue": "NonExistentExport123"},
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t16", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-t16")
+    assert stack["StackStatus"] in ("CREATE_FAILED", "ROLLBACK_COMPLETE")
+
+
+def test_cfn_delete_stack_with_active_imports(cfn):
+    exporter_template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t17-exporter"},
+            },
+        },
+        "Outputs": {
+            "BucketOut": {
+                "Value": {"Ref": "Bucket"},
+                "Export": {"Name": "cfn-t17-export"},
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t17-exp", TemplateBody=json.dumps(exporter_template))
+    _wait_stack(cfn, "cfn-t17-exp")
+
+    importer_template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Param": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Name": "cfn-t17-param",
+                    "Type": "String",
+                    "Value": {"Fn::ImportValue": "cfn-t17-export"},
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t17-imp", TemplateBody=json.dumps(importer_template))
+    _wait_stack(cfn, "cfn-t17-imp")
+
+    with pytest.raises(ClientError):
+        cfn.delete_stack(StackName="cfn-t17-exp")
+
+
+def test_cfn_update_rollback_on_failure(cfn, s3):
+    template_v1 = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t18-orig"},
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-t18", TemplateBody=json.dumps(template_v1))
+    _wait_stack(cfn, "cfn-t18")
+
+    template_v2 = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-t18-orig"},
+            },
+            "Bad": {
+                "Type": "AWS::Fake::Nope",
+                "Properties": {},
+            },
+        },
+    }
+    cfn.update_stack(StackName="cfn-t18", TemplateBody=json.dumps(template_v2))
+    stack = _wait_stack(cfn, "cfn-t18")
+    assert stack["StackStatus"] == "UPDATE_ROLLBACK_COMPLETE"
+
+    s3.head_bucket(Bucket="cfn-t18-orig")

@@ -31,6 +31,7 @@ from ministack.services import (
     apigateway,
     apigateway_v1,
     athena,
+    cloudformation,
     cloudwatch,
     cloudwatch_logs,
     cognito,
@@ -70,6 +71,7 @@ logger = logging.getLogger("ministack")
 SERVICE_HANDLERS = {
     "s3": s3.handle_request,
     "sqs": sqs.handle_request,
+    "cloudformation": cloudformation.handle_request,
     "sns": sns.handle_request,
     "dynamodb": dynamodb.handle_request,
     "lambda": lambda_svc.handle_request,
@@ -151,7 +153,7 @@ BANNER = r"""
  Services: S3, SQS, SNS, DynamoDB, Lambda, IAM, STS, SecretsManager, CloudWatch Logs,
           SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
-          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2
+          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation
 """
 
 
@@ -327,7 +329,7 @@ async def app(scope, receive, send):
         _non_s3_hosts = {"s3", "sqs", "sns", "dynamodb", "lambda", "iam", "sts",
                          "secretsmanager", "logs", "ssm", "events", "kinesis",
                          "monitoring", "ses", "states", "ecs", "rds", "elasticache",
-                         "glue", "athena", "apigateway"}
+                         "glue", "athena", "apigateway", "cloudformation"}
         if bucket not in _non_s3_hosts:
             vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
             try:
@@ -501,6 +503,7 @@ def _reset_all_state():
         (ses_v2, ses_v2.reset),
         (waf, waf.reset),
         (efs, efs.reset),
+        (cloudformation, cloudformation.reset),
     ]:
         try:
             fn()

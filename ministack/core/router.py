@@ -145,6 +145,9 @@ SERVICE_PATTERNS = {
         "host_patterns": [r"wafv2\."],
         "credential_scope": "wafv2",
     },
+    "cloudformation": {
+        "host_patterns": [r"cloudformation\."],
+    },
 }
 
 
@@ -192,6 +195,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "elasticmapreduce": "elasticmapreduce",
                 "elasticloadbalancing": "elasticloadbalancing",
                 "elasticfilesystem": "elasticfilesystem",
+                "cloudformation": "cloudformation",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
@@ -361,6 +365,21 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "ModifyVolume": "ec2", "DescribeVolumesModifications": "ec2",
             "EnableVolumeIO": "ec2", "ModifyVolumeAttribute": "ec2",
             "DescribeVolumeAttribute": "ec2",
+            # CloudFormation actions
+            "CreateStack": "cloudformation", "DescribeStacks": "cloudformation",
+            "UpdateStack": "cloudformation", "DeleteStack": "cloudformation",
+            "ListStacks": "cloudformation",
+            "DescribeStackEvents": "cloudformation",
+            "DescribeStackResource": "cloudformation", "DescribeStackResources": "cloudformation",
+            "ListStackResources": "cloudformation",
+            "GetTemplate": "cloudformation", "GetTemplateSummary": "cloudformation",
+            "ValidateTemplate": "cloudformation",
+            "CreateChangeSet": "cloudformation", "DescribeChangeSet": "cloudformation",
+            "ExecuteChangeSet": "cloudformation", "DeleteChangeSet": "cloudformation",
+            "ListChangeSets": "cloudformation",
+            "ListExports": "cloudformation", "ListImports": "cloudformation",
+            "UpdateTerminationProtection": "cloudformation",
+            "SetStackPolicy": "cloudformation", "GetStackPolicy": "cloudformation",
             # EBS Snapshots
             "CreateSnapshot": "ec2", "DeleteSnapshot": "ec2", "DescribeSnapshots": "ec2",
             "CopySnapshot": "ec2", "ModifySnapshotAttribute": "ec2",

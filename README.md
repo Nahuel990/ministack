@@ -21,7 +21,7 @@
 
 LocalStack recently moved its core services behind a paid plan. If you relied on LocalStack Community for local development and CI/CD pipelines, MiniStack is your free alternative.
 
-- **30 AWS services** emulated on a single port (4566)
+- **31 AWS services** emulated on a single port (4566)
 - **Drop-in compatible** — works with `boto3`, AWS CLI, Terraform, CDK, Pulumi, any SDK
 - **Real infrastructure** — RDS spins up actual Postgres/MySQL containers, ElastiCache spins up real Redis, Athena runs real SQL via DuckDB, ECS runs real Docker containers
 - **Tiny footprint** — ~150MB image, ~30MB RAM at idle vs LocalStack's ~1GB image and ~500MB RAM
@@ -224,6 +224,40 @@ subnet = ec2.create_subnet(
 | **API Gateway v2** | CreateApi, GetApi, GetApis, UpdateApi, DeleteApi, CreateRoute, GetRoute, GetRoutes, UpdateRoute, DeleteRoute, CreateIntegration, GetIntegration, GetIntegrations, UpdateIntegration, DeleteIntegration, CreateStage, GetStage, GetStages, UpdateStage, DeleteStage, CreateDeployment, GetDeployment, GetDeployments, DeleteDeployment, CreateAuthorizer, GetAuthorizer, GetAuthorizers, UpdateAuthorizer, DeleteAuthorizer, TagResource, UntagResource, GetTags | HTTP API (v2) protocol; Lambda proxy (AWS_PROXY) and HTTP proxy (HTTP_PROXY) integrations; data plane via `{apiId}.execute-api.localhost`; `{param}` and `{proxy+}` path matching; JWT/Lambda authorizer CRUD |
 | **API Gateway v1** | CreateRestApi, GetRestApi, GetRestApis, UpdateRestApi, DeleteRestApi, CreateResource, GetResource, GetResources, UpdateResource, DeleteResource, PutMethod, GetMethod, DeleteMethod, UpdateMethod, PutMethodResponse, GetMethodResponse, DeleteMethodResponse, PutIntegration, GetIntegration, DeleteIntegration, UpdateIntegration, PutIntegrationResponse, GetIntegrationResponse, DeleteIntegrationResponse, CreateDeployment, GetDeployment, GetDeployments, UpdateDeployment, DeleteDeployment, CreateStage, GetStage, GetStages, UpdateStage, DeleteStage, CreateAuthorizer, GetAuthorizer, GetAuthorizers, UpdateAuthorizer, DeleteAuthorizer, CreateModel, GetModel, GetModels, DeleteModel, CreateApiKey, GetApiKey, GetApiKeys, UpdateApiKey, DeleteApiKey, CreateUsagePlan, GetUsagePlan, GetUsagePlans, UpdateUsagePlan, DeleteUsagePlan, CreateUsagePlanKey, GetUsagePlanKeys, DeleteUsagePlanKey, CreateDomainName, GetDomainName, GetDomainNames, DeleteDomainName, CreateBasePathMapping, GetBasePathMapping, GetBasePathMappings, DeleteBasePathMapping, TagResource, UntagResource, GetTags | REST API (v1) protocol; Lambda proxy format 1.0 (AWS_PROXY), HTTP proxy (HTTP_PROXY), MOCK integration; data plane via `{apiId}.execute-api.localhost`; resource tree with `{param}` and `{proxy+}` path matching; JSON Patch for all PATCH operations; state persistence |
 | **ELBv2 / ALB** | CreateLoadBalancer, DescribeLoadBalancers, DeleteLoadBalancer, DescribeLoadBalancerAttributes, ModifyLoadBalancerAttributes, CreateTargetGroup, DescribeTargetGroups, ModifyTargetGroup, DeleteTargetGroup, DescribeTargetGroupAttributes, ModifyTargetGroupAttributes, CreateListener, DescribeListeners, ModifyListener, DeleteListener, CreateRule, DescribeRules, ModifyRule, DeleteRule, SetRulePriorities, RegisterTargets, DeregisterTargets, DescribeTargetHealth, AddTags, RemoveTags, DescribeTags | Control plane + data plane; ALB→Lambda live traffic routing; `path-pattern`, `host-header`, `http-method`, `query-string`, `http-header` rule conditions; `forward`, `redirect`, `fixed-response` actions; data plane via `{lb-name}.alb.localhost` Host header or `/_alb/{lb-name}/` path prefix |
+
+### CloudFormation
+
+| Feature | Details |
+|---------|---------|
+| **Stack Operations** | CreateStack, UpdateStack, DeleteStack, DescribeStacks, ListStacks, DescribeStackEvents, DescribeStackResource, DescribeStackResources, GetTemplate, ValidateTemplate, GetTemplateSummary |
+| **Change Sets** | CreateChangeSet, DescribeChangeSet, ExecuteChangeSet, DeleteChangeSet, ListChangeSets |
+| **Exports** | ListExports — cross-stack references via `Fn::ImportValue` |
+| **Template Formats** | JSON and YAML (including `!Ref`, `!Sub`, `!GetAtt` shorthand tags) |
+| **Intrinsic Functions** | Ref, Fn::GetAtt, Fn::Join, Fn::Sub (both forms), Fn::Select, Fn::Split, Fn::If, Fn::Equals, Fn::And, Fn::Or, Fn::Not, Fn::Base64, Fn::FindInMap, Fn::ImportValue, Fn::GetAZs, Fn::Cidr |
+| **Pseudo-Parameters** | AWS::StackName, AWS::StackId, AWS::Region, AWS::AccountId, AWS::URLSuffix, AWS::Partition, AWS::NoValue |
+| **Parameters** | Default values, AllowedValues validation, NoEcho masking, String/Number/CommaDelimitedList types |
+| **Conditions** | Fn::Equals, Fn::And, Fn::Or, Fn::Not — conditional resource creation |
+| **Rollback** | Configurable via `DisableRollback` — on failure, previously created resources are cleaned up in reverse dependency order |
+| **Async Status** | Stacks deploy asynchronously (`CREATE_IN_PROGRESS` → `CREATE_COMPLETE`) — poll with DescribeStacks |
+
+**Supported Resource Types:**
+
+| Resource Type | Ref Returns | GetAtt |
+|---------------|-------------|--------|
+| `AWS::S3::Bucket` | Bucket name | Arn, DomainName, RegionalDomainName, WebsiteURL |
+| `AWS::SQS::Queue` | Queue URL | Arn, QueueName, QueueUrl |
+| `AWS::SNS::Topic` | Topic ARN | TopicArn, TopicName |
+| `AWS::SNS::Subscription` | Subscription ARN | — |
+| `AWS::DynamoDB::Table` | Table name | Arn, StreamArn |
+| `AWS::Lambda::Function` | Function name | Arn |
+| `AWS::IAM::Role` | Role name | Arn, RoleId |
+| `AWS::IAM::Policy` | Policy ARN | — |
+| `AWS::IAM::InstanceProfile` | Profile name | Arn |
+| `AWS::SSM::Parameter` | Parameter name | Type, Value |
+| `AWS::Logs::LogGroup` | Log group name | Arn |
+| `AWS::Events::Rule` | Rule name | Arn |
+
+Unsupported resource types fail with `CREATE_FAILED` (or `ROLLBACK_COMPLETE` if rollback is enabled), so templates with unsupported types won't silently succeed.
 
 ### Infrastructure Services (with real Docker execution)
 
@@ -588,7 +622,7 @@ config:
 | **ACM** | ✅ | ✅ | ✅ |
 | **SES v2** | ✅ | ✅ | ✅ |
 | **WAF v2** | ✅ | Paid | ✅ |
-| CloudFormation | ❌ | partial | ✅ |
+| **CloudFormation** | **partial** | partial | ✅ |
 | Cost | **Free** | Was free, now paid | $35+/mo |
 | Docker image size | ~150MB | ~1GB | ~1GB |
 | Memory at idle | ~30MB | ~500MB | ~500MB |

@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "uvicorn[standard]>=0.30.6",
     "httptools>=0.6.1",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,7 @@ dev = [
     "duckdb>=0.10.0",
     "docker>=7.0.0",
     "ruff>=0.4",
+    "hypothesis>=6.0",
 ]
 
 [project.urls]
