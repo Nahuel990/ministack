@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.11] — 2026-03-31
+
+### Added
+- **ACM (Certificate Manager)** — full control plane: `RequestCertificate`, `DescribeCertificate`, `ListCertificates`, `DeleteCertificate`, `GetCertificate`, `ImportCertificate`, `AddTagsToCertificate`, `RemoveTagsFromCertificate`, `ListTagsForCertificate`, `UpdateCertificateOptions`, `RenewCertificate`, `ResendValidationEmail`; certificates issued immediately with status `ISSUED` and DNS validation records; compatible with Terraform `aws_acm_certificate` and CDK `Certificate`
+- **SES v2** — REST API at `/v2/email/`: `SendEmail`, `CreateEmailIdentity`, `GetEmailIdentity`, `DeleteEmailIdentity`, `ListEmailIdentities`, `CreateConfigurationSet`, `GetConfigurationSet`, `DeleteConfigurationSet`, `ListConfigurationSets`, `GetAccount`, `ListSuppressedDestinations`; identities auto-verified; compatible with Terraform `aws_sesv2_email_identity` and CDK `EmailIdentity`
+- **WAF v2** — full control plane: WebACL CRUD, IPSet CRUD, RuleGroup CRUD, `AssociateWebACL`/`DisassociateWebACL`, `GetWebACLForResource`, `ListResourcesForWebACL`, `TagResource`/`UntagResource`/`ListTagsForResource`, `CheckCapacity`, `DescribeManagedRuleGroup`; rules stored but not enforced; compatible with Terraform `aws_wafv2_web_acl` and CDK `CfnWebACL`
+- **Lambda Layers** — already implemented: `PublishLayerVersion`, `GetLayerVersion`, `GetLayerVersionByArn`, `ListLayerVersions`, `ListLayers`, `DeleteLayerVersion`, `GetLayerVersionPolicy`, `AddLayerVersionPermission`, `RemoveLayerVersionPermission`
+
+### Tests
+- 760 tests total, all passing
+
+---
+
 ## [1.1.10] — 2026-03-31
 
 ### Fixed

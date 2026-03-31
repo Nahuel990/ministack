@@ -14865,3 +14865,321 @@ def test_ec2_egress_only_igw_not_found(ec2):
             EgressOnlyInternetGatewayId="eigw-nonexistent"
         )
     assert "NotFound" in exc.value.response["Error"]["Code"]
+
+
+# ===========================================================================
+# ACM — Certificate Manager
+# ===========================================================================
+
+def test_acm_request_certificate(acm_client):
+    resp = acm_client.request_certificate(
+        DomainName="example.com",
+        ValidationMethod="DNS",
+        SubjectAlternativeNames=["www.example.com"],
+    )
+    arn = resp["CertificateArn"]
+    assert arn.startswith("arn:aws:acm:us-east-1:000000000000:certificate/")
+
+
+def test_acm_describe_certificate(acm_client):
+    arn = acm_client.request_certificate(DomainName="describe.example.com")["CertificateArn"]
+    resp = acm_client.describe_certificate(CertificateArn=arn)
+    cert = resp["Certificate"]
+    assert cert["DomainName"] == "describe.example.com"
+    assert cert["Status"] == "ISSUED"
+    assert len(cert["DomainValidationOptions"]) >= 1
+    assert "ResourceRecord" in cert["DomainValidationOptions"][0]
+
+
+def test_acm_list_certificates(acm_client):
+    arn = acm_client.request_certificate(DomainName="list.example.com")["CertificateArn"]
+    resp = acm_client.list_certificates()
+    arns = [c["CertificateArn"] for c in resp["CertificateSummaryList"]]
+    assert arn in arns
+
+
+def test_acm_tags(acm_client):
+    arn = acm_client.request_certificate(DomainName="tags.example.com")["CertificateArn"]
+    acm_client.add_tags_to_certificate(
+        CertificateArn=arn,
+        Tags=[{"Key": "env", "Value": "test"}, {"Key": "team", "Value": "platform"}],
+    )
+    tags = acm_client.list_tags_for_certificate(CertificateArn=arn)["Tags"]
+    assert any(t["Key"] == "env" and t["Value"] == "test" for t in tags)
+    acm_client.remove_tags_from_certificate(
+        CertificateArn=arn,
+        Tags=[{"Key": "team", "Value": "platform"}],
+    )
+    tags2 = acm_client.list_tags_for_certificate(CertificateArn=arn)["Tags"]
+    assert not any(t["Key"] == "team" for t in tags2)
+
+
+def test_acm_get_certificate(acm_client):
+    arn = acm_client.request_certificate(DomainName="pem.example.com")["CertificateArn"]
+    resp = acm_client.get_certificate(CertificateArn=arn)
+    assert "BEGIN CERTIFICATE" in resp["Certificate"]
+
+
+def test_acm_import_certificate(acm_client):
+    fake_cert = b"-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----"
+    fake_key = b"-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----"
+    resp = acm_client.import_certificate(Certificate=fake_cert, PrivateKey=fake_key)
+    arn = resp["CertificateArn"]
+    desc = acm_client.describe_certificate(CertificateArn=arn)
+    assert desc["Certificate"]["Type"] == "IMPORTED"
+
+
+def test_acm_delete_certificate(acm_client):
+    arn = acm_client.request_certificate(DomainName="delete.example.com")["CertificateArn"]
+    acm_client.delete_certificate(CertificateArn=arn)
+    resp = acm_client.list_certificates()
+    arns = [c["CertificateArn"] for c in resp["CertificateSummaryList"]]
+    assert arn not in arns
+
+
+# ===========================================================================
+# SES v2
+# ===========================================================================
+
+def test_ses_v2_send_email(sesv2):
+    resp = sesv2.send_email(
+        FromEmailAddress="sender@example.com",
+        Destination={"ToAddresses": ["recipient@example.com"]},
+        Content={
+            "Simple": {
+                "Subject": {"Data": "Test Subject"},
+                "Body": {"Text": {"Data": "Hello world"}},
+            }
+        },
+    )
+    assert resp["MessageId"].startswith("ministack-")
+
+
+def test_ses_v2_email_identity_crud(sesv2):
+    sesv2.create_email_identity(EmailIdentity="test-domain.com")
+    resp = sesv2.get_email_identity(EmailIdentity="test-domain.com")
+    assert resp["VerifiedForSendingStatus"] is True
+    lst = sesv2.list_email_identities()
+    names = [e["IdentityName"] for e in lst["EmailIdentities"]]
+    assert "test-domain.com" in names
+    sesv2.delete_email_identity(EmailIdentity="test-domain.com")
+    lst2 = sesv2.list_email_identities()
+    names2 = [e["IdentityName"] for e in lst2["EmailIdentities"]]
+    assert "test-domain.com" not in names2
+
+
+def test_ses_v2_configuration_set_crud(sesv2):
+    sesv2.create_configuration_set(ConfigurationSetName="my-cfg-set")
+    resp = sesv2.get_configuration_set(ConfigurationSetName="my-cfg-set")
+    assert resp["ConfigurationSetName"] == "my-cfg-set"
+    lst = sesv2.list_configuration_sets()
+    assert "my-cfg-set" in lst["ConfigurationSets"]
+    sesv2.delete_configuration_set(ConfigurationSetName="my-cfg-set")
+    lst2 = sesv2.list_configuration_sets()
+    assert "my-cfg-set" not in lst2["ConfigurationSets"]
+
+
+def test_ses_v2_get_account(sesv2):
+    resp = sesv2.get_account()
+    assert resp["SendingEnabled"] is True
+    assert resp["ProductionAccessEnabled"] is True
+
+
+# ===========================================================================
+# Lambda Layers
+# ===========================================================================
+
+def test_lambda_layer_publish(lam):
+    import base64, zipfile, io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("layer.py", "# layer")
+    zip_bytes = buf.getvalue()
+    resp = lam.publish_layer_version(
+        LayerName="my-test-layer",
+        Description="Test layer",
+        Content={"ZipFile": zip_bytes},
+        CompatibleRuntimes=["python3.12"],
+    )
+    assert resp["Version"] == 1
+    assert "my-test-layer" in resp["LayerVersionArn"]
+
+
+def test_lambda_layer_get_version(lam):
+    resp = lam.get_layer_version(LayerName="my-test-layer", VersionNumber=1)
+    assert resp["Version"] == 1
+    assert resp["Description"] == "Test layer"
+
+
+def test_lambda_layer_list_versions(lam):
+    resp = lam.list_layer_versions(LayerName="my-test-layer")
+    assert len(resp["LayerVersions"]) >= 1
+    assert resp["LayerVersions"][0]["Version"] == 1
+
+
+def test_lambda_layer_list_layers(lam):
+    resp = lam.list_layers()
+    names = [l["LayerName"] for l in resp["Layers"]]
+    assert "my-test-layer" in names
+
+
+def test_lambda_layer_delete_version(lam):
+    import base64, zipfile, io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("tmp.py", "")
+    lam.publish_layer_version(LayerName="delete-layer-test", Content={"ZipFile": buf.getvalue()})
+    lam.delete_layer_version(LayerName="delete-layer-test", VersionNumber=1)
+    resp = lam.list_layer_versions(LayerName="delete-layer-test")
+    assert len(resp["LayerVersions"]) == 0
+
+
+def test_lambda_function_with_layer(lam):
+    import base64, zipfile, io
+    # Publish layer
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("layer.py", "")
+    layer_resp = lam.publish_layer_version(LayerName="fn-layer", Content={"ZipFile": buf.getvalue()})
+    layer_arn = layer_resp["LayerVersionArn"]
+    # Create function using the layer
+    fn_zip = io.BytesIO()
+    with zipfile.ZipFile(fn_zip, "w") as z:
+        z.writestr("index.py", "def handler(e, c): return {}")
+    lam.create_function(
+        FunctionName="fn-with-layer",
+        Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/test",
+        Handler="index.handler",
+        Code={"ZipFile": fn_zip.getvalue()},
+        Layers=[layer_arn],
+    )
+    fn = lam.get_function(FunctionName="fn-with-layer")
+    assert layer_arn in fn["Configuration"]["Layers"][0]["Arn"]
+
+
+# ===========================================================================
+# WAF v2
+# ===========================================================================
+
+def test_waf_web_acl_crud(wafv2):
+    resp = wafv2.create_web_acl(
+        Name="test-acl",
+        Scope="REGIONAL",
+        DefaultAction={"Allow": {}},
+        VisibilityConfig={"SampledRequestsEnabled": True, "CloudWatchMetricsEnabled": False, "MetricName": "test"},
+    )
+    uid = resp["Summary"]["Id"]
+    assert resp["Summary"]["Name"] == "test-acl"
+
+    get_resp = wafv2.get_web_acl(Name="test-acl", Scope="REGIONAL", Id=uid)
+    assert get_resp["WebACL"]["Name"] == "test-acl"
+
+    lst = wafv2.list_web_acls(Scope="REGIONAL")
+    ids = [a["Id"] for a in lst["WebACLs"]]
+    assert uid in ids
+
+    wafv2.delete_web_acl(Name="test-acl", Scope="REGIONAL", Id=uid, LockToken=resp["Summary"]["LockToken"])
+    lst2 = wafv2.list_web_acls(Scope="REGIONAL")
+    ids2 = [a["Id"] for a in lst2["WebACLs"]]
+    assert uid not in ids2
+
+
+def test_waf_update_web_acl(wafv2):
+    resp = wafv2.create_web_acl(
+        Name="update-acl",
+        Scope="REGIONAL",
+        DefaultAction={"Block": {}},
+        VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
+    )
+    uid = resp["Summary"]["Id"]
+    lock = resp["Summary"]["LockToken"]
+    upd = wafv2.update_web_acl(
+        Name="update-acl", Scope="REGIONAL", Id=uid, LockToken=lock,
+        DefaultAction={"Allow": {}},
+        VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
+    )
+    assert "NextLockToken" in upd
+
+
+def test_waf_associate_disassociate(wafv2):
+    resp = wafv2.create_web_acl(
+        Name="assoc-acl", Scope="REGIONAL",
+        DefaultAction={"Allow": {}},
+        VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
+    )
+    acl_arn = resp["Summary"]["ARN"]
+    resource_arn = "arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/app/test/abc"
+    wafv2.associate_web_acl(WebACLArn=acl_arn, ResourceArn=resource_arn)
+    get_resp = wafv2.get_web_acl_for_resource(ResourceArn=resource_arn)
+    assert get_resp["WebACL"]["ARN"] == acl_arn
+    wafv2.disassociate_web_acl(ResourceArn=resource_arn)
+    get_resp2 = wafv2.get_web_acl_for_resource(ResourceArn=resource_arn)
+    assert "WebACL" not in get_resp2
+
+
+def test_waf_ip_set_crud(wafv2):
+    resp = wafv2.create_ip_set(
+        Name="test-ipset", Scope="REGIONAL",
+        IPAddressVersion="IPV4",
+        Addresses=["1.2.3.4/32"],
+    )
+    uid = resp["Summary"]["Id"]
+    lock = resp["Summary"]["LockToken"]
+
+    get_resp = wafv2.get_ip_set(Name="test-ipset", Scope="REGIONAL", Id=uid)
+    assert "1.2.3.4/32" in get_resp["IPSet"]["Addresses"]
+
+    upd = wafv2.update_ip_set(
+        Name="test-ipset", Scope="REGIONAL", Id=uid, LockToken=lock,
+        Addresses=["5.6.7.8/32"],
+    )
+    assert "NextLockToken" in upd
+
+    lst = wafv2.list_ip_sets(Scope="REGIONAL")
+    ids = [s["Id"] for s in lst["IPSets"]]
+    assert uid in ids
+
+    wafv2.delete_ip_set(Name="test-ipset", Scope="REGIONAL", Id=uid, LockToken=upd["NextLockToken"])
+    lst2 = wafv2.list_ip_sets(Scope="REGIONAL")
+    ids2 = [s["Id"] for s in lst2["IPSets"]]
+    assert uid not in ids2
+
+
+def test_waf_rule_group_crud(wafv2):
+    resp = wafv2.create_rule_group(
+        Name="test-rg", Scope="REGIONAL", Capacity=100,
+        VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
+    )
+    uid = resp["Summary"]["Id"]
+    lock = resp["Summary"]["LockToken"]
+
+    get_resp = wafv2.get_rule_group(Name="test-rg", Scope="REGIONAL", Id=uid)
+    assert get_resp["RuleGroup"]["Name"] == "test-rg"
+
+    lst = wafv2.list_rule_groups(Scope="REGIONAL")
+    ids = [r["Id"] for r in lst["RuleGroups"]]
+    assert uid in ids
+
+    wafv2.delete_rule_group(Name="test-rg", Scope="REGIONAL", Id=uid, LockToken=lock)
+    lst2 = wafv2.list_rule_groups(Scope="REGIONAL")
+    ids2 = [r["Id"] for r in lst2["RuleGroups"]]
+    assert uid not in ids2
+
+
+def test_waf_tags(wafv2):
+    resp = wafv2.create_web_acl(
+        Name="tag-acl", Scope="REGIONAL",
+        DefaultAction={"Allow": {}},
+        VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
+        Tags=[{"Key": "env", "Value": "test"}],
+    )
+    arn = resp["Summary"]["ARN"]
+    tags_resp = wafv2.list_tags_for_resource(ResourceARN=arn)
+    assert any(t["Key"] == "env" for t in tags_resp["TagInfoForResource"]["TagList"])
+    wafv2.tag_resource(ResourceARN=arn, Tags=[{"Key": "team", "Value": "security"}])
+    tags_resp2 = wafv2.list_tags_for_resource(ResourceARN=arn)
+    assert any(t["Key"] == "team" for t in tags_resp2["TagInfoForResource"]["TagList"])
+    wafv2.untag_resource(ResourceARN=arn, TagKeys=["env"])
+    tags_resp3 = wafv2.list_tags_for_resource(ResourceARN=arn)
+    assert not any(t["Key"] == "env" for t in tags_resp3["TagInfoForResource"]["TagList"])

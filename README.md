@@ -467,20 +467,20 @@ pip install boto3 pytest duckdb docker cbor2
 # Start MiniStack
 docker compose up -d
 
-# Run the full test suite (737 tests across all 30 services)
+# Run the full test suite (760 tests across all 33 services)
 pytest tests/ -v
 ```
 
 Expected output:
 
 ```
-collected 737 items
+collected 760 items
 
 tests/test_services.py::test_s3_create_bucket PASSED
 ...
 tests/test_services.py::test_app_asgi_callable PASSED
 
-737 passed in ~60s
+760 passed in ~60s
 ```
 
 ---
