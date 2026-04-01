@@ -9,13 +9,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [1.1.15] — 2026-04-01
 
+### Added
+- **Lambda Node.js runtime** — `nodejs14.x` through `nodejs22.x` (and any future `nodejsN.x`) now fully execute via local subprocess (`node`) or Docker; supports `CreateFunction`, `UpdateFunctionCode`, `Invoke` including async handlers; layers resolved to `nodejs/node_modules`; `nodejs24.x` auto-maps via pattern
+
 ### Fixed
 - **CloudFormation auto-generated physical names** — resources without explicit names now follow the AWS pattern `{stackName}-{logicalId}-{SUFFIX}` with a 13-char uppercase alphanumeric suffix; service-specific rules applied (S3: lowercase, max 63; SQS: max 80; DynamoDB: max 255; Lambda/IAM/EventBridge: max 64). Fixes CDK stacks that omit explicit resource names producing untraceable `cfn-xxx` names
 - **Import cleanup** — moved lazy stdlib imports (`base64`, `fnmatch`, `re`, `datetime`, `urllib`) to module level across `sqs`, `cloudwatch_logs`, `glue`, `cognito`, `rds`, `apigateway`, `apigateway_v1`; removed duplicate `os`/`re` imports in `s3`
 
 ### Tests
+- 3 new Node.js Lambda tests (create+invoke, nodejs22.x, UpdateFunctionCode)
 - 4 new CFN physical name tests (S3/SQS/DynamoDB auto-name pattern, explicit name not overridden)
-- 812 tests total, all passing
+- 815 tests total, all passing
 
 ---
 

@@ -202,7 +202,7 @@ subnet = ec2.create_subnet(
 | **SQS** | CreateQueue, DeleteQueue, ListQueues, GetQueueUrl, GetQueueAttributes, SetQueueAttributes, PurgeQueue, SendMessage, ReceiveMessage, DeleteMessage, ChangeMessageVisibility, ChangeMessageVisibilityBatch, SendMessageBatch, DeleteMessageBatch, TagQueue, UntagQueue, ListQueueTags | Both Query API and JSON protocol; FIFO queues with deduplication; DLQ support |
 | **SNS** | CreateTopic, DeleteTopic, ListTopics, GetTopicAttributes, SetTopicAttributes, Subscribe, Unsubscribe, ListSubscriptions, ListSubscriptionsByTopic, GetSubscriptionAttributes, SetSubscriptionAttributes, ConfirmSubscription, Publish, PublishBatch, TagResource, UntagResource, ListTagsForResource, CreatePlatformApplication, CreatePlatformEndpoint | SNS→SQS fanout delivery; SNS→Lambda fanout (synchronous invocation) |
 | **DynamoDB** | CreateTable, UpdateTable, DeleteTable, DescribeTable, ListTables, PutItem, GetItem, DeleteItem, UpdateItem, Query, Scan, BatchWriteItem, BatchGetItem, TransactWriteItems, TransactGetItems, DescribeTimeToLive, UpdateTimeToLive, DescribeContinuousBackups, UpdateContinuousBackups, DescribeEndpoints, TagResource, UntagResource, ListTagsOfResource | TTL enforced via thread-safe background reaper (60s cadence) |
-| **Lambda** | CreateFunction, DeleteFunction, GetFunction, ListFunctions, Invoke, UpdateFunctionCode, UpdateFunctionConfiguration, AddPermission, RemovePermission, ListVersionsByFunction, PublishVersion, TagResource, UntagResource, ListTags, CreateEventSourceMapping, DeleteEventSourceMapping, GetEventSourceMapping, ListEventSourceMappings, UpdateEventSourceMapping, CreateFunctionUrlConfig, GetFunctionUrlConfig, UpdateFunctionUrlConfig, DeleteFunctionUrlConfig, ListFunctionUrlConfigs, PublishLayerVersion, GetLayerVersion, ListLayerVersions, DeleteLayerVersion, ListLayers | Python runtimes actually execute with warm worker pool; SQS event source mapping; Function URL CRUD; Lambda Layers CRUD |
+| **Lambda** | CreateFunction, DeleteFunction, GetFunction, ListFunctions, Invoke, UpdateFunctionCode, UpdateFunctionConfiguration, AddPermission, RemovePermission, ListVersionsByFunction, PublishVersion, TagResource, UntagResource, ListTags, CreateEventSourceMapping, DeleteEventSourceMapping, GetEventSourceMapping, ListEventSourceMappings, UpdateEventSourceMapping, CreateFunctionUrlConfig, GetFunctionUrlConfig, UpdateFunctionUrlConfig, DeleteFunctionUrlConfig, ListFunctionUrlConfigs, PublishLayerVersion, GetLayerVersion, ListLayerVersions, DeleteLayerVersion, ListLayers | Python runtimes execute with warm worker pool; Node.js runtimes (`nodejs14.x`–`nodejs22.x`) execute via local `node` subprocess or Docker; SQS event source mapping; Function URL CRUD; Lambda Layers CRUD |
 | **IAM** | CreateUser, GetUser, ListUsers, DeleteUser, CreateRole, GetRole, ListRoles, DeleteRole, CreatePolicy, GetPolicy, DeletePolicy, AttachRolePolicy, DetachRolePolicy, PutRolePolicy, GetRolePolicy, DeleteRolePolicy, ListRolePolicies, ListAttachedRolePolicies, CreateAccessKey, ListAccessKeys, DeleteAccessKey, CreateInstanceProfile, GetInstanceProfile, DeleteInstanceProfile, AddRoleToInstanceProfile, RemoveRoleFromInstanceProfile, ListInstanceProfiles, CreateGroup, GetGroup, AddUserToGroup, RemoveUserFromGroup, CreateServiceLinkedRole, CreateOpenIDConnectProvider, TagRole, UntagRole, TagUser, UntagUser, TagPolicy, UntagPolicy | |
 | **STS** | GetCallerIdentity, AssumeRole, GetSessionToken, AssumeRoleWithWebIdentity | |
 | **SecretsManager** | CreateSecret, GetSecretValue, ListSecrets, DeleteSecret, UpdateSecret, DescribeSecret, PutSecretValue, RestoreSecret, RotateSecret, GetRandomPassword, ListSecretVersionIds, TagResource, UntagResource, PutResourcePolicy, GetResourcePolicy, DeleteResourcePolicy, ValidateResourcePolicy | |
@@ -453,6 +453,35 @@ docker run -p 4566:4566 \
 
 MiniStack keeps Python Lambda functions warm between invocations. After the first call (cold start), the handler module stays imported in a persistent subprocess. Subsequent calls skip the import step, matching real AWS warm-start behaviour and making test suites significantly faster.
 
+### Lambda Node.js Runtimes
+
+MiniStack supports Node.js Lambda runtimes (`nodejs14.x`, `nodejs16.x`, `nodejs18.x`, `nodejs20.x`, `nodejs22.x`). Functions execute via a local `node` subprocess (or Docker when `LAMBDA_USE_DOCKER=1`) — no mocking, real JS execution.
+
+```python
+import boto3, json, zipfile, io
+
+lam = boto3.client("lambda", endpoint_url="http://localhost:4566", region_name="us-east-1",
+                   aws_access_key_id="test", aws_secret_access_key="test")
+
+code = "exports.handler = async (event) => ({ statusCode: 200, body: JSON.stringify(event) });"
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as zf:
+    zf.writestr("index.js", code)
+
+lam.create_function(
+    FunctionName="my-node-fn",
+    Runtime="nodejs20.x",
+    Role="arn:aws:iam::000000000000:role/r",
+    Handler="index.handler",
+    Code={"ZipFile": buf.getvalue()},
+)
+
+resp = lam.invoke(FunctionName="my-node-fn", Payload=json.dumps({"hello": "world"}))
+print(json.loads(resp["Payload"].read()))  # {'statusCode': 200, 'body': '{"hello": "world"}'}
+```
+
+Layers that ship npm packages work too — MiniStack resolves the `nodejs/node_modules` subdirectory inside each layer zip and prepends it to the module search path.
+
 ---
 
 ## Architecture
@@ -505,7 +534,7 @@ pip install boto3 pytest duckdb docker cbor2
 # Start MiniStack
 docker compose up -d
 
-# Run the full test suite (812 tests across all 34 services)
+# Run the full test suite (815 tests across all 34 services)
 pytest tests/ -v
 ```
 

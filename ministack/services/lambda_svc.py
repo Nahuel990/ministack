@@ -154,6 +154,49 @@ if _result is not None:
 """
 
 
+# Node.js wrapper — written to the code dir and executed with `node`.
+# Reads event from stdin, calls handler, writes JSON result to stdout.
+_NODE_WRAPPER_SCRIPT = """\
+const fs = require('fs');
+const path = require('path');
+
+const codeDir = process.env._LAMBDA_CODE_DIR || '/var/task';
+const modPath  = process.env._LAMBDA_HANDLER_MODULE;
+const fnName   = process.env._LAMBDA_HANDLER_FUNC;
+
+// Prepend layer dirs to NODE_PATH
+const layerDirs = (process.env._LAMBDA_LAYERS_DIRS || '').split(path.delimiter).filter(Boolean);
+const nodePaths = layerDirs.map(d => path.join(d, 'nodejs', 'node_modules'))
+                           .concat(layerDirs)
+                           .concat([path.join(codeDir, 'node_modules'), codeDir]);
+module.paths.unshift(...nodePaths);
+
+const context = {
+  functionName:       process.env.AWS_LAMBDA_FUNCTION_NAME || '',
+  memoryLimitInMB:    process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE || '128',
+  invokedFunctionArn: process.env._LAMBDA_FUNCTION_ARN || '',
+  awsRequestId:       process.env.AWS_LAMBDA_LOG_STREAM_NAME || '',
+  logGroupName:       '/aws/lambda/' + (process.env.AWS_LAMBDA_FUNCTION_NAME || ''),
+  logStreamName:      process.env.AWS_LAMBDA_LOG_STREAM_NAME || '',
+  getRemainingTimeInMillis: () => parseFloat(process.env._LAMBDA_TIMEOUT || '3') * 1000,
+};
+
+let input = '';
+process.stdin.on('data', d => input += d);
+process.stdin.on('end', () => {
+  const event = JSON.parse(input);
+  const mod = require(path.resolve(codeDir, modPath));
+  const handler = mod[fnName];
+  Promise.resolve(handler(event, context)).then(result => {
+    if (result !== undefined) process.stdout.write(JSON.stringify(result));
+  }).catch(err => {
+    process.stderr.write(String(err.stack || err));
+    process.exit(1);
+  });
+});
+"""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -846,11 +889,12 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
             },
         }
 
-    if not runtime.startswith("python"):
+    is_node = runtime.startswith("nodejs")
+    if not runtime.startswith("python") and not is_node:
         return {
             "body": {
                 "statusCode": 200,
-                "body": f"Mock response - {runtime} docker wrapper only supports Python runtimes",
+                "body": f"Mock response - {runtime} docker wrapper only supports Python and Node.js runtimes",
             },
         }
 
@@ -871,11 +915,6 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
             os.makedirs(code_dir)
             with zipfile.ZipFile(zip_path) as zf:
                 zf.extractall(code_dir)
-
-            # Write the docker wrapper into the code dir
-            wrapper_path = os.path.join(code_dir, "_wrapper.py")
-            with open(wrapper_path, "w") as wf:
-                wf.write(_DOCKER_WRAPPER_SCRIPT)
 
             # Extract layers
             layers_dirs: list[str] = []
@@ -937,9 +976,20 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
             with open(event_file, "w") as ef:
                 ef.write(json.dumps(event))
 
+            if is_node:
+                wrapper_path = os.path.join(code_dir, "_wrapper.js")
+                with open(wrapper_path, "w") as wf:
+                    wf.write(_NODE_WRAPPER_SCRIPT)
+                run_cmd = ["sh", "-c", "node /var/task/_wrapper.js < /var/task/_event.json"]
+            else:
+                wrapper_path = os.path.join(code_dir, "_wrapper.py")
+                with open(wrapper_path, "w") as wf:
+                    wf.write(_DOCKER_WRAPPER_SCRIPT)
+                run_cmd = ["sh", "-c", "python3 /var/task/_wrapper.py < /var/task/_event.json"]
+
             container = client.containers.run(
                 image,
-                command=["sh", "-c", "python3 /var/task/_wrapper.py < /var/task/_event.json"],
+                command=run_cmd,
                 environment=container_env,
                 volumes=volumes,
                 network_mode="host",
@@ -1022,7 +1072,8 @@ def _execute_function_local(func: dict, event: dict) -> dict:
     timeout = config.get("Timeout", 3)
     env_vars = config.get("Environment", {}).get("Variables", {})
 
-    if not runtime.startswith("python"):
+    is_node = runtime.startswith("nodejs")
+    if not runtime.startswith("python") and not is_node:
         return {
             "body": {
                 "statusCode": 200,
@@ -1056,9 +1107,14 @@ def _execute_function_local(func: dict, event: dict) -> dict:
 
             module_name, func_name = handler.rsplit(".", 1)
 
-            wrapper_path = os.path.join(tmpdir, "_wrapper.py")
-            with open(wrapper_path, "w") as wf:
-                wf.write(_WRAPPER_SCRIPT)
+            if is_node:
+                wrapper_path = os.path.join(tmpdir, "_wrapper.js")
+                with open(wrapper_path, "w") as wf:
+                    wf.write(_NODE_WRAPPER_SCRIPT)
+            else:
+                wrapper_path = os.path.join(tmpdir, "_wrapper.py")
+                with open(wrapper_path, "w") as wf:
+                    wf.write(_WRAPPER_SCRIPT)
 
             env = dict(os.environ)
             env.update(
@@ -1089,8 +1145,9 @@ def _execute_function_local(func: dict, event: dict) -> dict:
                 env["AWS_ENDPOINT_URL"] = endpoint
             env.update(env_vars)
 
+            cmd = ["node", wrapper_path] if is_node else ["python3", wrapper_path]
             proc = subprocess.run(
-                ["python3", wrapper_path],
+                cmd,
                 input=json.dumps(event),
                 capture_output=True,
                 text=True,

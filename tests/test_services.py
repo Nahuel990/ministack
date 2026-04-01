@@ -1981,6 +1981,13 @@ def _make_zip(code: str) -> bytes:
     return buf.getvalue()
 
 
+def _make_zip_js(code: str, filename: str = "index.js") -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(filename, code)
+    return buf.getvalue()
+
+
 def test_ddb_create_table(ddb):
     resp = ddb.create_table(
         TableName="t_hash_only",
@@ -5986,6 +5993,62 @@ def test_lambda_warm_start(lam, apigw):
 
     apigw.delete_api(ApiId=api_id)
     lam.delete_function(FunctionName=fname)
+
+
+# ========== Lambda — Node.js runtime ==========
+
+_NODE_CODE = (
+    "exports.handler = async (event, context) => {"
+    " return { statusCode: 200, body: JSON.stringify({ hello: event.name || 'world' }) }; };"
+)
+
+
+def test_lambda_nodejs_create_and_invoke(lam):
+    lam.create_function(
+        FunctionName="lam-node-basic",
+        Runtime="nodejs20.x",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip_js(_NODE_CODE, "index.js")},
+    )
+    resp = lam.invoke(
+        FunctionName="lam-node-basic",
+        Payload=json.dumps({"name": "ministack"}),
+    )
+    assert resp["StatusCode"] == 200
+    payload = json.loads(resp["Payload"].read())
+    assert payload["statusCode"] == 200
+    body = json.loads(payload["body"])
+    assert body["hello"] == "ministack"
+
+
+def test_lambda_nodejs22_runtime(lam):
+    lam.create_function(
+        FunctionName="lam-node22",
+        Runtime="nodejs22.x",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip_js(_NODE_CODE, "index.js")},
+    )
+    resp = lam.invoke(FunctionName="lam-node22", Payload=json.dumps({"name": "v22"}))
+    assert resp["StatusCode"] == 200
+    payload = json.loads(resp["Payload"].read())
+    assert payload["statusCode"] == 200
+
+
+def test_lambda_nodejs_update_code(lam):
+    v2 = (
+        "exports.handler = async (event) => {"
+        " return { statusCode: 200, body: 'v2' }; };"
+    )
+    lam.update_function_code(
+        FunctionName="lam-node-basic",
+        ZipFile=_make_zip_js(v2, "index.js"),
+    )
+    resp = lam.invoke(FunctionName="lam-node-basic", Payload=b"{}")
+    assert resp["StatusCode"] == 200
+    payload = json.loads(resp["Payload"].read())
+    assert payload["body"] == "v2"
 
 
 # ========== API Gateway execute-api data plane ==========
