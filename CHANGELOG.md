@@ -10,21 +10,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [1.1.14] — 2026-04-01
 
 ### Added
-- **`MINISTACK_HOST` environment variable** — controls the hostname used in all response URLs (`QueueUrl`, SNS `SubscribeURL`/`UnsubscribeURL`, API Gateway `apiEndpoint`/`domainName`, CFN-provisioned SQS queues). Defaults to `localhost`. Set to your Docker Compose service name (e.g. `ministack`) so other containers can reach the returned URLs directly. Contributed by @santiagodoldan and @David2011Hernandez
+- **Lambda layer enhancements** — `GetLayerVersionByArn`, `AddLayerVersionPermission`, `RemoveLayerVersionPermission`, `GetLayerVersionPolicy`; layer zip content served via `/_ministack/lambda-layers/{name}/{ver}/content` so runtimes can fetch layers; `ListLayerVersions` and `ListLayers` now support runtime and architecture filtering with pagination. Contributed by @mickabd
+- **`MINISTACK_HOST` environment variable** — controls the hostname used in all response URLs (`QueueUrl`, SNS `SubscribeURL`/`UnsubscribeURL`, API Gateway `apiEndpoint`/`domainName`, CFN-provisioned SQS queues, Lambda layer `Content.Location`). Defaults to `localhost`. Set to your Docker Compose service name (e.g. `ministack`) so other containers can reach returned URLs directly. Contributed by @santiagodoldan and @David2011Hernandez
 
 ### Fixed
-- **EC2 `DescribeInstanceAttribute`** — added support for all standard attributes (`instanceType`, `instanceInitiatedShutdownBehavior`, `disableApiTermination`, `userData`, `rootDeviceName`, `blockDeviceMapping`, `sourceDestCheck`, `groupSet`, `ebsOptimized`, `enaSupport`, `sriovNetSupport`); required by Terraform AWS Provider >= 6.0.0 during state refresh
-- **EC2 `DescribeInstanceTypes`** — added handler returning hardware specs (vCPU, memory, network, EBS) for 12 common instance families (t2, t3, m5, c5, r5, p3); required by Terraform AWS Provider >= 6.0.0. Contributed by @samiuoi
+- **EC2 `DescribeInstanceAttribute`** — added support for all standard attributes (`instanceType`, `instanceInitiatedShutdownBehavior`, `disableApiTermination`, `userData`, `rootDeviceName`, `blockDeviceMapping`, `sourceDestCheck`, `groupSet`, `ebsOptimized`, `enaSupport`, `sriovNetSupport`); required by Terraform AWS Provider >= 6.0.0 during state refresh. Contributed by @samiuoi
+- **EC2 `DescribeInstanceTypes`** — added handler returning hardware specs (vCPU, memory, network, EBS) for 12 common instance families (t2, t3, m5, c5, r5, p3); required by Terraform AWS Provider >= 6.0.0
 - **S3 Control `ListTagsForResource`** — was always returning an empty tag list; now returns tags set via `PutBucketTagging`. Fixes Terraform `aws_s3_bucket` perpetual drift when a `tags` block is configured
+- **Lambda layer `Content.Location`** — URL now respects `MINISTACK_HOST` and `GATEWAY_PORT` instead of hardcoded `localhost`
 
 ### Changed
 - Virtual-hosted S3 and execute-api host-header matching now respects `MINISTACK_HOST`, so `{bucket}.<host>` and `{apiId}.execute-api.<host>` patterns work with any configured hostname
 
 ### Tests
-- **CloudFormation e2e suite merged** — `test_cfn_e2e.py` merged into `test_services.py` and deleted; 10 e2e tests now run within the unified test session
-- **EC2 tests added** — 5 new tests covering `DescribeInstanceAttribute` and `DescribeInstanceTypes`
-- **S3 Control test added** — regression test for `ListTagsForResource` returning real bucket tags
-- 794 tests total, all passing
+- **CloudFormation e2e suite merged** — `test_cfn_e2e.py` merged into `test_services.py`; 10 e2e tests now run within the unified test session
+- 19 new tests (EC2, S3 Control, Lambda layer permissions/pagination/filtering/GetByArn/content)
+- 808 tests total, all passing
 
 ---
 

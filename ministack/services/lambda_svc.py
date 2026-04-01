@@ -1502,8 +1502,9 @@ def _untag_resource(resource_arn: str, query_params: dict):
 
 
 def _layer_content_url(layer_name: str, version: int) -> str:
-    port = os.environ.get("MINISTACK_PORT", "4566")
-    return f"http://localhost:{port}/_ministack/lambda-layers/{layer_name}/{version}/content"
+    host = os.environ.get("MINISTACK_HOST", "localhost")
+    port = os.environ.get("GATEWAY_PORT", "4566")
+    return f"http://{host}:{port}/_ministack/lambda-layers/{layer_name}/{version}/content"
 
 
 def _publish_layer_version(layer_name: str, data: dict):
