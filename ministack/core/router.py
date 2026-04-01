@@ -32,7 +32,7 @@ SERVICE_PATTERNS = {
         "host_patterns": [r"dynamodb\."],
     },
     "lambda": {
-        "path_patterns": [r"^/2015-03-31/functions"],
+        "path_patterns": [r"^/2015-03-31/", r"^/2018-10-31/layers"],
         "host_patterns": [r"lambda\."],
     },
     "iam": {

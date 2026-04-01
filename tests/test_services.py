@@ -527,9 +527,7 @@ def test_s3_object_lock_prevents_delete(s3):
 def test_s3_bucket_replication(s3):
     src = "intg-s3-repl-src"
     s3.create_bucket(Bucket=src)
-    s3.put_bucket_versioning(
-        Bucket=src, VersioningConfiguration={"Status": "Enabled"}
-    )
+    s3.put_bucket_versioning(Bucket=src, VersioningConfiguration={"Status": "Enabled"})
     s3.put_bucket_replication(
         Bucket=src,
         ReplicationConfiguration={
@@ -633,9 +631,7 @@ def test_s3_batch_delete_enforces_lock(s3):
     s3.create_bucket(Bucket=bkt, ObjectLockEnabledForBucket=True)
     s3.put_object(Bucket=bkt, Key="a.txt", Body=b"a")
     s3.put_object(Bucket=bkt, Key="b.txt", Body=b"b")
-    s3.put_object_legal_hold(
-        Bucket=bkt, Key="a.txt", LegalHold={"Status": "ON"}
-    )
+    s3.put_object_legal_hold(Bucket=bkt, Key="a.txt", LegalHold={"Status": "ON"})
     resp = s3.delete_objects(
         Bucket=bkt,
         Delete={"Objects": [{"Key": "a.txt"}, {"Key": "b.txt"}]},
@@ -657,12 +653,8 @@ def test_s3_copy_preserves_tags_and_lock(s3):
         Key="orig.txt",
         Tagging={"TagSet": [{"Key": "env", "Value": "staging"}]},
     )
-    s3.put_object_legal_hold(
-        Bucket=src, Key="orig.txt", LegalHold={"Status": "ON"}
-    )
-    s3.copy_object(
-        Bucket=dst, Key="copy.txt", CopySource=f"{src}/orig.txt"
-    )
+    s3.put_object_legal_hold(Bucket=src, Key="orig.txt", LegalHold={"Status": "ON"})
+    s3.copy_object(Bucket=dst, Key="copy.txt", CopySource=f"{src}/orig.txt")
     tags = s3.get_object_tagging(Bucket=dst, Key="copy.txt")
     tag_map = {t["Key"]: t["Value"] for t in tags["TagSet"]}
     assert tag_map["env"] == "staging"
@@ -701,11 +693,7 @@ def test_s3_tag_count_limit(s3):
         s3.put_object_tagging(
             Bucket=bkt,
             Key="toomany.txt",
-            Tagging={
-                "TagSet": [
-                    {"Key": f"k{i}", "Value": f"v{i}"} for i in range(11)
-                ]
-            },
+            Tagging={"TagSet": [{"Key": f"k{i}", "Value": f"v{i}"} for i in range(11)]},
         )
     assert exc.value.response["Error"]["Code"] == "BadRequest"
 
@@ -715,9 +703,7 @@ def test_s3_replication_validates_dest_versioning(s3):
     dst = "intg-s3-repl-val-dst"
     s3.create_bucket(Bucket=src)
     s3.create_bucket(Bucket=dst)
-    s3.put_bucket_versioning(
-        Bucket=src, VersioningConfiguration={"Status": "Enabled"}
-    )
+    s3.put_bucket_versioning(Bucket=src, VersioningConfiguration={"Status": "Enabled"})
     # dst has no versioning
     with pytest.raises(ClientError) as exc:
         s3.put_bucket_replication(
@@ -860,10 +846,7 @@ def test_sqs_batch_delete(sqs):
         sqs.send_message(QueueUrl=url, MessageBody=f"del-{i}")
 
     msgs = sqs.receive_message(QueueUrl=url, MaxNumberOfMessages=10)
-    entries = [
-        {"Id": str(i), "ReceiptHandle": m["ReceiptHandle"]}
-        for i, m in enumerate(msgs["Messages"])
-    ]
+    entries = [{"Id": str(i), "ReceiptHandle": m["ReceiptHandle"]} for i, m in enumerate(msgs["Messages"])]
     resp = sqs.delete_message_batch(QueueUrl=url, Entries=entries)
     assert len(resp["Successful"]) == len(entries)
 
@@ -1287,9 +1270,7 @@ def test_dynamodb_basic(ddb):
         AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
         BillingMode="PAY_PER_REQUEST",
     )
-    ddb.put_item(
-        TableName="TestTable1", Item={"pk": {"S": "key1"}, "data": {"S": "value1"}}
-    )
+    ddb.put_item(TableName="TestTable1", Item={"pk": {"S": "key1"}, "data": {"S": "value1"}})
     resp = ddb.get_item(TableName="TestTable1", Key={"pk": {"S": "key1"}})
     assert resp["Item"]["data"]["S"] == "value1"
     ddb.delete_item(TableName="TestTable1", Key={"pk": {"S": "key1"}})
@@ -1309,9 +1290,7 @@ def test_dynamodb_scan(ddb):
         BillingMode="PAY_PER_REQUEST",
     )
     for i in range(10):
-        ddb.put_item(
-            TableName="ScanTable", Item={"pk": {"S": f"key{i}"}, "val": {"N": str(i)}}
-        )
+        ddb.put_item(TableName="ScanTable", Item={"pk": {"S": f"key{i}"}, "val": {"N": str(i)}})
     resp = ddb.scan(TableName="ScanTable")
     assert resp["Count"] == 10
 
@@ -1329,10 +1308,7 @@ def test_dynamodb_batch(ddb):
     )
     ddb.batch_write_item(
         RequestItems={
-            "BatchTable": [
-                {"PutRequest": {"Item": {"pk": {"S": f"bk{i}"}, "v": {"S": f"bv{i}"}}}}
-                for i in range(5)
-            ]
+            "BatchTable": [{"PutRequest": {"Item": {"pk": {"S": f"bk{i}"}, "v": {"S": f"bv{i}"}}}} for i in range(5)]
         }
     )
     resp = ddb.scan(TableName="BatchTable")
@@ -1384,9 +1360,7 @@ def test_logs_put_get(logs):
 
 
 def test_logs_filter(logs):
-    resp = logs.filter_log_events(
-        logGroupName="/test/ministack", filterPattern="MiniStack"
-    )
+    resp = logs.filter_log_events(logGroupName="/test/ministack", filterPattern="MiniStack")
     assert len(resp["events"]) >= 1
 
 
@@ -1447,9 +1421,7 @@ def test_lambda_esm_sqs(lam, sqs):
     )
 
     q_url = sqs.create_queue(QueueName="esm-test-queue")["QueueUrl"]
-    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
-        "Attributes"
-    ]["QueueArn"]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
 
     # Create event source mapping
     resp = lam.create_event_source_mapping(
@@ -1475,9 +1447,7 @@ def test_lambda_esm_sqs(lam, sqs):
 
     # Queue should be empty — Lambda consumed the message
     msgs = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1)
-    assert not msgs.get("Messages"), (
-        "Message should have been consumed by Lambda via ESM"
-    )
+    assert not msgs.get("Messages"), "Message should have been consumed by Lambda via ESM"
 
     # Cleanup
     lam.delete_event_source_mapping(UUID=esm_uuid)
@@ -1555,9 +1525,7 @@ def test_eventbridge_put_events(eb):
 
 
 def test_eventbridge_targets(eb):
-    eb.put_rule(
-        Name="target-rule", ScheduleExpression="rate(1 minute)", State="ENABLED"
-    )
+    eb.put_rule(Name="target-rule", ScheduleExpression="rate(1 minute)", State="ENABLED")
     eb.put_targets(
         Rule="target-rule",
         Targets=[
@@ -1580,9 +1548,7 @@ def test_kinesis_put_get(kin):
     kin.put_record(StreamName="test-stream", Data=b"second record", PartitionKey="pk2")
     desc = kin.describe_stream(StreamName="test-stream")
     shard_id = desc["StreamDescription"]["Shards"][0]["ShardId"]
-    it = kin.get_shard_iterator(
-        StreamName="test-stream", ShardId=shard_id, ShardIteratorType="TRIM_HORIZON"
-    )
+    it = kin.get_shard_iterator(StreamName="test-stream", ShardId=shard_id, ShardIteratorType="TRIM_HORIZON")
     records = kin.get_records(ShardIterator=it["ShardIterator"])
     assert len(records["Records"]) == 2
 
@@ -1591,9 +1557,7 @@ def test_kinesis_batch(kin):
     kin.create_stream(StreamName="test-stream-batch", ShardCount=1)
     resp = kin.put_records(
         StreamName="test-stream-batch",
-        Records=[
-            {"Data": f"record-{i}".encode(), "PartitionKey": f"pk{i}"} for i in range(5)
-        ],
+        Records=[{"Data": f"record-{i}".encode(), "PartitionKey": f"pk{i}"} for i in range(5)],
     )
     assert resp["FailedRecordCount"] == 0
     assert len(resp["Records"]) == 5
@@ -1680,9 +1644,7 @@ def test_sfn_create_execute(sfn):
         roleArn="arn:aws:iam::000000000000:role/StepFunctionsRole",
     )
     sm_arn = resp["stateMachineArn"]
-    exec_resp = sfn.start_execution(
-        stateMachineArn=sm_arn, input=json.dumps({"key": "value"})
-    )
+    exec_resp = sfn.start_execution(stateMachineArn=sm_arn, input=json.dumps({"key": "value"}))
     exec_arn = exec_resp["executionArn"]
     desc = sfn.describe_execution(executionArn=exec_arn)
     assert desc["status"] == "RUNNING"
@@ -1691,11 +1653,7 @@ def test_sfn_create_execute(sfn):
 def test_sfn_list(sfn):
     machines = sfn.list_state_machines()
     assert any(m["name"] == "test-machine" for m in machines["stateMachines"])
-    sm_arn = next(
-        m["stateMachineArn"]
-        for m in machines["stateMachines"]
-        if m["name"] == "test-machine"
-    )
+    sm_arn = next(m["stateMachineArn"] for m in machines["stateMachines"] if m["name"] == "test-machine")
     execs = sfn.list_executions(stateMachineArn=sm_arn)
     assert len(execs["executions"]) >= 1
 
@@ -1784,10 +1742,7 @@ def test_ecs_run_task_network_connectivity(ecs):
             {
                 "name": "probe",
                 "image": "alpine:latest",
-                "command": [
-                    "sh", "-c",
-                    f"wget -q -O /dev/null {container_endpoint}/_ministack/health"
-                ],
+                "command": ["sh", "-c", f"wget -q -O /dev/null {container_endpoint}/_ministack/health"],
                 "essential": True,
             }
         ],
@@ -1898,9 +1853,7 @@ def test_elasticache_engines(ec):
 
 
 def test_glue_catalog(glue):
-    glue.create_database(
-        DatabaseInput={"Name": "test_db", "Description": "Test database"}
-    )
+    glue.create_database(DatabaseInput={"Name": "test_db", "Description": "Test database"})
     glue.create_table(
         DatabaseName="test_db",
         TableInput={
@@ -1913,9 +1866,7 @@ def test_glue_catalog(glue):
                 "Location": "s3://my-bucket/data/",
                 "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
                 "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
-                "SerdeInfo": {
-                    "SerializationLibrary": "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-                },
+                "SerdeInfo": {"SerializationLibrary": "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"},
             },
             "TableType": "EXTERNAL_TABLE",
         },
@@ -1982,9 +1933,7 @@ def test_athena_workgroup(athena):
     athena.create_work_group(
         Name="test-wg",
         Description="Test workgroup",
-        Configuration={
-            "ResultConfiguration": {"OutputLocation": "s3://athena-results/test/"}
-        },
+        Configuration={"ResultConfiguration": {"OutputLocation": "s3://athena-results/test/"}},
     )
     wgs = athena.list_work_groups()
     assert any(wg["Name"] == "test-wg" for wg in wgs["WorkGroups"])
@@ -2124,9 +2073,7 @@ def test_ddb_list_tables(ddb):
     resp = ddb.list_tables(Limit=2)
     assert len(resp["TableNames"]) <= 2
     if "LastEvaluatedTableName" in resp:
-        resp2 = ddb.list_tables(
-            ExclusiveStartTableName=resp["LastEvaluatedTableName"], Limit=100
-        )
+        resp2 = ddb.list_tables(ExclusiveStartTableName=resp["LastEvaluatedTableName"], Limit=100)
         assert len(resp2["TableNames"]) >= 1
 
 
@@ -2168,9 +2115,7 @@ def test_ddb_put_item_condition(ddb):
 
 
 def test_ddb_put_item_condition_fail(ddb):
-    ddb.put_item(
-        TableName="t_hash_only", Item={"pk": {"S": "cond_fail"}, "val": {"S": "v1"}}
-    )
+    ddb.put_item(TableName="t_hash_only", Item={"pk": {"S": "cond_fail"}, "val": {"S": "v1"}})
     with pytest.raises(ClientError) as exc:
         ddb.put_item(
             TableName="t_hash_only",
@@ -2181,9 +2126,7 @@ def test_ddb_put_item_condition_fail(ddb):
 
 
 def test_ddb_delete_item(ddb):
-    ddb.put_item(
-        TableName="t_hash_only", Item={"pk": {"S": "to_del"}, "v": {"S": "gone"}}
-    )
+    ddb.put_item(TableName="t_hash_only", Item={"pk": {"S": "to_del"}, "v": {"S": "gone"}})
     ddb.delete_item(TableName="t_hash_only", Key={"pk": {"S": "to_del"}})
     resp = ddb.get_item(TableName="t_hash_only", Key={"pk": {"S": "to_del"}})
     assert "Item" not in resp
@@ -2203,9 +2146,7 @@ def test_ddb_delete_item_return_old(ddb):
 
 
 def test_ddb_update_item_set(ddb):
-    ddb.put_item(
-        TableName="t_hash_only", Item={"pk": {"S": "upd_set"}, "count": {"N": "0"}}
-    )
+    ddb.put_item(TableName="t_hash_only", Item={"pk": {"S": "upd_set"}, "count": {"N": "0"}})
     resp = ddb.update_item(
         TableName="t_hash_only",
         Key={"pk": {"S": "upd_set"}},
@@ -2277,10 +2218,7 @@ def test_ddb_get_item_missing_sort_key_fails_validation(ddb):
     with pytest.raises(ClientError) as exc:
         ddb.get_item(TableName="t_get_missing_sk", Key={"pk": {"S": "q_pk"}})
     assert exc.value.response["Error"]["Code"] == "ValidationException"
-    assert (
-        exc.value.response["Error"]["Message"]
-        == "The provided key element does not match the schema"
-    )
+    assert exc.value.response["Error"]["Message"] == "The provided key element does not match the schema"
 
 
 def test_ddb_get_item_wrong_key_type_fails_validation(ddb):
@@ -2298,10 +2236,7 @@ def test_ddb_get_item_wrong_key_type_fails_validation(ddb):
     with pytest.raises(ClientError) as exc:
         ddb.get_item(TableName="t_get_wrong_type", Key={"pk": {"N": "123"}})
     assert exc.value.response["Error"]["Code"] == "ValidationException"
-    assert (
-        exc.value.response["Error"]["Message"]
-        == "The provided key element does not match the schema"
-    )
+    assert exc.value.response["Error"]["Message"] == "The provided key element does not match the schema"
 
 
 def test_ddb_update_item_extra_key_attribute_fails_validation(ddb):
@@ -2323,16 +2258,11 @@ def test_ddb_update_item_extra_key_attribute_fails_validation(ddb):
             ExpressionAttributeValues={":v": {"S": "x"}},
         )
     assert exc.value.response["Error"]["Code"] == "ValidationException"
-    assert (
-        exc.value.response["Error"]["Message"]
-        == "The provided key element does not match the schema"
-    )
+    assert exc.value.response["Error"]["Message"] == "The provided key element does not match the schema"
 
 
 def test_ddb_update_item_add(ddb):
-    ddb.put_item(
-        TableName="t_hash_only", Item={"pk": {"S": "upd_add"}, "counter": {"N": "5"}}
-    )
+    ddb.put_item(TableName="t_hash_only", Item={"pk": {"S": "upd_add"}, "counter": {"N": "5"}})
     resp = ddb.update_item(
         TableName="t_hash_only",
         Key={"pk": {"S": "upd_add"}},
@@ -2344,9 +2274,7 @@ def test_ddb_update_item_add(ddb):
 
 
 def test_ddb_update_item_all_old(ddb):
-    ddb.put_item(
-        TableName="t_hash_only", Item={"pk": {"S": "upd_old"}, "v": {"N": "1"}}
-    )
+    ddb.put_item(TableName="t_hash_only", Item={"pk": {"S": "upd_old"}, "v": {"N": "1"}})
     resp = ddb.update_item(
         TableName="t_hash_only",
         Key={"pk": {"S": "upd_old"}},
@@ -2455,9 +2383,7 @@ def test_ddb_scan(ddb):
         BillingMode="PAY_PER_REQUEST",
     )
     for i in range(8):
-        ddb.put_item(
-            TableName="t_scan", Item={"pk": {"S": f"sc_{i}"}, "n": {"N": str(i)}}
-        )
+        ddb.put_item(TableName="t_scan", Item={"pk": {"S": f"sc_{i}"}, "n": {"N": str(i)}})
     resp = ddb.scan(TableName="t_scan")
     assert resp["Count"] == 8
     assert len(resp["Items"]) == 8
@@ -2483,14 +2409,7 @@ def test_ddb_batch_write(ddb):
     )
     ddb.batch_write_item(
         RequestItems={
-            "t_bw": [
-                {
-                    "PutRequest": {
-                        "Item": {"pk": {"S": f"bw_{i}"}, "data": {"S": f"d{i}"}}
-                    }
-                }
-                for i in range(10)
-            ]
+            "t_bw": [{"PutRequest": {"Item": {"pk": {"S": f"bw_{i}"}, "data": {"S": f"d{i}"}}}} for i in range(10)]
         }
     )
     resp = ddb.scan(TableName="t_bw")
@@ -2620,12 +2539,8 @@ def test_ddb_gsi_query(ddb):
 # Lambda — comprehensive tests
 # ===================================================================
 
-_LAMBDA_CODE = (
-    'def handler(event, context):\n    return {"statusCode": 200, "body": "ok"}\n'
-)
-_LAMBDA_CODE_V2 = (
-    'def handler(event, context):\n    return {"statusCode": 200, "body": "v2"}\n'
-)
+_LAMBDA_CODE = 'def handler(event, context):\n    return {"statusCode": 200, "body": "ok"}\n'
+_LAMBDA_CODE_V2 = 'def handler(event, context):\n    return {"statusCode": 200, "body": "v2"}\n'
 _LAMBDA_ROLE = "arn:aws:iam::000000000000:role/lambda-role"
 
 
@@ -2747,9 +2662,7 @@ def test_lambda_update_config(lam):
 
 
 def test_lambda_tags(lam):
-    arn = lam.get_function(FunctionName="lam-invoke-test")["Configuration"][
-        "FunctionArn"
-    ]
+    arn = lam.get_function(FunctionName="lam-invoke-test")["Configuration"]["FunctionArn"]
     lam.tag_resource(Resource=arn, Tags={"env": "test", "team": "backend"})
     resp = lam.list_tags(Resource=arn)
     assert resp["Tags"]["env"] == "test"
@@ -2802,10 +2715,7 @@ def test_lambda_esm_sqs_comprehensive(lam, sqs):
     except ClientError:
         pass
 
-    code = (
-        "def handler(event, context):\n"
-        '    return {"processed": len(event.get("Records", []))}\n'
-    )
+    code = 'def handler(event, context):\n    return {"processed": len(event.get("Records", []))}\n'
     lam.create_function(
         FunctionName="esm-comp-func",
         Runtime="python3.9",
@@ -2868,9 +2778,7 @@ def test_lambda_esm_sqs_failure_respects_visibility_timeout(lam, sqs):
         QueueName="esm-fail-queue",
         Attributes={"VisibilityTimeout": "1"},
     )["QueueUrl"]
-    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
-        "Attributes"
-    ]["QueueArn"]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
 
     resp = lam.create_event_source_mapping(
         EventSourceArn=q_arn,
@@ -2891,15 +2799,11 @@ def test_lambda_esm_sqs_failure_respects_visibility_timeout(lam, sqs):
     lam.update_event_source_mapping(UUID=esm_uuid, Enabled=False)
 
     msgs = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
-    assert not msgs.get("Messages"), (
-        "Message should be invisible during VisibilityTimeout after failed ESM invoke"
-    )
+    assert not msgs.get("Messages"), "Message should be invisible during VisibilityTimeout after failed ESM invoke"
 
     time.sleep(1.2)
     msgs = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
-    assert msgs.get("Messages"), (
-        "Message should reappear after VisibilityTimeout when ESM invoke fails"
-    )
+    assert msgs.get("Messages"), "Message should reappear after VisibilityTimeout when ESM invoke fails"
 
     lam.delete_event_source_mapping(UUID=esm_uuid)
 
@@ -3100,9 +3004,7 @@ def test_iam_instance_profile(iam):
     names = [p["InstanceProfileName"] for p in resp["InstanceProfiles"]]
     assert "test-ip" in names
 
-    iam.remove_role_from_instance_profile(
-        InstanceProfileName="test-ip", RoleName="ip-role"
-    )
+    iam.remove_role_from_instance_profile(InstanceProfileName="test-ip", RoleName="ip-role")
     iam.delete_instance_profile(InstanceProfileName="test-ip")
 
 
@@ -3156,9 +3058,7 @@ def test_secrets_create_get_v2(sm):
 
 def test_secrets_update_v2(sm):
     sm.create_secret(Name="sm-upd-v2", SecretString="original")
-    sm.update_secret(
-        SecretId="sm-upd-v2", SecretString="updated", Description="new desc"
-    )
+    sm.update_secret(SecretId="sm-upd-v2", SecretString="updated", Description="new desc")
     resp = sm.get_secret_value(SecretId="sm-upd-v2")
     assert resp["SecretString"] == "updated"
     desc = sm.describe_secret(SecretId="sm-upd-v2")
@@ -3432,9 +3332,7 @@ def test_ssm_get_by_path_v2(ssm):
 def test_ssm_get_parameters_multiple_v2(ssm):
     ssm.put_parameter(Name="/ssm2/multi/a", Value="va", Type="String")
     ssm.put_parameter(Name="/ssm2/multi/b", Value="vb", Type="String")
-    resp = ssm.get_parameters(
-        Names=["/ssm2/multi/a", "/ssm2/multi/b", "/ssm2/multi/nope"]
-    )
+    resp = ssm.get_parameters(Names=["/ssm2/multi/a", "/ssm2/multi/b", "/ssm2/multi/nope"])
     assert len(resp["Parameters"]) == 2
     assert any(p["Name"] == "/ssm2/multi/a" for p in resp["Parameters"])
     assert any(p["Name"] == "/ssm2/multi/b" for p in resp["Parameters"])
@@ -3450,22 +3348,16 @@ def test_ssm_delete_v2(ssm):
 
     ssm.put_parameter(Name="/ssm2/del/b1", Value="v1", Type="String")
     ssm.put_parameter(Name="/ssm2/del/b2", Value="v2", Type="String")
-    resp = ssm.delete_parameters(
-        Names=["/ssm2/del/b1", "/ssm2/del/b2", "/ssm2/del/ghost"]
-    )
+    resp = ssm.delete_parameters(Names=["/ssm2/del/b1", "/ssm2/del/b2", "/ssm2/del/ghost"])
     assert len(resp["DeletedParameters"]) == 2
     assert "/ssm2/del/ghost" in resp["InvalidParameters"]
 
 
 def test_ssm_describe_v2(ssm):
-    ssm.put_parameter(
-        Name="/ssm2/desc/alpha", Value="va", Type="String", Description="alpha param"
-    )
+    ssm.put_parameter(Name="/ssm2/desc/alpha", Value="va", Type="String", Description="alpha param")
     ssm.put_parameter(Name="/ssm2/desc/beta", Value="vb", Type="SecureString")
     resp = ssm.describe_parameters(
-        ParameterFilters=[
-            {"Key": "Name", "Option": "BeginsWith", "Values": ["/ssm2/desc/"]}
-        ]
+        ParameterFilters=[{"Key": "Name", "Option": "BeginsWith", "Values": ["/ssm2/desc/"]}]
     )
     names = [p["Name"] for p in resp["Parameters"]]
     assert "/ssm2/desc/alpha" in names
@@ -3474,12 +3366,8 @@ def test_ssm_describe_v2(ssm):
 
 def test_ssm_parameter_history_v2(ssm):
     ssm.put_parameter(Name="/ssm2/hist/h", Value="h1", Type="String", Description="d1")
-    ssm.put_parameter(
-        Name="/ssm2/hist/h", Value="h2", Type="String", Overwrite=True, Description="d2"
-    )
-    ssm.put_parameter(
-        Name="/ssm2/hist/h", Value="h3", Type="String", Overwrite=True, Description="d3"
-    )
+    ssm.put_parameter(Name="/ssm2/hist/h", Value="h2", Type="String", Overwrite=True, Description="d2")
+    ssm.put_parameter(Name="/ssm2/hist/h", Value="h3", Type="String", Overwrite=True, Description="d3")
     resp = ssm.get_parameter_history(Name="/ssm2/hist/h")
     assert len(resp["Parameters"]) == 3
     assert resp["Parameters"][0]["Value"] == "h1"
@@ -3495,9 +3383,7 @@ def test_ssm_tags_v2(ssm):
         ResourceId="/ssm2/tag/t1",
         Tags=[{"Key": "team", "Value": "platform"}, {"Key": "env", "Value": "staging"}],
     )
-    resp = ssm.list_tags_for_resource(
-        ResourceType="Parameter", ResourceId="/ssm2/tag/t1"
-    )
+    resp = ssm.list_tags_for_resource(ResourceType="Parameter", ResourceId="/ssm2/tag/t1")
     tag_map = {t["Key"]: t["Value"] for t in resp["TagList"]}
     assert tag_map["team"] == "platform"
     assert tag_map["env"] == "staging"
@@ -3507,9 +3393,7 @@ def test_ssm_tags_v2(ssm):
         ResourceId="/ssm2/tag/t1",
         TagKeys=["team"],
     )
-    resp2 = ssm.list_tags_for_resource(
-        ResourceType="Parameter", ResourceId="/ssm2/tag/t1"
-    )
+    resp2 = ssm.list_tags_for_resource(ResourceType="Parameter", ResourceId="/ssm2/tag/t1")
     tag_map2 = {t["Key"]: t["Value"] for t in resp2["TagList"]}
     assert "team" not in tag_map2
     assert tag_map2["env"] == "staging"
@@ -3549,9 +3433,7 @@ def test_eb_put_rule_v2(eb):
 
 
 def test_eb_put_targets_v2(eb):
-    eb.put_rule(
-        Name="eb-tgt-v2", ScheduleExpression="rate(10 minutes)", State="ENABLED"
-    )
+    eb.put_rule(Name="eb-tgt-v2", ScheduleExpression="rate(10 minutes)", State="ENABLED")
     eb.put_targets(
         Rule="eb-tgt-v2",
         Targets=[
@@ -3632,9 +3514,7 @@ def test_eb_delete_rule_v2(eb):
 
 
 def test_eb_tags_v2(eb):
-    resp = eb.put_rule(
-        Name="eb-tag-v2", ScheduleExpression="rate(1 hour)", State="ENABLED"
-    )
+    resp = eb.put_rule(Name="eb-tag-v2", ScheduleExpression="rate(1 hour)", State="ENABLED")
     arn = resp["RuleArn"]
     eb.tag_resource(
         ResourceARN=arn,
@@ -3690,9 +3570,7 @@ def test_kinesis_put_records_batch_v2(kin):
     kin.create_stream(StreamName="kin-batch-v2", ShardCount=1)
     resp = kin.put_records(
         StreamName="kin-batch-v2",
-        Records=[
-            {"Data": f"b{i}".encode(), "PartitionKey": f"pk{i}"} for i in range(7)
-        ],
+        Records=[{"Data": f"b{i}".encode(), "PartitionKey": f"pk{i}"} for i in range(7)],
     )
     assert resp["FailedRecordCount"] == 0
     assert len(resp["Records"]) == 7
@@ -3733,9 +3611,7 @@ def test_kinesis_describe_stream_v2(kin):
 
 def test_kinesis_tags_v2(kin):
     kin.create_stream(StreamName="kin-tag-v2", ShardCount=1)
-    kin.add_tags_to_stream(
-        StreamName="kin-tag-v2", Tags={"env": "test", "team": "data"}
-    )
+    kin.add_tags_to_stream(StreamName="kin-tag-v2", Tags={"env": "test", "team": "data"})
     resp = kin.list_tags_for_stream(StreamName="kin-tag-v2")
     tag_map = {t["Key"]: t["Value"] for t in resp["Tags"]}
     assert tag_map["env"] == "test"
@@ -3955,10 +3831,7 @@ def test_ses_verify_identity_v2(ses):
 
     attrs = ses.get_identity_verification_attributes(Identities=["ses-v2@example.com"])
     assert "ses-v2@example.com" in attrs["VerificationAttributes"]
-    assert (
-        attrs["VerificationAttributes"]["ses-v2@example.com"]["VerificationStatus"]
-        == "Success"
-    )
+    assert attrs["VerificationAttributes"]["ses-v2@example.com"]["VerificationStatus"] == "Success"
 
 
 def test_ses_send_email_v2(ses):
@@ -4220,9 +4093,7 @@ def test_sfn_stop_execution_v2(sfn):
     )
     ex = sfn.start_execution(stateMachineArn=sm["stateMachineArn"])
     time.sleep(0.3)
-    sfn.stop_execution(
-        executionArn=ex["executionArn"], error="UserAbort", cause="test stop"
-    )
+    sfn.stop_execution(executionArn=ex["executionArn"], error="UserAbort", cause="test stop")
     desc = sfn.describe_execution(executionArn=ex["executionArn"])
     assert desc["status"] == "ABORTED"
 
@@ -4330,9 +4201,7 @@ def test_ecs_register_task_def_v2(ecs):
 
     resp2 = ecs.register_task_definition(
         family="ecs-td-v2",
-        containerDefinitions=[
-            {"name": "web", "image": "nginx:latest", "cpu": 256, "memory": 512}
-        ],
+        containerDefinitions=[{"name": "web", "image": "nginx:latest", "cpu": 256, "memory": 512}],
     )
     assert resp2["taskDefinition"]["revision"] == 2
 
@@ -4340,9 +4209,7 @@ def test_ecs_register_task_def_v2(ecs):
 def test_ecs_list_task_defs_v2(ecs):
     ecs.register_task_definition(
         family="ecs-ltd-v2",
-        containerDefinitions=[
-            {"name": "app", "image": "img", "cpu": 64, "memory": 128}
-        ],
+        containerDefinitions=[{"name": "app", "image": "img", "cpu": 64, "memory": 128}],
     )
     resp = ecs.list_task_definitions(familyPrefix="ecs-ltd-v2")
     assert len(resp["taskDefinitionArns"]) >= 1
@@ -4353,9 +4220,7 @@ def test_ecs_create_service_v2(ecs):
     ecs.create_cluster(clusterName="ecs-svc-v2c")
     ecs.register_task_definition(
         family="ecs-svc-v2td",
-        containerDefinitions=[
-            {"name": "w", "image": "nginx", "cpu": 64, "memory": 128}
-        ],
+        containerDefinitions=[{"name": "w", "image": "nginx", "cpu": 64, "memory": 128}],
     )
     resp = ecs.create_service(
         cluster="ecs-svc-v2c",
@@ -4373,9 +4238,7 @@ def test_ecs_describe_services_v2(ecs):
     ecs.create_cluster(clusterName="ecs-ds-v2c")
     ecs.register_task_definition(
         family="ecs-ds-v2td",
-        containerDefinitions=[
-            {"name": "w", "image": "nginx", "cpu": 64, "memory": 128}
-        ],
+        containerDefinitions=[{"name": "w", "image": "nginx", "cpu": 64, "memory": 128}],
     )
     ecs.create_service(
         cluster="ecs-ds-v2c",
@@ -4389,9 +4252,7 @@ def test_ecs_describe_services_v2(ecs):
         taskDefinition="ecs-ds-v2td",
         desiredCount=3,
     )
-    resp = ecs.describe_services(
-        cluster="ecs-ds-v2c", services=["ecs-ds-v2a", "ecs-ds-v2b"]
-    )
+    resp = ecs.describe_services(cluster="ecs-ds-v2c", services=["ecs-ds-v2a", "ecs-ds-v2b"])
     assert len(resp["services"]) == 2
     svc_map = {s["serviceName"]: s for s in resp["services"]}
     assert svc_map["ecs-ds-v2a"]["desiredCount"] == 1
@@ -4402,9 +4263,7 @@ def test_ecs_update_service_v2(ecs):
     ecs.create_cluster(clusterName="ecs-us-v2c")
     ecs.register_task_definition(
         family="ecs-us-v2td",
-        containerDefinitions=[
-            {"name": "w", "image": "nginx", "cpu": 64, "memory": 128}
-        ],
+        containerDefinitions=[{"name": "w", "image": "nginx", "cpu": 64, "memory": 128}],
     )
     ecs.create_service(
         cluster="ecs-us-v2c",
@@ -4588,9 +4447,7 @@ def test_rds_tags_v2(rds):
         AllocatedStorage=10,
         Tags=[{"Key": "env", "Value": "dev"}],
     )
-    arn = rds.describe_db_instances(DBInstanceIdentifier="rds-tag-v2")["DBInstances"][
-        0
-    ]["DBInstanceArn"]
+    arn = rds.describe_db_instances(DBInstanceIdentifier="rds-tag-v2")["DBInstances"][0]["DBInstanceArn"]
 
     tags = rds.list_tags_for_resource(ResourceName=arn)["TagList"]
     assert any(t["Key"] == "env" and t["Value"] == "dev" for t in tags)
@@ -4680,9 +4537,7 @@ def test_ec_tags_v2(ec):
         CacheNodeType="cache.t3.micro",
         NumCacheNodes=1,
     )
-    arn = ec.describe_cache_clusters(CacheClusterId="ec-tag-v2")["CacheClusters"][0][
-        "ARN"
-    ]
+    arn = ec.describe_cache_clusters(CacheClusterId="ec-tag-v2")["CacheClusters"][0]["ARN"]
 
     ec.add_tags_to_resource(
         ResourceName=arn,
@@ -4756,9 +4611,7 @@ def test_glue_table_v2(glue):
                 "Location": "s3://bucket/tbl_v2/",
                 "InputFormat": "org.apache.hadoop.mapred.TextInputFormat",
                 "OutputFormat": "org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat",
-                "SerdeInfo": {
-                    "SerializationLibrary": "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"
-                },
+                "SerdeInfo": {"SerializationLibrary": "org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe"},
             },
             "TableType": "EXTERNAL_TABLE",
         },
@@ -4995,15 +4848,10 @@ def test_athena_workgroup_v2(athena):
 
     athena.update_work_group(
         WorkGroup="ath-wg-v2",
-        ConfigurationUpdates={
-            "ResultConfigurationUpdates": {"OutputLocation": "s3://ath-out/v2-new/"}
-        },
+        ConfigurationUpdates={"ResultConfigurationUpdates": {"OutputLocation": "s3://ath-out/v2-new/"}},
     )
     resp2 = athena.get_work_group(WorkGroup="ath-wg-v2")
-    assert (
-        "v2-new"
-        in resp2["WorkGroup"]["Configuration"]["ResultConfiguration"]["OutputLocation"]
-    )
+    assert "v2-new" in resp2["WorkGroup"]["Configuration"]["ResultConfiguration"]["OutputLocation"]
 
     athena.delete_work_group(WorkGroup="ath-wg-v2", RecursiveDeleteOption=True)
     with pytest.raises(ClientError):
@@ -5037,9 +4885,7 @@ def test_athena_data_catalog_v2(athena):
         Name="ath-cat-v2",
         Type="HIVE",
         Description="V2 catalog",
-        Parameters={
-            "metadata-function": "arn:aws:lambda:us-east-1:000000000000:function:f"
-        },
+        Parameters={"metadata-function": "arn:aws:lambda:us-east-1:000000000000:function:f"},
     )
     resp = athena.get_data_catalog(Name="ath-cat-v2")
     assert resp["DataCatalog"]["Name"] == "ath-cat-v2"
@@ -5069,9 +4915,7 @@ def test_athena_prepared_statement_v2(athena):
         QueryStatement="SELECT ? AS val",
         Description="Prepared v2",
     )
-    resp = athena.get_prepared_statement(
-        StatementName="ath-ps-v2", WorkGroup="ath-ps-v2wg"
-    )
+    resp = athena.get_prepared_statement(StatementName="ath-ps-v2", WorkGroup="ath-ps-v2wg")
     assert resp["PreparedStatement"]["StatementName"] == "ath-ps-v2"
     assert resp["PreparedStatement"]["QueryStatement"] == "SELECT ? AS val"
 
@@ -5080,9 +4924,7 @@ def test_athena_prepared_statement_v2(athena):
 
     athena.delete_prepared_statement(StatementName="ath-ps-v2", WorkGroup="ath-ps-v2wg")
     with pytest.raises(ClientError):
-        athena.get_prepared_statement(
-            StatementName="ath-ps-v2", WorkGroup="ath-ps-v2wg"
-        )
+        athena.get_prepared_statement(StatementName="ath-ps-v2", WorkGroup="ath-ps-v2wg")
 
 
 def test_athena_tags_v2(athena):
@@ -5092,9 +4934,9 @@ def test_athena_tags_v2(athena):
         Configuration={"ResultConfiguration": {"OutputLocation": "s3://out/"}},
         Tags=[{"Key": "init", "Value": "yes"}],
     )
-    arn = athena.get_work_group(WorkGroup="ath-tag-v2wg")["WorkGroup"]["Configuration"][
-        "ResultConfiguration"
-    ]["OutputLocation"]
+    arn = athena.get_work_group(WorkGroup="ath-tag-v2wg")["WorkGroup"]["Configuration"]["ResultConfiguration"][
+        "OutputLocation"
+    ]
     wg_arn = "arn:aws:athena:us-east-1:000000000000:workgroup/ath-tag-v2wg"
 
     athena.tag_resource(ResourceARN=wg_arn, Tags=[{"Key": "env", "Value": "dev"}])
@@ -5120,16 +4962,12 @@ def test_s3_event_notification_to_sqs(s3, sqs):
     s3.put_bucket_notification_configuration(
         Bucket="s3-evt-bkt",
         NotificationConfiguration={
-            "QueueConfigurations": [
-                {"QueueArn": queue_arn, "Events": ["s3:ObjectCreated:*"]}
-            ],
+            "QueueConfigurations": [{"QueueArn": queue_arn, "Events": ["s3:ObjectCreated:*"]}],
         },
     )
     s3.put_object(Bucket="s3-evt-bkt", Key="test-notify.txt", Body=b"hello")
     time.sleep(0.5)
-    msgs = sqs.receive_message(
-        QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2
-    )
+    msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
     assert "Messages" in msgs and len(msgs["Messages"]) > 0
     body = json.loads(msgs["Messages"][0]["Body"])
     assert body["Records"][0]["eventSource"] == "aws:s3"
@@ -5150,9 +4988,7 @@ def test_s3_event_notification_filter(s3, sqs):
                 {
                     "QueueArn": queue_arn,
                     "Events": ["s3:ObjectCreated:*"],
-                    "Filter": {
-                        "Key": {"FilterRules": [{"Name": "suffix", "Value": ".csv"}]}
-                    },
+                    "Filter": {"Key": {"FilterRules": [{"Name": "suffix", "Value": ".csv"}]}},
                 }
             ],
         },
@@ -5160,13 +4996,8 @@ def test_s3_event_notification_filter(s3, sqs):
     s3.put_object(Bucket="s3-evt-filter-bkt", Key="data.txt", Body=b"no match")
     s3.put_object(Bucket="s3-evt-filter-bkt", Key="data.csv", Body=b"match")
     time.sleep(0.5)
-    msgs = sqs.receive_message(
-        QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2
-    )
-    keys = [
-        json.loads(m["Body"])["Records"][0]["s3"]["object"]["key"]
-        for m in msgs.get("Messages", [])
-    ]
+    msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
+    keys = [json.loads(m["Body"])["Records"][0]["s3"]["object"]["key"] for m in msgs.get("Messages", [])]
     assert "data.csv" in keys
     assert "data.txt" not in keys
 
@@ -5181,17 +5012,13 @@ def test_s3_event_notification_delete(s3, sqs):
     s3.put_bucket_notification_configuration(
         Bucket="s3-evt-del-bkt",
         NotificationConfiguration={
-            "QueueConfigurations": [
-                {"QueueArn": queue_arn, "Events": ["s3:ObjectRemoved:*"]}
-            ],
+            "QueueConfigurations": [{"QueueArn": queue_arn, "Events": ["s3:ObjectRemoved:*"]}],
         },
     )
     s3.put_object(Bucket="s3-evt-del-bkt", Key="to-del.txt", Body=b"bye")
     s3.delete_object(Bucket="s3-evt-del-bkt", Key="to-del.txt")
     time.sleep(0.5)
-    msgs = sqs.receive_message(
-        QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2
-    )
+    msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
     assert "Messages" in msgs and len(msgs["Messages"]) > 0
     body = json.loads(msgs["Messages"][0]["Body"])
     assert "ObjectRemoved" in body["Records"][0]["eventName"]
@@ -5308,9 +5135,7 @@ def test_iam_user_inline_policy(iam):
 
 
 def test_iam_service_linked_role(iam):
-    resp = iam.create_service_linked_role(
-        AWSServiceName="elasticloadbalancing.amazonaws.com"
-    )
+    resp = iam.create_service_linked_role(AWSServiceName="elasticloadbalancing.amazonaws.com")
     role = resp["Role"]
     assert "AWSServiceRoleFor" in role["RoleName"]
     assert role["Path"].startswith("/aws-service-role/")
@@ -5388,9 +5213,7 @@ def test_rds_cluster_parameter_group(rds):
         DBParameterGroupFamily="aurora-mysql8.0",
         Description="Test cluster param group",
     )
-    resp = rds.describe_db_cluster_parameter_groups(
-        DBClusterParameterGroupName="test-cpg"
-    )
+    resp = rds.describe_db_cluster_parameter_groups(DBClusterParameterGroupName="test-cpg")
     groups = resp["DBClusterParameterGroups"]
     assert len(groups) >= 1
     assert groups[0]["DBClusterParameterGroupName"] == "test-cpg"
@@ -5493,9 +5316,7 @@ def test_elasticache_modify_subnet_group(ec):
         SubnetIds=["subnet-bbb"],
     )
     resp = ec.describe_cache_subnet_groups(CacheSubnetGroupName="test-mod-ecsg")
-    assert (
-        resp["CacheSubnetGroups"][0]["CacheSubnetGroupDescription"] == "Updated EC SG"
-    )
+    assert resp["CacheSubnetGroups"][0]["CacheSubnetGroupDescription"] == "Updated EC SG"
 
 
 def test_elasticache_user_crud(ec):
@@ -5564,9 +5385,7 @@ def test_cloudwatch_logs_metric_filter(logs):
         logGroupName="/test/mf",
         filterName="err-count",
         filterPattern="ERROR",
-        metricTransformations=[
-            {"metricName": "ErrorCount", "metricNamespace": "Test", "metricValue": "1"}
-        ],
+        metricTransformations=[{"metricName": "ErrorCount", "metricNamespace": "Test", "metricValue": "1"}],
     )
     resp = logs.describe_metric_filters(logGroupName="/test/mf")
     assert len(resp["metricFilters"]) == 1
@@ -5594,9 +5413,7 @@ def test_cloudwatch_logs_insights_stub(logs):
 
 
 def test_cloudwatch_dashboard(cw):
-    body = json.dumps(
-        {"widgets": [{"type": "text", "properties": {"markdown": "Hello"}}]}
-    )
+    body = json.dumps({"widgets": [{"type": "text", "properties": {"markdown": "Hello"}}]})
     cw.put_dashboard(DashboardName="test-dash", DashboardBody=body)
     resp = cw.get_dashboard(DashboardName="test-dash")
     assert resp["DashboardName"] == "test-dash"
@@ -5624,9 +5441,7 @@ def test_eventbridge_connection(eb):
     resp = eb.create_connection(
         Name="test-conn",
         AuthorizationType="API_KEY",
-        AuthParameters={
-            "ApiKeyAuthParameters": {"ApiKeyName": "x-api-key", "ApiKeyValue": "secret"}
-        },
+        AuthParameters={"ApiKeyAuthParameters": {"ApiKeyName": "x-api-key", "ApiKeyValue": "secret"}},
     )
     assert "ConnectionArn" in resp
     desc = eb.describe_connection(Name="test-conn")
@@ -5638,9 +5453,7 @@ def test_eventbridge_api_destination(eb):
     eb.create_connection(
         Name="apid-conn",
         AuthorizationType="API_KEY",
-        AuthParameters={
-            "ApiKeyAuthParameters": {"ApiKeyName": "k", "ApiKeyValue": "v"}
-        },
+        AuthParameters={"ApiKeyAuthParameters": {"ApiKeyName": "k", "ApiKeyValue": "v"}},
     )
     resp = eb.create_api_destination(
         Name="test-apid",
@@ -5658,9 +5471,7 @@ def test_eventbridge_api_destination(eb):
 
 
 def test_glue_trigger(glue):
-    glue.create_trigger(
-        Name="test-trig", Type="ON_DEMAND", Actions=[{"JobName": "nonexistent-job"}]
-    )
+    glue.create_trigger(Name="test-trig", Type="ON_DEMAND", Actions=[{"JobName": "nonexistent-job"}])
     resp = glue.get_trigger(Name="test-trig")
     assert resp["Trigger"]["Name"] == "test-trig"
     assert resp["Trigger"]["State"] == "CREATED"
@@ -5691,14 +5502,10 @@ def test_kinesis_stream_encryption(kin):
     sname = f"intg-enc-str-{_uuid.uuid4().hex[:8]}"
     kin.create_stream(StreamName=sname, ShardCount=1)
     time.sleep(0.5)
-    kin.start_stream_encryption(
-        StreamName=sname, EncryptionType="KMS", KeyId="alias/aws/kinesis"
-    )
+    kin.start_stream_encryption(StreamName=sname, EncryptionType="KMS", KeyId="alias/aws/kinesis")
     resp = kin.describe_stream(StreamName=sname)
     assert resp["StreamDescription"]["EncryptionType"] == "KMS"
-    kin.stop_stream_encryption(
-        StreamName=sname, EncryptionType="KMS", KeyId="alias/aws/kinesis"
-    )
+    kin.stop_stream_encryption(StreamName=sname, EncryptionType="KMS", KeyId="alias/aws/kinesis")
     resp2 = kin.describe_stream(StreamName=sname)
     assert resp2["StreamDescription"]["EncryptionType"] == "NONE"
     kin.delete_stream(StreamName=sname)
@@ -5710,13 +5517,9 @@ def test_kinesis_enhanced_monitoring(kin):
     sname = f"intg-mon-str-{_uuid.uuid4().hex[:8]}"
     kin.create_stream(StreamName=sname, ShardCount=1)
     time.sleep(0.5)
-    resp = kin.enable_enhanced_monitoring(
-        StreamName=sname, ShardLevelMetrics=["IncomingBytes", "OutgoingBytes"]
-    )
+    resp = kin.enable_enhanced_monitoring(StreamName=sname, ShardLevelMetrics=["IncomingBytes", "OutgoingBytes"])
     assert "IncomingBytes" in resp.get("DesiredShardLevelMetrics", [])
-    resp2 = kin.disable_enhanced_monitoring(
-        StreamName=sname, ShardLevelMetrics=["IncomingBytes"]
-    )
+    resp2 = kin.disable_enhanced_monitoring(StreamName=sname, ShardLevelMetrics=["IncomingBytes"])
     assert "IncomingBytes" not in resp2.get("DesiredShardLevelMetrics", [])
     kin.delete_stream(StreamName=sname)
 
@@ -5733,16 +5536,12 @@ def test_sfn_start_sync_execution(sfn_sync):
         definition=json.dumps(
             {
                 "StartAt": "Pass",
-                "States": {
-                    "Pass": {"Type": "Pass", "Result": {"msg": "done"}, "End": True}
-                },
+                "States": {"Pass": {"Type": "Pass", "Result": {"msg": "done"}, "End": True}},
             }
         ),
         roleArn="arn:aws:iam::000000000000:role/sfn-role",
     )["stateMachineArn"]
-    resp = sfn_sync.start_sync_execution(
-        stateMachineArn=sm_arn, input=json.dumps({"test": True})
-    )
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({"test": True}))
     assert resp["status"] == "SUCCEEDED"
     assert "output" in resp
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
@@ -5764,9 +5563,7 @@ def test_sfn_describe_state_machine_for_execution(sfn):
     )["stateMachineArn"]
     exec_resp = sfn.start_execution(stateMachineArn=sm_arn)
     time.sleep(0.5)
-    resp = sfn.describe_state_machine_for_execution(
-        executionArn=exec_resp["executionArn"]
-    )
+    resp = sfn.describe_state_machine_for_execution(executionArn=exec_resp["executionArn"])
     assert resp["stateMachineArn"] == sm_arn
     assert "definition" in resp
     sfn.delete_state_machine(stateMachineArn=sm_arn)
@@ -5978,9 +5775,7 @@ def test_apigw_delete_deployment(apigw):
 def test_apigw_tag_resource(apigw):
     api_id = apigw.create_api(Name="tag-api", ProtocolType="HTTP")["ApiId"]
     resource_arn = f"arn:aws:apigateway:us-east-1::/apis/{api_id}"
-    apigw.tag_resource(
-        ResourceArn=resource_arn, Tags={"env": "test", "owner": "team-a"}
-    )
+    apigw.tag_resource(ResourceArn=resource_arn, Tags={"env": "test", "owner": "team-a"})
     resp = apigw.get_tags(ResourceArn=resource_arn)
     assert resp["Tags"].get("env") == "test"
     assert resp["Tags"].get("owner") == "team-a"
@@ -5989,9 +5784,7 @@ def test_apigw_tag_resource(apigw):
 def test_apigw_untag_resource(apigw):
     api_id = apigw.create_api(Name="untag-api", ProtocolType="HTTP")["ApiId"]
     resource_arn = f"arn:aws:apigateway:us-east-1::/apis/{api_id}"
-    apigw.tag_resource(
-        ResourceArn=resource_arn, Tags={"remove-me": "yes", "keep-me": "yes"}
-    )
+    apigw.tag_resource(ResourceArn=resource_arn, Tags={"remove-me": "yes", "keep-me": "yes"})
     apigw.untag_resource(ResourceArn=resource_arn, TagKeys=["remove-me"])
     resp = apigw.get_tags(ResourceArn=resource_arn)
     assert "remove-me" not in resp["Tags"]
@@ -6153,9 +5946,7 @@ def test_lambda_warm_start(lam, apigw):
         IntegrationUri=f"arn:aws:lambda:us-east-1:000000000000:function:{fname}",
         PayloadFormatVersion="2.0",
     )["IntegrationId"]
-    apigw.create_route(
-        ApiId=api_id, RouteKey="GET /ping", Target=f"integrations/{int_id}"
-    )
+    apigw.create_route(ApiId=api_id, RouteKey="GET /ping", Target=f"integrations/{int_id}")
     apigw.create_stage(ApiId=api_id, StageName="$default")
 
     def call():
@@ -6257,9 +6048,7 @@ def test_apigw_execute_default_route(apigw, lam):
     import uuid as _uuid
 
     fname = f"intg-default-fn-{_uuid.uuid4().hex[:8]}"
-    code = (
-        b"def handler(event, context):\n    return {'statusCode': 200, 'body': 'ok'}\n"
-    )
+    code = b"def handler(event, context):\n    return {'statusCode': 200, 'body': 'ok'}\n"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("index.py", code)
@@ -6270,23 +6059,17 @@ def test_apigw_execute_default_route(apigw, lam):
         Handler="index.handler",
         Code={"ZipFile": buf.getvalue()},
     )
-    api_id = apigw.create_api(Name=f"default-route-{fname}", ProtocolType="HTTP")[
-        "ApiId"
-    ]
+    api_id = apigw.create_api(Name=f"default-route-{fname}", ProtocolType="HTTP")["ApiId"]
     int_id = apigw.create_integration(
         ApiId=api_id,
         IntegrationType="AWS_PROXY",
         IntegrationUri=f"arn:aws:lambda:us-east-1:000000000000:function:{fname}",
         PayloadFormatVersion="2.0",
     )["IntegrationId"]
-    apigw.create_route(
-        ApiId=api_id, RouteKey="$default", Target=f"integrations/{int_id}"
-    )
+    apigw.create_route(ApiId=api_id, RouteKey="$default", Target=f"integrations/{int_id}")
     apigw.create_stage(ApiId=api_id, StageName="$default")
 
-    url = (
-        f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/$default/any/path/here"
-    )
+    url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/$default/any/path/here"
     req = _urlreq.Request(url, method="POST")
     req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
     resp = _urlreq.urlopen(req)
@@ -6307,12 +6090,7 @@ def test_eventbridge_lambda_target(eb, lam):
     bus_name = f"intg-eb-bus-{_uuid.uuid4().hex[:8]}"
     rule_name = f"intg-eb-rule-{_uuid.uuid4().hex[:8]}"
 
-    code = (
-        b"events = []\n"
-        b"def handler(event, context):\n"
-        b"    events.append(event)\n"
-        b"    return {'processed': True}\n"
-    )
+    code = b"events = []\ndef handler(event, context):\n    events.append(event)\n    return {'processed': True}\n"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("index.py", code)
@@ -6388,9 +6166,7 @@ def test_apigw_path_param_route(apigw, lam):
         IntegrationUri=f"arn:aws:lambda:us-east-1:000000000000:function:{fname}",
         PayloadFormatVersion="2.0",
     )["IntegrationId"]
-    apigw.create_route(
-        ApiId=api_id, RouteKey="GET /items/{id}", Target=f"integrations/{int_id}"
-    )
+    apigw.create_route(ApiId=api_id, RouteKey="GET /items/{id}", Target=f"integrations/{int_id}")
     apigw.create_stage(ApiId=api_id, StageName="$default")
 
     url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/$default/items/abc123"
@@ -6427,9 +6203,7 @@ def test_apigw_greedy_path_param(apigw, lam):
         IntegrationUri=func_arn,
         PayloadFormatVersion="2.0",
     )["IntegrationId"]
-    apigw.create_route(
-        ApiId=api_id, RouteKey="GET /files/{proxy+}", Target=f"integrations/{int_id}"
-    )
+    apigw.create_route(ApiId=api_id, RouteKey="GET /files/{proxy+}", Target=f"integrations/{int_id}")
     apigw.create_stage(ApiId=api_id, StageName="$default")
 
     # Path with multiple segments should match {proxy+}
@@ -6449,9 +6223,7 @@ def test_apigw_authorizer_crud(apigw):
     """CreateAuthorizer / GetAuthorizer / GetAuthorizers / UpdateAuthorizer / DeleteAuthorizer."""
     import uuid as _uuid_mod
 
-    api_id = apigw.create_api(
-        Name=f"auth-test-{_uuid_mod.uuid4().hex[:8]}", ProtocolType="HTTP"
-    )["ApiId"]
+    api_id = apigw.create_api(Name=f"auth-test-{_uuid_mod.uuid4().hex[:8]}", ProtocolType="HTTP")["ApiId"]
 
     # Create JWT authorizer
     resp = apigw.create_authorizer(
@@ -6478,9 +6250,7 @@ def test_apigw_authorizer_crud(apigw):
     assert any(a["AuthorizerId"] == auth_id for a in listed["Items"])
 
     # Update
-    updated = apigw.update_authorizer(
-        ApiId=api_id, AuthorizerId=auth_id, Name="renamed-auth"
-    )
+    updated = apigw.update_authorizer(ApiId=api_id, AuthorizerId=auth_id, Name="renamed-auth")
     assert updated["Name"] == "renamed-auth"
 
     # Delete
@@ -6513,9 +6283,7 @@ def test_apigw_routekey_in_lambda_event(apigw, lam):
         IntegrationUri=func_arn,
         PayloadFormatVersion="2.0",
     )["IntegrationId"]
-    apigw.create_route(
-        ApiId=api_id, RouteKey="GET /ping", Target=f"integrations/{int_id}"
-    )
+    apigw.create_route(ApiId=api_id, RouteKey="GET /ping", Target=f"integrations/{int_id}")
     apigw.create_stage(ApiId=api_id, StageName="$default")
 
     url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/$default/ping"
@@ -6540,12 +6308,8 @@ def test_kinesis_split_shard(kin):
     time.sleep(0.3)
     desc = kin.describe_stream(StreamName=sname)
     shard_id = desc["StreamDescription"]["Shards"][0]["ShardId"]
-    start_hash = int(
-        desc["StreamDescription"]["Shards"][0]["HashKeyRange"]["StartingHashKey"]
-    )
-    end_hash = int(
-        desc["StreamDescription"]["Shards"][0]["HashKeyRange"]["EndingHashKey"]
-    )
+    start_hash = int(desc["StreamDescription"]["Shards"][0]["HashKeyRange"]["StartingHashKey"])
+    end_hash = int(desc["StreamDescription"]["Shards"][0]["HashKeyRange"]["EndingHashKey"])
     mid = str((start_hash + end_hash) // 2)
     kin.split_shard(StreamName=sname, ShardToSplit=shard_id, NewStartingHashKey=mid)
     time.sleep(0.3)
@@ -6564,9 +6328,7 @@ def test_kinesis_merge_shards(kin):
     shards = desc["StreamDescription"]["Shards"]
     assert len(shards) == 2
     # Sort by starting hash key to get adjacent shards
-    shards_sorted = sorted(
-        shards, key=lambda s: int(s["HashKeyRange"]["StartingHashKey"])
-    )
+    shards_sorted = sorted(shards, key=lambda s: int(s["HashKeyRange"]["StartingHashKey"]))
     kin.merge_shards(
         StreamName=sname,
         ShardToMerge=shards_sorted[0]["ShardId"],
@@ -6584,9 +6346,7 @@ def test_kinesis_update_shard_count(kin):
     sname = f"intg-usc-{_uuid.uuid4().hex[:8]}"
     kin.create_stream(StreamName=sname, ShardCount=1)
     time.sleep(0.3)
-    resp = kin.update_shard_count(
-        StreamName=sname, TargetShardCount=2, ScalingType="UNIFORM_SCALING"
-    )
+    resp = kin.update_shard_count(StreamName=sname, TargetShardCount=2, ScalingType="UNIFORM_SCALING")
     assert resp["TargetShardCount"] == 2
     kin.delete_stream(StreamName=sname)
 
@@ -6599,9 +6359,7 @@ def test_kinesis_register_deregister_consumer(kin):
     time.sleep(0.3)
     desc = kin.describe_stream(StreamName=sname)
     stream_arn = desc["StreamDescription"]["StreamARN"]
-    resp = kin.register_stream_consumer(
-        StreamARN=stream_arn, ConsumerName="my-consumer"
-    )
+    resp = kin.register_stream_consumer(StreamARN=stream_arn, ConsumerName="my-consumer")
     assert resp["Consumer"]["ConsumerName"] == "my-consumer"
     assert resp["Consumer"]["ConsumerStatus"] == "ACTIVE"
     consumer_arn = resp["Consumer"]["ConsumerARN"]
@@ -6624,9 +6382,7 @@ def test_ssm_label_parameter_version(ssm):
     pname = f"/intg/label/{_uuid.uuid4().hex[:8]}"
     ssm.put_parameter(Name=pname, Value="v1", Type="String")
     ssm.put_parameter(Name=pname, Value="v2", Type="String", Overwrite=True)
-    resp = ssm.label_parameter_version(
-        Name=pname, ParameterVersion=1, Labels=["stable"]
-    )
+    resp = ssm.label_parameter_version(Name=pname, ParameterVersion=1, Labels=["stable"])
     assert resp["ParameterVersion"] == 1
     assert resp["InvalidLabels"] == []
 
@@ -6645,9 +6401,7 @@ def test_ssm_add_remove_tags(ssm):
     tag_map = {t["Key"]: t["Value"] for t in tags["TagList"]}
     assert tag_map.get("env") == "prod"
     assert tag_map.get("team") == "backend"
-    ssm.remove_tags_from_resource(
-        ResourceType="Parameter", ResourceId=pname, TagKeys=["team"]
-    )
+    ssm.remove_tags_from_resource(ResourceType="Parameter", ResourceId=pname, TagKeys=["team"])
     tags2 = ssm.list_tags_for_resource(ResourceType="Parameter", ResourceId=pname)
     tag_map2 = {t["Key"]: t["Value"] for t in tags2["TagList"]}
     assert "team" not in tag_map2
@@ -6709,9 +6463,7 @@ def test_logs_metric_filter(logs):
     assert any(f["filterName"] == "error-count" for f in resp["metricFilters"])
     logs.delete_metric_filter(logGroupName=group, filterName="error-count")
     resp2 = logs.describe_metric_filters(logGroupName=group)
-    assert not any(
-        f["filterName"] == "error-count" for f in resp2.get("metricFilters", [])
-    )
+    assert not any(f["filterName"] == "error-count" for f in resp2.get("metricFilters", []))
 
 
 def test_logs_tag_log_group(logs):
@@ -6894,9 +6646,7 @@ def test_s3_bucket_encryption(s3):
     s3.put_bucket_encryption(
         Bucket="intg-s3-enc",
         ServerSideEncryptionConfiguration={
-            "Rules": [
-                {"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}
-            ]
+            "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
         },
     )
     resp = s3.get_bucket_encryption(Bucket="intg-s3-enc")
@@ -6905,10 +6655,7 @@ def test_s3_bucket_encryption(s3):
     s3.delete_bucket_encryption(Bucket="intg-s3-enc")
     with pytest.raises(ClientError) as exc:
         s3.get_bucket_encryption(Bucket="intg-s3-enc")
-    assert (
-        exc.value.response["Error"]["Code"]
-        == "ServerSideEncryptionConfigurationNotFoundError"
-    )
+    assert exc.value.response["Error"]["Code"] == "ServerSideEncryptionConfigurationNotFoundError"
 
 
 def test_s3_bucket_lifecycle(s3):
@@ -7011,9 +6758,7 @@ def test_athena_batch_get_query_execution(athena):
         ResultConfiguration={"OutputLocation": "s3://athena-results/"},
     )["QueryExecutionId"]
     time.sleep(1.0)
-    resp = athena.batch_get_query_execution(
-        QueryExecutionIds=[qid1, qid2, "nonexistent-id"]
-    )
+    resp = athena.batch_get_query_execution(QueryExecutionIds=[qid1, qid2, "nonexistent-id"])
     assert len(resp["QueryExecutions"]) == 2
     assert len(resp["UnprocessedQueryExecutionIds"]) == 1
 
@@ -7031,12 +6776,7 @@ def test_sns_to_lambda_fanout(lam, sns):
 
     fn = f"intg-sns-lam-{_uuid_mod.uuid4().hex[:8]}"
     # Handler records the event on a module-level list so we can inspect it
-    code = (
-        "received = []\n"
-        "def handler(event, context):\n"
-        "    received.append(event)\n"
-        "    return {'ok': True}\n"
-    )
+    code = "received = []\ndef handler(event, context):\n    received.append(event)\n    return {'ok': True}\n"
     lam.create_function(
         FunctionName=fn,
         Runtime="python3.9",
@@ -7046,9 +6786,7 @@ def test_sns_to_lambda_fanout(lam, sns):
     )
     func_arn = f"arn:aws:lambda:us-east-1:000000000000:function:{fn}"
 
-    topic_arn = sns.create_topic(
-        Name=f"intg-sns-lam-topic-{_uuid_mod.uuid4().hex[:8]}"
-    )["TopicArn"]
+    topic_arn = sns.create_topic(Name=f"intg-sns-lam-topic-{_uuid_mod.uuid4().hex[:8]}")["TopicArn"]
     sns.subscribe(TopicArn=topic_arn, Protocol="lambda", Endpoint=func_arn)
 
     # Publish — should not raise; Lambda invoked synchronously
@@ -7568,9 +7306,7 @@ def test_sfn_integration_multi_service_pipeline(sfn, sqs, ddb):
         definition=definition,
         roleArn="arn:aws:iam::000000000000:role/R",
     )
-    ex = sfn.start_execution(
-        stateMachineArn=sm["stateMachineArn"], input=json.dumps({"id": "order-42"})
-    )
+    ex = sfn.start_execution(stateMachineArn=sm["stateMachineArn"], input=json.dumps({"id": "order-42"}))
 
     desc = _wait_sfn(sfn, ex["executionArn"])
     assert desc["status"] == "SUCCEEDED"
@@ -7596,9 +7332,7 @@ def test_apigwv1_create_rest_api(apigw_v1):
     assert "id" in resp
     assert resp["name"] == "v1-create-test"
     assert "createdDate" in resp
-    assert isinstance(resp["createdDate"], datetime.datetime), (
-        "createdDate must be a datetime, not a float"
-    )
+    assert isinstance(resp["createdDate"], datetime.datetime), "createdDate must be a datetime, not a float"
     apigw_v1.delete_rest_api(restApiId=resp["id"])
 
 
@@ -7628,9 +7362,7 @@ def test_apigwv1_update_rest_api(apigw_v1):
     api_id = apigw_v1.create_rest_api(name="v1-update-before")["id"]
     apigw_v1.update_rest_api(
         restApiId=api_id,
-        patchOperations=[
-            {"op": "replace", "path": "/name", "value": "v1-update-after"}
-        ],
+        patchOperations=[{"op": "replace", "path": "/name", "value": "v1-update-after"}],
     )
     resp = apigw_v1.get_rest_api(restApiId=api_id)
     assert resp["name"] == "v1-update-after"
@@ -7650,9 +7382,7 @@ def test_apigwv1_create_resource(apigw_v1):
     """CreateResource creates a child resource with computed path."""
     api_id = apigw_v1.create_rest_api(name="v1-resource-create")["id"]
     # Get root resource id
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     resp = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -7667,9 +7397,7 @@ def test_apigwv1_create_resource(apigw_v1):
 def test_apigwv1_get_resources(apigw_v1):
     """GetResources returns the root resource plus any created children."""
     api_id = apigw_v1.create_rest_api(name="v1-get-resources")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     apigw_v1.create_resource(restApiId=api_id, parentId=root["id"], pathPart="items")
     resources = apigw_v1.get_resources(restApiId=api_id)["items"]
     paths = [r["path"] for r in resources]
@@ -7681,9 +7409,7 @@ def test_apigwv1_get_resources(apigw_v1):
 def test_apigwv1_put_get_method(apigw_v1):
     """PutMethod creates a method; GetMethod returns it."""
     api_id = apigw_v1.create_rest_api(name="v1-method-test")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     resource_id = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -7695,9 +7421,7 @@ def test_apigwv1_put_get_method(apigw_v1):
         httpMethod="GET",
         authorizationType="NONE",
     )
-    resp = apigw_v1.get_method(
-        restApiId=api_id, resourceId=resource_id, httpMethod="GET"
-    )
+    resp = apigw_v1.get_method(restApiId=api_id, resourceId=resource_id, httpMethod="GET")
     assert resp["httpMethod"] == "GET"
     assert resp["authorizationType"] == "NONE"
     apigw_v1.delete_rest_api(restApiId=api_id)
@@ -7706,9 +7430,7 @@ def test_apigwv1_put_get_method(apigw_v1):
 def test_apigwv1_put_integration(apigw_v1):
     """PutIntegration sets AWS_PROXY integration on a method."""
     api_id = apigw_v1.create_rest_api(name="v1-integration-test")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     resource_id = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -7735,9 +7457,7 @@ def test_apigwv1_put_integration(apigw_v1):
 def test_apigwv1_put_method_response(apigw_v1):
     """PutMethodResponse sets a 200 method response."""
     api_id = apigw_v1.create_rest_api(name="v1-method-response-test")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     resource_id = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -7762,9 +7482,7 @@ def test_apigwv1_put_method_response(apigw_v1):
 def test_apigwv1_put_integration_response(apigw_v1):
     """PutIntegrationResponse sets a 200 integration response."""
     api_id = apigw_v1.create_rest_api(name="v1-int-response-test")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     resource_id = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -7798,9 +7516,7 @@ def test_apigwv1_put_integration_response(apigw_v1):
 def test_apigwv1_create_deployment(apigw_v1):
     """CreateDeployment returns a deployment with id and createdDate."""
     api_id = apigw_v1.create_rest_api(name="v1-deployment-test")["id"]
-    resp = apigw_v1.create_deployment(
-        restApiId=api_id, description="initial deployment"
-    )
+    resp = apigw_v1.create_deployment(restApiId=api_id, description="initial deployment")
     assert "id" in resp
     assert "createdDate" in resp
     apigw_v1.delete_rest_api(restApiId=api_id)
@@ -7828,9 +7544,7 @@ def test_apigwv1_update_stage(apigw_v1):
     apigw_v1.update_stage(
         restApiId=api_id,
         stageName="dev",
-        patchOperations=[
-            {"op": "replace", "path": "/variables/myVar", "value": "myVal"}
-        ],
+        patchOperations=[{"op": "replace", "path": "/variables/myVar", "value": "myVal"}],
     )
     resp = apigw_v1.get_stage(restApiId=api_id, stageName="dev")
     assert resp["variables"]["myVar"] == "myVal"
@@ -7965,11 +7679,7 @@ def test_apigwv1_execute_lambda_proxy(apigw_v1, lam):
     import uuid as _uuid
 
     fname = f"intg-v1-proxy-{_uuid.uuid4().hex[:8]}"
-    code = (
-        b"import json\n"
-        b"def handler(event, context):\n"
-        b"    return {'statusCode': 200, 'body': 'pong'}\n"
-    )
+    code = b"import json\ndef handler(event, context):\n    return {'statusCode': 200, 'body': 'pong'}\n"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("index.py", code)
@@ -7982,9 +7692,7 @@ def test_apigwv1_execute_lambda_proxy(apigw_v1, lam):
     )
 
     api_id = apigw_v1.create_rest_api(name=f"v1-exec-{fname}")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     resource_id = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -8043,9 +7751,7 @@ def test_apigwv1_execute_path_params(apigw_v1, lam):
     )
 
     api_id = apigw_v1.create_rest_api(name=f"v1-params-{fname}")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     users_id = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -8089,9 +7795,7 @@ def test_apigwv1_execute_mock_integration(apigw_v1):
     import urllib.request as _urlreq
 
     api_id = apigw_v1.create_rest_api(name="v1-mock-test")["id"]
-    root = next(
-        r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/"
-    )
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
     resource_id = apigw_v1.create_resource(
         restApiId=api_id,
         parentId=root["id"],
@@ -8196,14 +7900,8 @@ def test_apigwv1_no_conflict_with_v2(apigw_v1, apigw, lam):
 
     # Set up v1 API
     v1_api_id = apigw_v1.create_rest_api(name="coexist-v1")["id"]
-    root = next(
-        r
-        for r in apigw_v1.get_resources(restApiId=v1_api_id)["items"]
-        if r["path"] == "/"
-    )
-    res_id = apigw_v1.create_resource(
-        restApiId=v1_api_id, parentId=root["id"], pathPart="hit"
-    )["id"]
+    root = next(r for r in apigw_v1.get_resources(restApiId=v1_api_id)["items"] if r["path"] == "/")
+    res_id = apigw_v1.create_resource(restApiId=v1_api_id, parentId=root["id"], pathPart="hit")["id"]
     apigw_v1.put_method(
         restApiId=v1_api_id,
         resourceId=res_id,
@@ -8229,9 +7927,7 @@ def test_apigwv1_no_conflict_with_v2(apigw_v1, apigw, lam):
         IntegrationUri=f"arn:aws:lambda:us-east-1:000000000000:function:{fname_v2}",
         PayloadFormatVersion="2.0",
     )["IntegrationId"]
-    apigw.create_route(
-        ApiId=v2_api_id, RouteKey="GET /hit", Target=f"integrations/{int_id}"
-    )
+    apigw.create_route(ApiId=v2_api_id, RouteKey="GET /hit", Target=f"integrations/{int_id}")
     apigw.create_stage(ApiId=v2_api_id, StageName="$default")
 
     # Invoke v1
@@ -8265,9 +7961,7 @@ def test_apigwv1_update_rest_api_name(apigw_v1):
     api_id = apigw_v1.create_rest_api(name="v1-update-name-before")["id"]
     apigw_v1.update_rest_api(
         restApiId=api_id,
-        patchOperations=[
-            {"op": "replace", "path": "/name", "value": "v1-update-name-after"}
-        ],
+        patchOperations=[{"op": "replace", "path": "/name", "value": "v1-update-name-after"}],
     )
     assert apigw_v1.get_rest_api(restApiId=api_id)["name"] == "v1-update-name-after"
     apigw_v1.delete_rest_api(restApiId=api_id)
@@ -8276,14 +7970,8 @@ def test_apigwv1_update_rest_api_name(apigw_v1):
 def test_apigwv1_delete_resource(apigw_v1):
     """DeleteResource removes a resource; subsequent GetResource raises 404."""
     api_id = apigw_v1.create_rest_api(name="v1-del-resource")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    child_id = apigw_v1.create_resource(
-        restApiId=api_id, parentId=root_id, pathPart="todel"
-    )["id"]
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    child_id = apigw_v1.create_resource(restApiId=api_id, parentId=root_id, pathPart="todel")["id"]
     apigw_v1.delete_resource(restApiId=api_id, resourceId=child_id)
     with pytest.raises(ClientError) as exc:
         apigw_v1.get_resource(restApiId=api_id, resourceId=child_id)
@@ -8294,14 +7982,8 @@ def test_apigwv1_delete_resource(apigw_v1):
 def test_apigwv1_delete_method(apigw_v1):
     """DeleteMethod removes method; GetMethod raises 404 after."""
     api_id = apigw_v1.create_rest_api(name="v1-del-method")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    apigw_v1.put_method(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE"
-    )
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    apigw_v1.put_method(restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE")
     apigw_v1.delete_method(restApiId=api_id, resourceId=root_id, httpMethod="GET")
     with pytest.raises(ClientError) as exc:
         apigw_v1.get_method(restApiId=api_id, resourceId=root_id, httpMethod="GET")
@@ -8312,17 +7994,9 @@ def test_apigwv1_delete_method(apigw_v1):
 def test_apigwv1_delete_integration(apigw_v1):
     """DeleteIntegration removes integration; GetIntegration raises 404 after."""
     api_id = apigw_v1.create_rest_api(name="v1-del-integration")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    apigw_v1.put_method(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE"
-    )
-    apigw_v1.put_integration(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK"
-    )
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    apigw_v1.put_method(restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE")
+    apigw_v1.put_integration(restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK")
     apigw_v1.delete_integration(restApiId=api_id, resourceId=root_id, httpMethod="GET")
     with pytest.raises(ClientError) as exc:
         apigw_v1.get_integration(restApiId=api_id, resourceId=root_id, httpMethod="GET")
@@ -8333,24 +8007,12 @@ def test_apigwv1_delete_integration(apigw_v1):
 def test_apigwv1_delete_method_response(apigw_v1):
     """DeleteMethodResponse removes the method response entry."""
     api_id = apigw_v1.create_rest_api(name="v1-del-mresp")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    apigw_v1.put_method(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE"
-    )
-    apigw_v1.put_method_response(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200"
-    )
-    apigw_v1.delete_method_response(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200"
-    )
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    apigw_v1.put_method(restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE")
+    apigw_v1.put_method_response(restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200")
+    apigw_v1.delete_method_response(restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200")
     with pytest.raises(ClientError) as exc:
-        apigw_v1.get_method_response(
-            restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200"
-        )
+        apigw_v1.get_method_response(restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200")
     assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
     apigw_v1.delete_rest_api(restApiId=api_id)
 
@@ -8358,17 +8020,9 @@ def test_apigwv1_delete_method_response(apigw_v1):
 def test_apigwv1_delete_integration_response(apigw_v1):
     """DeleteIntegrationResponse removes the integration response entry."""
     api_id = apigw_v1.create_rest_api(name="v1-del-iresp")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    apigw_v1.put_method(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE"
-    )
-    apigw_v1.put_integration(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK"
-    )
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    apigw_v1.put_method(restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE")
+    apigw_v1.put_integration(restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK")
     apigw_v1.put_integration_response(
         restApiId=api_id,
         resourceId=root_id,
@@ -8376,13 +8030,9 @@ def test_apigwv1_delete_integration_response(apigw_v1):
         statusCode="200",
         selectionPattern="",
     )
-    apigw_v1.delete_integration_response(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200"
-    )
+    apigw_v1.delete_integration_response(restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200")
     with pytest.raises(ClientError) as exc:
-        apigw_v1.get_integration_response(
-            restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200"
-        )
+        apigw_v1.get_integration_response(restApiId=api_id, resourceId=root_id, httpMethod="GET", statusCode="200")
     assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
     apigw_v1.delete_rest_api(restApiId=api_id)
 
@@ -8417,9 +8067,7 @@ def test_apigwv1_update_api_key(apigw_v1):
     key_id = apigw_v1.create_api_key(name="v1-key-update-before")["id"]
     resp = apigw_v1.update_api_key(
         apiKey=key_id,
-        patchOperations=[
-            {"op": "replace", "path": "/name", "value": "v1-key-update-after"}
-        ],
+        patchOperations=[{"op": "replace", "path": "/name", "value": "v1-key-update-after"}],
     )
     assert resp["name"] == "v1-key-update-after"
     assert isinstance(resp["lastUpdatedDate"], datetime.datetime)
@@ -8431,9 +8079,7 @@ def test_apigwv1_update_usage_plan(apigw_v1):
     plan_id = apigw_v1.create_usage_plan(name="v1-plan-update-before")["id"]
     resp = apigw_v1.update_usage_plan(
         usagePlanId=plan_id,
-        patchOperations=[
-            {"op": "replace", "path": "/name", "value": "v1-plan-update-after"}
-        ],
+        patchOperations=[{"op": "replace", "path": "/name", "value": "v1-plan-update-after"}],
     )
     assert resp["name"] == "v1-plan-update-after"
     apigw_v1.delete_usage_plan(usagePlanId=plan_id)
@@ -8442,24 +8088,12 @@ def test_apigwv1_update_usage_plan(apigw_v1):
 def test_apigwv1_deployment_api_summary(apigw_v1):
     """CreateDeployment apiSummary reflects methods configured on resources."""
     api_id = apigw_v1.create_rest_api(name="v1-api-summary")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    apigw_v1.put_method(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE"
-    )
-    apigw_v1.put_integration(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK"
-    )
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    apigw_v1.put_method(restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE")
+    apigw_v1.put_integration(restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK")
     dep = apigw_v1.create_deployment(restApiId=api_id)
-    assert "/" in dep.get("apiSummary", {}), (
-        "apiSummary must include root resource path"
-    )
-    assert "GET" in dep["apiSummary"]["/"], (
-        "apiSummary must include configured HTTP method"
-    )
+    assert "/" in dep.get("apiSummary", {}), "apiSummary must include root resource path"
+    assert "GET" in dep["apiSummary"]["/"], "apiSummary must include configured HTTP method"
     apigw_v1.delete_rest_api(restApiId=api_id)
 
 
@@ -8513,17 +8147,9 @@ def test_apigwv1_execute_missing_stage_404(apigw_v1):
     import urllib.request as _urlreq
 
     api_id = apigw_v1.create_rest_api(name="v1-no-stage")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    apigw_v1.put_method(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE"
-    )
-    apigw_v1.put_integration(
-        restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK"
-    )
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    apigw_v1.put_method(restApiId=api_id, resourceId=root_id, httpMethod="GET", authorizationType="NONE")
+    apigw_v1.put_integration(restApiId=api_id, resourceId=root_id, httpMethod="GET", type="MOCK")
     apigw_v1.create_deployment(restApiId=api_id)
     # Do NOT create a stage — request to a nonexistent stage should 404
 
@@ -8542,14 +8168,8 @@ def test_apigwv1_execute_missing_method_405(apigw_v1):
     import urllib.request as _urlreq
 
     api_id = apigw_v1.create_rest_api(name="v1-no-method")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    resource_id = apigw_v1.create_resource(
-        restApiId=api_id, parentId=root_id, pathPart="noop"
-    )["id"]
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    resource_id = apigw_v1.create_resource(restApiId=api_id, parentId=root_id, pathPart="noop")["id"]
     # PUT method for POST only — GET not configured
     apigw_v1.put_method(
         restApiId=api_id,
@@ -8557,9 +8177,7 @@ def test_apigwv1_execute_missing_method_405(apigw_v1):
         httpMethod="POST",
         authorizationType="NONE",
     )
-    apigw_v1.put_integration(
-        restApiId=api_id, resourceId=resource_id, httpMethod="POST", type="MOCK"
-    )
+    apigw_v1.put_integration(restApiId=api_id, resourceId=resource_id, httpMethod="POST", type="MOCK")
     dep_id = apigw_v1.create_deployment(restApiId=api_id)["id"]
     apigw_v1.create_stage(restApiId=api_id, stageName="test", deploymentId=dep_id)
 
@@ -8578,11 +8196,7 @@ def test_apigwv1_execute_lambda_arn_uri(apigw_v1, lam):
     import uuid as _uuid
 
     fname = f"v1-arn-uri-{_uuid.uuid4().hex[:8]}"
-    code = (
-        b"import json\n"
-        b"def handler(event, context):\n"
-        b"    return {'statusCode': 200, 'body': 'arn-ok'}\n"
-    )
+    code = b"import json\ndef handler(event, context):\n    return {'statusCode': 200, 'body': 'arn-ok'}\n"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("index.py", code)
@@ -8595,14 +8209,8 @@ def test_apigwv1_execute_lambda_arn_uri(apigw_v1, lam):
     )
 
     api_id = apigw_v1.create_rest_api(name=f"v1-arn-{fname}")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    resource_id = apigw_v1.create_resource(
-        restApiId=api_id, parentId=root_id, pathPart="hit"
-    )["id"]
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    resource_id = apigw_v1.create_resource(restApiId=api_id, parentId=root_id, pathPart="hit")["id"]
     apigw_v1.put_method(
         restApiId=api_id,
         resourceId=resource_id,
@@ -8666,14 +8274,8 @@ def test_apigwv1_execute_lambda_requestcontext(apigw_v1, lam):
     )
 
     api_id = apigw_v1.create_rest_api(name=f"v1-ctx-{fname}")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    resource_id = apigw_v1.create_resource(
-        restApiId=api_id, parentId=root_id, pathPart="ctx"
-    )["id"]
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    resource_id = apigw_v1.create_resource(restApiId=api_id, parentId=root_id, pathPart="ctx")["id"]
     apigw_v1.put_method(
         restApiId=api_id,
         resourceId=resource_id,
@@ -8714,14 +8316,8 @@ def test_apigwv1_execute_mock_response_parameters(apigw_v1):
     import urllib.request as _urlreq
 
     api_id = apigw_v1.create_rest_api(name="v1-mock-params")["id"]
-    root_id = next(
-        r["id"]
-        for r in apigw_v1.get_resources(restApiId=api_id)["items"]
-        if r["path"] == "/"
-    )
-    resource_id = apigw_v1.create_resource(
-        restApiId=api_id, parentId=root_id, pathPart="rp"
-    )["id"]
+    root_id = next(r["id"] for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    resource_id = apigw_v1.create_resource(restApiId=api_id, parentId=root_id, pathPart="rp")["id"]
     apigw_v1.put_method(
         restApiId=api_id,
         resourceId=resource_id,
@@ -8780,9 +8376,7 @@ def test_firehose_create_and_describe(fh):
     assert "firehose" in arn
     assert name in arn
 
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     assert desc["DeliveryStreamName"] == name
     assert desc["DeliveryStreamStatus"] == "ACTIVE"
     assert desc["DeliveryStreamType"] == "DirectPut"
@@ -8792,12 +8386,8 @@ def test_firehose_create_and_describe(fh):
 
 
 def test_firehose_list_streams(fh):
-    fh.create_delivery_stream(
-        DeliveryStreamName="intg-fh-list-a", DeliveryStreamType="DirectPut"
-    )
-    fh.create_delivery_stream(
-        DeliveryStreamName="intg-fh-list-b", DeliveryStreamType="DirectPut"
-    )
+    fh.create_delivery_stream(DeliveryStreamName="intg-fh-list-a", DeliveryStreamType="DirectPut")
+    fh.create_delivery_stream(DeliveryStreamName="intg-fh-list-b", DeliveryStreamType="DirectPut")
     resp = fh.list_delivery_streams()
     names = resp["DeliveryStreamNames"]
     assert "intg-fh-list-a" in names
@@ -8822,9 +8412,7 @@ def test_firehose_put_record_batch(fh):
     fh.create_delivery_stream(DeliveryStreamName=name, DeliveryStreamType="DirectPut")
     import base64
 
-    records = [
-        {"Data": base64.b64encode(f"record-{i}".encode()).decode()} for i in range(5)
-    ]
+    records = [{"Data": base64.b64encode(f"record-{i}".encode()).decode()} for i in range(5)]
     resp = fh.put_record_batch(DeliveryStreamName=name, Records=records)
     assert resp["FailedPutCount"] == 0
     assert len(resp["RequestResponses"]) == 5
@@ -8877,9 +8465,7 @@ def test_firehose_update_destination(fh):
             "RoleARN": "arn:aws:iam::000000000000:role/firehose-role",
         },
     )
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     dest_id = desc["Destinations"][0]["DestinationId"]
     version_id = desc["VersionId"]
 
@@ -8892,9 +8478,7 @@ def test_firehose_update_destination(fh):
             "RoleARN": "arn:aws:iam::000000000000:role/firehose-role",
         },
     )
-    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     assert desc2["VersionId"] == "2"
     s3_cfg = desc2["Destinations"][0]["ExtendedS3DestinationDescription"]
     assert s3_cfg["BucketARN"] == "arn:aws:s3:::updated-bucket"
@@ -8907,15 +8491,11 @@ def test_firehose_encryption(fh):
         DeliveryStreamName=name,
         DeliveryStreamEncryptionConfigurationInput={"KeyType": "AWS_OWNED_CMK"},
     )
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     assert desc["DeliveryStreamEncryptionConfiguration"]["Status"] == "ENABLED"
 
     fh.stop_delivery_stream_encryption(DeliveryStreamName=name)
-    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     assert desc2["DeliveryStreamEncryptionConfiguration"]["Status"] == "DISABLED"
 
 
@@ -8925,9 +8505,7 @@ def test_firehose_duplicate_create_error(fh):
     from botocore.exceptions import ClientError
 
     try:
-        fh.create_delivery_stream(
-            DeliveryStreamName=name, DeliveryStreamType="DirectPut"
-        )
+        fh.create_delivery_stream(DeliveryStreamName=name, DeliveryStreamType="DirectPut")
         assert False, "should have raised"
     except ClientError as e:
         assert e.response["Error"]["Code"] == "ResourceInUseException"
@@ -8944,9 +8522,7 @@ def test_firehose_not_found_error(fh):
 
 
 def test_firehose_list_with_type_filter(fh):
-    fh.create_delivery_stream(
-        DeliveryStreamName="intg-fh-type-dp", DeliveryStreamType="DirectPut"
-    )
+    fh.create_delivery_stream(DeliveryStreamName="intg-fh-type-dp", DeliveryStreamType="DirectPut")
     resp = fh.list_delivery_streams(DeliveryStreamType="DirectPut")
     assert "intg-fh-type-dp" in resp["DeliveryStreamNames"]
 
@@ -8961,9 +8537,7 @@ def test_firehose_s3_dest_has_encryption_config(fh):
             "RoleARN": "arn:aws:iam::000000000000:role/firehose-role",
         },
     )
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     s3 = desc["Destinations"][0]["ExtendedS3DestinationDescription"]
     assert "EncryptionConfiguration" in s3
     assert s3["EncryptionConfiguration"] == {"NoEncryptionConfig": "NoEncryption"}
@@ -8972,9 +8546,7 @@ def test_firehose_s3_dest_has_encryption_config(fh):
 def test_firehose_no_enc_config_when_not_set(fh):
     name = "intg-fh-no-enc"
     fh.create_delivery_stream(DeliveryStreamName=name, DeliveryStreamType="DirectPut")
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     assert "DeliveryStreamEncryptionConfiguration" not in desc
 
 
@@ -8992,15 +8564,10 @@ def test_firehose_kinesis_source_block(fh):
             "RoleARN": "arn:aws:iam::000000000000:role/firehose-role",
         },
     )
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     assert "Source" in desc
     ks = desc["Source"]["KinesisStreamSourceDescription"]
-    assert (
-        ks["KinesisStreamARN"]
-        == "arn:aws:kinesis:us-east-1:000000000000:stream/my-stream"
-    )
+    assert ks["KinesisStreamARN"] == "arn:aws:kinesis:us-east-1:000000000000:stream/my-stream"
     assert ks["RoleARN"] == "arn:aws:iam::000000000000:role/firehose-role"
     assert "DeliveryStartTimestamp" in ks
 
@@ -9016,9 +8583,7 @@ def test_firehose_update_destination_merges_same_type(fh):
             "Prefix": "original/",
         },
     )
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     dest_id = desc["Destinations"][0]["DestinationId"]
 
     fh.update_destination(
@@ -9029,9 +8594,7 @@ def test_firehose_update_destination_merges_same_type(fh):
             "BucketARN": "arn:aws:s3:::updated-bucket",
         },
     )
-    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     s3 = desc2["Destinations"][0]["ExtendedS3DestinationDescription"]
     # Updated field
     assert s3["BucketARN"] == "arn:aws:s3:::updated-bucket"
@@ -9050,9 +8613,7 @@ def test_firehose_update_destination_replaces_on_type_change(fh):
             "RoleARN": "arn:aws:iam::000000000000:role/firehose-role",
         },
     )
-    desc = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     dest_id = desc["Destinations"][0]["DestinationId"]
 
     fh.update_destination(
@@ -9063,9 +8624,7 @@ def test_firehose_update_destination_replaces_on_type_change(fh):
             "EndpointConfiguration": {"Url": "https://my-endpoint.example.com"},
         },
     )
-    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)[
-        "DeliveryStreamDescription"
-    ]
+    desc2 = fh.describe_delivery_stream(DeliveryStreamName=name)["DeliveryStreamDescription"]
     dest = desc2["Destinations"][0]
     assert "HttpEndpointDestinationDescription" in dest
     assert "ExtendedS3DestinationDescription" not in dest
@@ -9327,9 +8886,7 @@ def test_route53_tags_for_hosted_zone(r53):
         AddTags=[{"Key": "env", "Value": "test"}, {"Key": "team", "Value": "infra"}],
     )
 
-    tags_resp = r53.list_tags_for_resource(
-        ResourceType="hostedzone", ResourceId=zone_id
-    )
+    tags_resp = r53.list_tags_for_resource(ResourceType="hostedzone", ResourceId=zone_id)
     tags = {t["Key"]: t["Value"] for t in tags_resp["ResourceTagSet"]["Tags"]}
     assert tags["env"] == "test"
     assert tags["team"] == "infra"
@@ -9339,9 +8896,7 @@ def test_route53_tags_for_hosted_zone(r53):
         ResourceId=zone_id,
         RemoveTagKeys=["team"],
     )
-    tags_resp2 = r53.list_tags_for_resource(
-        ResourceType="hostedzone", ResourceId=zone_id
-    )
+    tags_resp2 = r53.list_tags_for_resource(ResourceType="hostedzone", ResourceId=zone_id)
     keys2 = [t["Key"] for t in tags_resp2["ResourceTagSet"]["Tags"]]
     assert "env" in keys2
     assert "team" not in keys2
@@ -9380,11 +8935,7 @@ def test_route53_alias_record(r53):
     )
 
     list_resp = r53.list_resource_record_sets(HostedZoneId=zone_id)
-    alias_recs = [
-        rrs
-        for rrs in list_resp["ResourceRecordSets"]
-        if rrs["Type"] == "A" and "AliasTarget" in rrs
-    ]
+    alias_recs = [rrs for rrs in list_resp["ResourceRecordSets"] if rrs["Type"] == "A" and "AliasTarget" in rrs]
     assert len(alias_recs) == 1
     assert alias_recs[0]["AliasTarget"]["DNSName"] == "d1234.cloudfront.net."
 
@@ -9475,21 +9026,15 @@ def test_ddb_query_pagination_hash_only(ddb):
         BillingMode="PAY_PER_REQUEST",
     )
     for i in range(5):
-        ddb.put_item(
-            TableName=table, Item={"pk": {"S": f"item_{i:03d}"}, "v": {"N": str(i)}}
-        )
+        ddb.put_item(TableName=table, Item={"pk": {"S": f"item_{i:03d}"}, "v": {"N": str(i)}})
 
     resp1 = ddb.scan(TableName=table, Limit=3)
     assert resp1["Count"] == 3
     assert "LastEvaluatedKey" in resp1
 
-    resp2 = ddb.scan(
-        TableName=table, Limit=3, ExclusiveStartKey=resp1["LastEvaluatedKey"]
-    )
+    resp2 = ddb.scan(TableName=table, Limit=3, ExclusiveStartKey=resp1["LastEvaluatedKey"])
     assert resp2["Count"] == 2
-    all_pks = {it["pk"]["S"] for it in resp1["Items"]} | {
-        it["pk"]["S"] for it in resp2["Items"]
-    }
+    all_pks = {it["pk"]["S"] for it in resp1["Items"]} | {it["pk"]["S"] for it in resp2["Items"]}
     assert len(all_pks) == 5
 
 
@@ -9522,11 +9067,7 @@ def test_sns_to_lambda_event_subscription_arn(lam, sns):
     received = []
 
     code = (
-        "import json, os\n"
-        "received = []\n"
-        "def handler(event, context):\n"
-        "    received.append(event)\n"
-        "    return event\n"
+        "import json, os\nreceived = []\ndef handler(event, context):\n    received.append(event)\n    return event\n"
     )
     lam.create_function(
         FunctionName=fn,
@@ -9536,9 +9077,7 @@ def test_sns_to_lambda_event_subscription_arn(lam, sns):
         Code={"ZipFile": _make_zip(code)},
     )
     func_arn = f"arn:aws:lambda:us-east-1:000000000000:function:{fn}"
-    topic_arn = sns.create_topic(Name=f"intg-sns-suborn-{_uuid_mod.uuid4().hex[:8]}")[
-        "TopicArn"
-    ]
+    topic_arn = sns.create_topic(Name=f"intg-sns-suborn-{_uuid_mod.uuid4().hex[:8]}")["TopicArn"]
     sub_resp = sns.subscribe(TopicArn=topic_arn, Protocol="lambda", Endpoint=func_arn)
     sub_arn = sub_resp["SubscriptionArn"]
 
@@ -9564,9 +9103,7 @@ def test_lambda_unknown_path_returns_404(lam):
     endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
     req = urllib.request.Request(
         f"{endpoint}/2015-03-31/functions/nonexistent-fn/completely-unknown-subpath",
-        headers={
-            "Authorization": "AWS4-HMAC-SHA256 Credential=test/20260101/us-east-1/lambda/aws4_request"
-        },
+        headers={"Authorization": "AWS4-HMAC-SHA256 Credential=test/20260101/us-east-1/lambda/aws4_request"},
         method="GET",
     )
     try:
@@ -9581,12 +9118,7 @@ def test_lambda_reset_terminates_workers(lam):
     import urllib.request
 
     fn = f"intg-reset-worker-{__import__('uuid').uuid4().hex[:8]}"
-    code = (
-        "import time\n"
-        "_boot = time.time()\n"
-        "def handler(event, context):\n"
-        "    return {'boot': _boot}\n"
-    )
+    code = "import time\n_boot = time.time()\ndef handler(event, context):\n    return {'boot': _boot}\n"
     lam.create_function(
         FunctionName=fn,
         Runtime="python3.9",
@@ -9600,9 +9132,7 @@ def test_lambda_reset_terminates_workers(lam):
 
     # Reset — must terminate worker without error
     endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
-    req = urllib.request.Request(
-        f"{endpoint}/_ministack/reset", data=b"", method="POST"
-    )
+    req = urllib.request.Request(f"{endpoint}/_ministack/reset", data=b"", method="POST")
     for _attempt in range(3):
         try:
             urllib.request.urlopen(req, timeout=15)
@@ -9629,10 +9159,7 @@ def test_sfn_integration_lambda_invoke(sfn, lam):
     import uuid as _uuid
 
     fn = f"intg-sfn-lam-{_uuid.uuid4().hex[:8]}"
-    code = (
-        "def handler(event, context):\n"
-        "    return {'doubled': event.get('value', 0) * 2}\n"
-    )
+    code = "def handler(event, context):\n    return {'doubled': event.get('value', 0) * 2}\n"
     lam.create_function(
         FunctionName=fn,
         Runtime="python3.9",
@@ -9758,9 +9285,7 @@ def test_package_services_importable():
         route53,
         cognito,
     ]:
-        assert callable(getattr(mod, "handle_request", None)), (
-            f"{mod.__name__} missing handle_request"
-        )
+        assert callable(getattr(mod, "handle_request", None)), f"{mod.__name__} missing handle_request"
     assert callable(handle_iam_request)
     assert callable(handle_sts_request)
 
@@ -9828,9 +9353,7 @@ def test_cognito_create_and_describe_user_pool_client(cognito_idp):
     cid = client["ClientId"]
     assert client["ClientName"] == "MyApp"
 
-    desc = cognito_idp.describe_user_pool_client(UserPoolId=pid, ClientId=cid)[
-        "UserPoolClient"
-    ]
+    desc = cognito_idp.describe_user_pool_client(UserPoolId=pid, ClientId=cid)["UserPoolClient"]
     assert desc["ClientId"] == cid
     assert desc["ClientName"] == "MyApp"
 
@@ -9839,9 +9362,7 @@ def test_cognito_list_user_pool_clients(cognito_idp):
     pid = cognito_idp.create_user_pool(PoolName="MultiClientPool")["UserPool"]["Id"]
     cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="App1")
     cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="App2")
-    clients = cognito_idp.list_user_pool_clients(UserPoolId=pid, MaxResults=60)[
-        "UserPoolClients"
-    ]
+    clients = cognito_idp.list_user_pool_clients(UserPoolId=pid, MaxResults=60)["UserPoolClients"]
     names = [c["ClientName"] for c in clients]
     assert "App1" in names
     assert "App2" in names
@@ -9897,9 +9418,7 @@ def test_cognito_admin_set_user_password(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="dave")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="dave", Password="NewPass123!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="dave", Password="NewPass123!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -9919,9 +9438,7 @@ def test_cognito_admin_initiate_auth_wrong_password(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="eve")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="eve", Password="Correct1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="eve", Password="Correct1!", Permanent=True)
     with pytest.raises(botocore.exceptions.ClientError) as exc_info:
         cognito_idp.admin_initiate_auth(
             UserPoolId=pid,
@@ -9940,9 +9457,7 @@ def test_cognito_initiate_auth_user_password(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="frank")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="frank", Password="FrankPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="frank", Password="FrankPass1!", Permanent=True)
     auth = cognito_idp.initiate_auth(
         ClientId=cid,
         AuthFlow="USER_PASSWORD_AUTH",
@@ -9957,9 +9472,7 @@ def test_cognito_initiate_auth_user_password(cognito_idp):
 
 def test_cognito_signup_and_confirm(cognito_idp):
     pid = cognito_idp.create_user_pool(PoolName="SignupPool")["UserPool"]["Id"]
-    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="SignupApp")[
-        "UserPoolClient"
-    ]["ClientId"]
+    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="SignupApp")["UserPoolClient"]["ClientId"]
 
     resp = cognito_idp.sign_up(
         ClientId=cid,
@@ -9980,13 +9493,9 @@ def test_cognito_signup_and_confirm(cognito_idp):
 
 def test_cognito_forgot_password_and_confirm(cognito_idp):
     pid = cognito_idp.create_user_pool(PoolName="ForgotPwdPool")["UserPool"]["Id"]
-    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="ForgotApp")[
-        "UserPoolClient"
-    ]["ClientId"]
+    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="ForgotApp")["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="henry")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="henry", Password="OldPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="henry", Password="OldPass1!", Permanent=True)
 
     cognito_idp.forgot_password(ClientId=cid, Username="henry")
 
@@ -9996,9 +9505,7 @@ def test_cognito_forgot_password_and_confirm(cognito_idp):
         ConfirmationCode="654321",
         Password="NewPass2!",
     )
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="henry", Password="NewPass2!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="henry", Password="NewPass2!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10052,9 +9559,7 @@ def test_cognito_admin_delete_user(cognito_idp):
 def test_cognito_groups_crud(cognito_idp):
     pid = cognito_idp.create_user_pool(PoolName="GroupPool")["UserPool"]["Id"]
 
-    resp = cognito_idp.create_group(
-        UserPoolId=pid, GroupName="admins", Description="Admins"
-    )
+    resp = cognito_idp.create_group(UserPoolId=pid, GroupName="admins", Description="Admins")
     assert resp["Group"]["GroupName"] == "admins"
 
     group = cognito_idp.get_group(UserPoolId=pid, GroupName="admins")["Group"]
@@ -10073,25 +9578,15 @@ def test_cognito_admin_add_remove_user_from_group(cognito_idp):
     cognito_idp.admin_create_user(UserPoolId=pid, Username="liam")
     cognito_idp.create_group(UserPoolId=pid, GroupName="editors")
 
-    cognito_idp.admin_add_user_to_group(
-        UserPoolId=pid, Username="liam", GroupName="editors"
-    )
-    members = cognito_idp.list_users_in_group(UserPoolId=pid, GroupName="editors")[
-        "Users"
-    ]
+    cognito_idp.admin_add_user_to_group(UserPoolId=pid, Username="liam", GroupName="editors")
+    members = cognito_idp.list_users_in_group(UserPoolId=pid, GroupName="editors")["Users"]
     assert any(u["Username"] == "liam" for u in members)
 
-    groups_for_user = cognito_idp.admin_list_groups_for_user(
-        UserPoolId=pid, Username="liam"
-    )["Groups"]
+    groups_for_user = cognito_idp.admin_list_groups_for_user(UserPoolId=pid, Username="liam")["Groups"]
     assert any(g["GroupName"] == "editors" for g in groups_for_user)
 
-    cognito_idp.admin_remove_user_from_group(
-        UserPoolId=pid, Username="liam", GroupName="editors"
-    )
-    members = cognito_idp.list_users_in_group(UserPoolId=pid, GroupName="editors")[
-        "Users"
-    ]
+    cognito_idp.admin_remove_user_from_group(UserPoolId=pid, Username="liam", GroupName="editors")
+    members = cognito_idp.list_users_in_group(UserPoolId=pid, GroupName="editors")["Users"]
     assert not any(u["Username"] == "liam" for u in members)
 
 
@@ -10150,9 +9645,7 @@ def test_cognito_get_user_from_token(cognito_idp):
         Username="maya",
         UserAttributes=[{"Name": "email", "Value": "maya@example.com"}],
     )
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="maya", Password="MayaPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="maya", Password="MayaPass1!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10172,9 +9665,7 @@ def test_cognito_global_sign_out(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="noah")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="noah", Password="NoahPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="noah", Password="NoahPass1!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10187,9 +9678,9 @@ def test_cognito_global_sign_out(cognito_idp):
 
 def test_cognito_admin_confirm_signup(cognito_idp):
     pid = cognito_idp.create_user_pool(PoolName="AdminConfirmPool")["UserPool"]["Id"]
-    cid = cognito_idp.create_user_pool_client(
-        UserPoolId=pid, ClientName="AdminConfirmApp"
-    )["UserPoolClient"]["ClientId"]
+    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="AdminConfirmApp")["UserPoolClient"][
+        "ClientId"
+    ]
     cognito_idp.sign_up(
         ClientId=cid,
         Username="olivia",
@@ -10267,9 +9758,7 @@ def test_cognito_identity_pool_roles(cognito_identity):
     )
     roles = cognito_identity.get_identity_pool_roles(IdentityPoolId=iid)
     assert roles["Roles"]["authenticated"] == "arn:aws:iam::000000000000:role/AuthRole"
-    assert (
-        roles["Roles"]["unauthenticated"] == "arn:aws:iam::000000000000:role/UnauthRole"
-    )
+    assert roles["Roles"]["unauthenticated"] == "arn:aws:iam::000000000000:role/UnauthRole"
 
 
 def test_cognito_list_identities(cognito_identity):
@@ -10279,16 +9768,10 @@ def test_cognito_list_identities(cognito_identity):
     )
     iid = resp["IdentityPoolId"]
 
-    id1 = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")[
-        "IdentityId"
-    ]
-    id2 = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")[
-        "IdentityId"
-    ]
+    id1 = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")["IdentityId"]
+    id2 = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")["IdentityId"]
 
-    identities = cognito_identity.list_identities(IdentityPoolId=iid, MaxResults=60)[
-        "Identities"
-    ]
+    identities = cognito_identity.list_identities(IdentityPoolId=iid, MaxResults=60)["Identities"]
     ids = [i["IdentityId"] for i in identities]
     assert id1 in ids
     assert id2 in ids
@@ -10300,9 +9783,7 @@ def test_cognito_get_open_id_token(cognito_identity):
         AllowUnauthenticatedIdentities=True,
     )
     iid = resp["IdentityPoolId"]
-    identity_id = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")[
-        "IdentityId"
-    ]
+    identity_id = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")["IdentityId"]
 
     token_resp = cognito_identity.get_open_id_token(IdentityId=identity_id)
     assert token_resp["IdentityId"] == identity_id
@@ -10319,9 +9800,7 @@ def test_cognito_signup_always_unconfirmed(cognito_idp):
         PoolName="AutoVerifyPool",
         AutoVerifiedAttributes=["email"],
     )["UserPool"]["Id"]
-    cid = cognito_idp.create_user_pool_client(
-        UserPoolId=pid, ClientName="AutoVerifyApp"
-    )["UserPoolClient"]["ClientId"]
+    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="AutoVerifyApp")["UserPoolClient"]["ClientId"]
     resp = cognito_idp.sign_up(
         ClientId=cid,
         Username="testuser",
@@ -10334,12 +9813,10 @@ def test_cognito_signup_always_unconfirmed(cognito_idp):
 
     # Pool with NO AutoVerifiedAttributes — user also starts UNCONFIRMED
     pid2 = cognito_idp.create_user_pool(PoolName="NoAutoVerifyPool")["UserPool"]["Id"]
-    cid2 = cognito_idp.create_user_pool_client(
-        UserPoolId=pid2, ClientName="NoAutoVerifyApp"
-    )["UserPoolClient"]["ClientId"]
-    resp2 = cognito_idp.sign_up(
-        ClientId=cid2, Username="testuser2", Password="TestPass1!"
-    )
+    cid2 = cognito_idp.create_user_pool_client(UserPoolId=pid2, ClientName="NoAutoVerifyApp")["UserPoolClient"][
+        "ClientId"
+    ]
+    resp2 = cognito_idp.sign_up(ClientId=cid2, Username="testuser2", Password="TestPass1!")
     assert resp2["UserConfirmed"] is False
     user2 = cognito_idp.admin_get_user(UserPoolId=pid2, Username="testuser2")
     assert user2["UserStatus"] == "UNCONFIRMED"
@@ -10354,9 +9831,7 @@ def test_cognito_change_password(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="pwduser")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="pwduser", Password="OldPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="pwduser", Password="OldPass1!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10404,9 +9879,7 @@ def test_cognito_refresh_token_auth_correct_user(cognito_idp):
 
     for name, pw in [("first", "First1!"), ("second", "Second1!")]:
         cognito_idp.admin_create_user(UserPoolId=pid, Username=name)
-        cognito_idp.admin_set_user_password(
-            UserPoolId=pid, Username=name, Password=pw, Permanent=True
-        )
+        cognito_idp.admin_set_user_password(UserPoolId=pid, Username=name, Password=pw, Permanent=True)
 
     # Auth as "second" user and refresh
     auth = cognito_idp.admin_initiate_auth(
@@ -10439,9 +9912,7 @@ def test_cognito_refresh_token_alias(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="aliasuser")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="aliasuser", Password="AliasPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="aliasuser", Password="AliasPass1!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10469,9 +9940,7 @@ def test_cognito_respond_to_auth_challenge_new_password(cognito_idp):
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="newpwduser")
     # Set a temp password — Permanent=False keeps FORCE_CHANGE_PASSWORD status
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="newpwduser", Password="TempPass1!", Permanent=False
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="newpwduser", Password="TempPass1!", Permanent=False)
     # Initiate auth — FORCE_CHANGE_PASSWORD triggers NEW_PASSWORD_REQUIRED challenge
     auth = cognito_idp.initiate_auth(
         ClientId=cid,
@@ -10504,9 +9973,7 @@ def test_cognito_update_user_attributes_via_token(cognito_idp):
         Username="attrupdate",
         UserAttributes=[{"Name": "email", "Value": "old@example.com"}],
     )
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="attrupdate", Password="AttrPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="attrupdate", Password="AttrPass1!", Permanent=True)
     access_token = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10534,9 +10001,7 @@ def test_cognito_delete_user_via_token(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="selfdelete")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="selfdelete", Password="DelPass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="selfdelete", Password="DelPass1!", Permanent=True)
     access_token = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10553,9 +10018,7 @@ def test_cognito_delete_user_via_token(cognito_idp):
 
 def test_cognito_update_user_pool_client(cognito_idp):
     pid = cognito_idp.create_user_pool(PoolName="UpdateClientPool")["UserPool"]["Id"]
-    cid = cognito_idp.create_user_pool_client(
-        UserPoolId=pid, ClientName="OriginalName"
-    )["UserPoolClient"]["ClientId"]
+    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="OriginalName")["UserPoolClient"]["ClientId"]
     updated = cognito_idp.update_user_pool_client(
         UserPoolId=pid,
         ClientId=cid,
@@ -10565,27 +10028,21 @@ def test_cognito_update_user_pool_client(cognito_idp):
     assert updated["ClientName"] == "UpdatedName"
     assert updated["RefreshTokenValidity"] == 14
     # Verify persisted
-    desc = cognito_idp.describe_user_pool_client(UserPoolId=pid, ClientId=cid)[
-        "UserPoolClient"
-    ]
+    desc = cognito_idp.describe_user_pool_client(UserPoolId=pid, ClientId=cid)["UserPoolClient"]
     assert desc["ClientName"] == "UpdatedName"
 
 
 def test_cognito_admin_reset_user_password(cognito_idp):
     pid = cognito_idp.create_user_pool(PoolName="ResetPwdPool")["UserPool"]["Id"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="resetuser")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="resetuser", Password="Pass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="resetuser", Password="Pass1!", Permanent=True)
     cognito_idp.admin_reset_user_password(UserPoolId=pid, Username="resetuser")
     user = cognito_idp.admin_get_user(UserPoolId=pid, Username="resetuser")
     assert user["UserStatus"] == "RESET_REQUIRED"
 
 
 def test_cognito_admin_user_global_sign_out(cognito_idp):
-    pid = cognito_idp.create_user_pool(PoolName="GlobalSignOutAdminPool")["UserPool"][
-        "Id"
-    ]
+    pid = cognito_idp.create_user_pool(PoolName="GlobalSignOutAdminPool")["UserPool"]["Id"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="signoutuser")
     cognito_idp.admin_user_global_sign_out(UserPoolId=pid, Username="signoutuser")
 
@@ -10598,9 +10055,7 @@ def test_cognito_revoke_token(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="revokeuser")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="revokeuser", Password="RevokePass1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="revokeuser", Password="RevokePass1!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10617,9 +10072,7 @@ def test_cognito_describe_identity(cognito_identity):
         AllowUnauthenticatedIdentities=True,
     )
     iid = resp["IdentityPoolId"]
-    identity_id = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")[
-        "IdentityId"
-    ]
+    identity_id = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")["IdentityId"]
     desc = cognito_identity.describe_identity(IdentityId=identity_id)
     assert desc["IdentityId"] == identity_id
 
@@ -10663,9 +10116,7 @@ def test_cognito_credentials_secret_access_key(cognito_identity):
         IdentityPoolName="qa-creds-pool",
         AllowUnauthenticatedIdentities=True,
     )["IdentityPoolId"]
-    identity_id = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")[
-        "IdentityId"
-    ]
+    identity_id = cognito_identity.get_id(IdentityPoolId=iid, AccountId="000000000000")["IdentityId"]
     creds = cognito_identity.get_credentials_for_identity(IdentityId=identity_id)
     c = creds["Credentials"]
     assert "SecretKey" in c
@@ -10683,18 +10134,14 @@ def test_cognito_change_password_actually_changes(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="qa-cpwd-user")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="qa-cpwd-user", Password="OldPwd1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="qa-cpwd-user", Password="OldPwd1!", Permanent=True)
     token = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
         AuthFlow="ADMIN_USER_PASSWORD_AUTH",
         AuthParameters={"USERNAME": "qa-cpwd-user", "PASSWORD": "OldPwd1!"},
     )["AuthenticationResult"]["AccessToken"]
-    cognito_idp.change_password(
-        AccessToken=token, PreviousPassword="OldPwd1!", ProposedPassword="NewPwd2!"
-    )
+    cognito_idp.change_password(AccessToken=token, PreviousPassword="OldPwd1!", ProposedPassword="NewPwd2!")
     auth2 = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10722,9 +10169,7 @@ def test_cognito_refresh_token_returns_correct_user(cognito_idp):
     )["UserPoolClient"]["ClientId"]
     for name, pw in [("qa-first", "First1!"), ("qa-second", "Second1!")]:
         cognito_idp.admin_create_user(UserPoolId=pid, Username=name)
-        cognito_idp.admin_set_user_password(
-            UserPoolId=pid, Username=name, Password=pw, Permanent=True
-        )
+        cognito_idp.admin_set_user_password(UserPoolId=pid, Username=name, Password=pw, Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
         UserPoolId=pid,
         ClientId=cid,
@@ -10740,19 +10185,15 @@ def test_cognito_refresh_token_returns_correct_user(cognito_idp):
     )
     new_token = refresh["AuthenticationResult"]["AccessToken"]
     user = cognito_idp.get_user(AccessToken=new_token)
-    assert user["Username"] == "qa-second", (
-        "Refresh must return tokens for qa-second not qa-first"
-    )
+    assert user["Username"] == "qa-second", "Refresh must return tokens for qa-second not qa-first"
 
 
 def test_cognito_signup_unconfirmed_with_auto_verify(cognito_idp):
     """SignUp with AutoVerifiedAttributes must return UserConfirmed=False."""
-    pid = cognito_idp.create_user_pool(
-        PoolName="qa-autoverify", AutoVerifiedAttributes=["email"]
-    )["UserPool"]["Id"]
-    cid = cognito_idp.create_user_pool_client(
-        UserPoolId=pid, ClientName="qa-autoverify-app"
-    )["UserPoolClient"]["ClientId"]
+    pid = cognito_idp.create_user_pool(PoolName="qa-autoverify", AutoVerifiedAttributes=["email"])["UserPool"]["Id"]
+    cid = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="qa-autoverify-app")["UserPoolClient"][
+        "ClientId"
+    ]
     resp = cognito_idp.sign_up(
         ClientId=cid,
         Username="qa-signup-user",
@@ -10773,9 +10214,7 @@ def test_cognito_disabled_user_auth_fails(cognito_idp):
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="qa-disabled")
-    cognito_idp.admin_set_user_password(
-        UserPoolId=pid, Username="qa-disabled", Password="Dis1!", Permanent=True
-    )
+    cognito_idp.admin_set_user_password(UserPoolId=pid, Username="qa-disabled", Password="Dis1!", Permanent=True)
     cognito_idp.admin_disable_user(UserPoolId=pid, Username="qa-disabled")
     with pytest.raises(ClientError) as exc:
         cognito_idp.admin_initiate_auth(
@@ -10793,12 +10232,8 @@ def test_cognito_list_users_in_group(cognito_idp):
     cognito_idp.create_group(UserPoolId=pid, GroupName="qa-grp")
     for u in ["qa-u1", "qa-u2", "qa-u3"]:
         cognito_idp.admin_create_user(UserPoolId=pid, Username=u)
-        cognito_idp.admin_add_user_to_group(
-            UserPoolId=pid, Username=u, GroupName="qa-grp"
-        )
-    members = cognito_idp.list_users_in_group(UserPoolId=pid, GroupName="qa-grp")[
-        "Users"
-    ]
+        cognito_idp.admin_add_user_to_group(UserPoolId=pid, Username=u, GroupName="qa-grp")
+    members = cognito_idp.list_users_in_group(UserPoolId=pid, GroupName="qa-grp")["Users"]
     names = {u["Username"] for u in members}
     assert {"qa-u1", "qa-u2", "qa-u3"} == names
 
@@ -10815,9 +10250,9 @@ def test_cognito_duplicate_username_error(cognito_idp):
 def test_cognito_client_secret_generated(cognito_idp):
     """CreateUserPoolClient with GenerateSecret=True must return a ClientSecret."""
     pid = cognito_idp.create_user_pool(PoolName="qa-secret-client")["UserPool"]["Id"]
-    client = cognito_idp.create_user_pool_client(
-        UserPoolId=pid, ClientName="qa-secret-app", GenerateSecret=True
-    )["UserPoolClient"]
+    client = cognito_idp.create_user_pool_client(UserPoolId=pid, ClientName="qa-secret-app", GenerateSecret=True)[
+        "UserPoolClient"
+    ]
     assert "ClientSecret" in client
     assert len(client["ClientSecret"]) > 20
 
@@ -10878,7 +10313,8 @@ def test_cognito_totp_full_flow(cognito_idp):
     # Enroll TOTP: associate → get tokens first (MFA not yet enrolled, pool is ON but no enrollment)
     # Pool ON with no enrollment → auth succeeds so user can enroll
     auth = cognito_idp.admin_initiate_auth(
-        UserPoolId=pid, ClientId=cid,
+        UserPoolId=pid,
+        ClientId=cid,
         AuthFlow="ADMIN_USER_PASSWORD_AUTH",
         AuthParameters={"USERNAME": "totp-user", "PASSWORD": "Perm1!"},
     )
@@ -10895,7 +10331,8 @@ def test_cognito_totp_full_flow(cognito_idp):
 
     # Now auth should return SOFTWARE_TOKEN_MFA challenge
     auth2 = cognito_idp.admin_initiate_auth(
-        UserPoolId=pid, ClientId=cid,
+        UserPoolId=pid,
+        ClientId=cid,
         AuthFlow="ADMIN_USER_PASSWORD_AUTH",
         AuthParameters={"USERNAME": "totp-user", "PASSWORD": "Perm1!"},
     )
@@ -10904,7 +10341,8 @@ def test_cognito_totp_full_flow(cognito_idp):
 
     # Respond with any TOTP code → get tokens
     result = cognito_idp.admin_respond_to_auth_challenge(
-        UserPoolId=pid, ClientId=cid,
+        UserPoolId=pid,
+        ClientId=cid,
         ChallengeName="SOFTWARE_TOKEN_MFA",
         ChallengeResponses={"USERNAME": "totp-user", "SOFTWARE_TOKEN_MFA_CODE": "123456"},
     )
@@ -10917,7 +10355,8 @@ def test_cognito_totp_optional_mfa(cognito_idp):
     users with TOTP enrolled get the challenge."""
     pid = cognito_idp.create_user_pool(PoolName="qa-totp-optional")["UserPool"]["Id"]
     cid = cognito_idp.create_user_pool_client(
-        UserPoolId=pid, ClientName="qa-totp-opt-app",
+        UserPoolId=pid,
+        ClientName="qa-totp-opt-app",
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
 
@@ -10931,7 +10370,8 @@ def test_cognito_totp_optional_mfa(cognito_idp):
     cognito_idp.admin_create_user(UserPoolId=pid, Username="no-mfa-user", TemporaryPassword="Tmp1!")
     cognito_idp.admin_set_user_password(UserPoolId=pid, Username="no-mfa-user", Password="Perm1!", Permanent=True)
     auth = cognito_idp.admin_initiate_auth(
-        UserPoolId=pid, ClientId=cid,
+        UserPoolId=pid,
+        ClientId=cid,
         AuthFlow="ADMIN_USER_PASSWORD_AUTH",
         AuthParameters={"USERNAME": "no-mfa-user", "PASSWORD": "Perm1!"},
     )
@@ -10941,11 +10381,13 @@ def test_cognito_totp_optional_mfa(cognito_idp):
     cognito_idp.admin_create_user(UserPoolId=pid, Username="mfa-user", TemporaryPassword="Tmp1!")
     cognito_idp.admin_set_user_password(UserPoolId=pid, Username="mfa-user", Password="Perm1!", Permanent=True)
     cognito_idp.admin_set_user_mfa_preference(
-        UserPoolId=pid, Username="mfa-user",
+        UserPoolId=pid,
+        Username="mfa-user",
         SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
     )
     auth2 = cognito_idp.admin_initiate_auth(
-        UserPoolId=pid, ClientId=cid,
+        UserPoolId=pid,
+        ClientId=cid,
         AuthFlow="ADMIN_USER_PASSWORD_AUTH",
         AuthParameters={"USERNAME": "mfa-user", "PASSWORD": "Perm1!"},
     )
@@ -10965,7 +10407,8 @@ def test_cognito_admin_get_user_mfa_fields(cognito_idp):
 
     # After enrollment
     cognito_idp.admin_set_user_mfa_preference(
-        UserPoolId=pid, Username="mfa-check-user",
+        UserPoolId=pid,
+        Username="mfa-check-user",
         SoftwareTokenMfaSettings={"Enabled": True, "PreferredMfa": True},
     )
     u2 = cognito_idp.admin_get_user(UserPoolId=pid, Username="mfa-check-user")
@@ -10977,14 +10420,16 @@ def test_cognito_set_user_mfa_preference_via_token(cognito_idp):
     """SetUserMFAPreference (public, uses AccessToken) enrolls TOTP on the user."""
     pid = cognito_idp.create_user_pool(PoolName="qa-totp-selfenroll")["UserPool"]["Id"]
     cid = cognito_idp.create_user_pool_client(
-        UserPoolId=pid, ClientName="qa-totp-self-app",
+        UserPoolId=pid,
+        ClientName="qa-totp-self-app",
         ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
     )["UserPoolClient"]["ClientId"]
     cognito_idp.admin_create_user(UserPoolId=pid, Username="self-enroll", TemporaryPassword="Tmp1!")
     cognito_idp.admin_set_user_password(UserPoolId=pid, Username="self-enroll", Password="Perm1!", Permanent=True)
 
     auth = cognito_idp.admin_initiate_auth(
-        UserPoolId=pid, ClientId=cid,
+        UserPoolId=pid,
+        ClientId=cid,
         AuthFlow="ADMIN_USER_PASSWORD_AUTH",
         AuthParameters={"USERNAME": "self-enroll", "PASSWORD": "Perm1!"},
     )
@@ -11037,9 +10482,7 @@ def test_ddb_update_item_updated_old(ddb):
         AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
         BillingMode="PAY_PER_REQUEST",
     )
-    ddb.put_item(
-        TableName="qa-ddb-updated-old", Item={"pk": {"S": "k1"}, "score": {"N": "10"}}
-    )
+    ddb.put_item(TableName="qa-ddb-updated-old", Item={"pk": {"S": "k1"}, "score": {"N": "10"}})
     resp = ddb.update_item(
         TableName="qa-ddb-updated-old",
         Key={"pk": {"S": "k1"}},
@@ -11159,9 +10602,7 @@ def test_ddb_transact_write_condition_cancel(ddb):
 
 def test_ddb_batch_get_missing_table(ddb):
     """BatchGetItem with non-existent table returns it in UnprocessedKeys."""
-    resp = ddb.batch_get_item(
-        RequestItems={"qa-ddb-nonexistent-xyz": {"Keys": [{"pk": {"S": "k1"}}]}}
-    )
+    resp = ddb.batch_get_item(RequestItems={"qa-ddb-nonexistent-xyz": {"Keys": [{"pk": {"S": "k1"}}]}})
     assert "qa-ddb-nonexistent-xyz" in resp["UnprocessedKeys"]
 
 
@@ -11184,9 +10625,7 @@ def test_s3_range_beyond_end(s3):
     s3.create_bucket(Bucket="qa-s3-range-beyond")
     s3.put_object(Bucket="qa-s3-range-beyond", Key="small.txt", Body=b"hello")
     with pytest.raises(ClientError) as exc:
-        s3.get_object(
-            Bucket="qa-s3-range-beyond", Key="small.txt", Range="bytes=100-200"
-        )
+        s3.get_object(Bucket="qa-s3-range-beyond", Key="small.txt", Range="bytes=100-200")
     assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 416
 
 
@@ -11201,9 +10640,7 @@ def test_s3_list_v1_marker_pagination(s3):
     assert resp1["IsTruncated"] is True
     assert len(resp1["Contents"]) == 4
     marker = resp1["NextMarker"]
-    resp2 = s3.list_objects(
-        Bucket="qa-s3-marker", MaxKeys=4, Marker=marker, Delimiter="/"
-    )
+    resp2 = s3.list_objects(Bucket="qa-s3-marker", MaxKeys=4, Marker=marker, Delimiter="/")
     page2_keys = [o["Key"] for o in resp2["Contents"]]
     page1_keys = [o["Key"] for o in resp1["Contents"]]
     assert not any(k in page1_keys for k in page2_keys)
@@ -11282,9 +10719,7 @@ def test_s3_multipart_list_parts(s3):
         PartNumber=2,
         Body=b"B" * 50,
     )
-    parts = s3.list_parts(Bucket="qa-s3-listparts", Key="big.bin", UploadId=uid)[
-        "Parts"
-    ]
+    parts = s3.list_parts(Bucket="qa-s3-listparts", Key="big.bin", UploadId=uid)["Parts"]
     assert len(parts) == 2
     assert parts[0]["PartNumber"] == 1
     assert parts[1]["PartNumber"] == 2
@@ -11332,9 +10767,7 @@ def test_sqs_visibility_timeout_zero_makes_visible(sqs):
     """ChangeMessageVisibility to 0 makes message immediately visible again."""
     url = sqs.create_queue(QueueName="qa-sqs-vis0")["QueueUrl"]
     sqs.send_message(QueueUrl=url, MessageBody="vis-test")
-    msgs = sqs.receive_message(
-        QueueUrl=url, MaxNumberOfMessages=1, VisibilityTimeout=30
-    )
+    msgs = sqs.receive_message(QueueUrl=url, MaxNumberOfMessages=1, VisibilityTimeout=30)
     rh = msgs["Messages"][0]["ReceiptHandle"]
     sqs.change_message_visibility(QueueUrl=url, ReceiptHandle=rh, VisibilityTimeout=0)
     msgs2 = sqs.receive_message(QueueUrl=url, MaxNumberOfMessages=1)
@@ -11370,9 +10803,7 @@ def test_sqs_approximate_message_count(sqs):
     url = sqs.create_queue(QueueName="qa-sqs-count")["QueueUrl"]
     for i in range(5):
         sqs.send_message(QueueUrl=url, MessageBody=f"m{i}")
-    attrs = sqs.get_queue_attributes(
-        QueueUrl=url, AttributeNames=["ApproximateNumberOfMessages"]
-    )
+    attrs = sqs.get_queue_attributes(QueueUrl=url, AttributeNames=["ApproximateNumberOfMessages"])
     count = int(attrs["Attributes"]["ApproximateNumberOfMessages"])
     assert count == 5
 
@@ -11396,12 +10827,8 @@ def test_sns_filter_policy_blocks_non_matching(sns, sqs):
     """SNS filter policy prevents delivery when message attributes don't match."""
     topic_arn = sns.create_topic(Name="qa-sns-filter")["TopicArn"]
     q_url = sqs.create_queue(QueueName="qa-sns-filter-q")["QueueUrl"]
-    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
-        "Attributes"
-    ]["QueueArn"]
-    sub_arn = sns.subscribe(TopicArn=topic_arn, Protocol="sqs", Endpoint=q_arn)[
-        "SubscriptionArn"
-    ]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
+    sub_arn = sns.subscribe(TopicArn=topic_arn, Protocol="sqs", Endpoint=q_arn)["SubscriptionArn"]
     sns.set_subscription_attributes(
         SubscriptionArn=sub_arn,
         AttributeName="FilterPolicy",
@@ -11419,9 +10846,7 @@ def test_sns_filter_policy_blocks_non_matching(sns, sqs):
         Message="blue message",
         MessageAttributes={"color": {"DataType": "String", "StringValue": "blue"}},
     )
-    msgs2 = sqs.receive_message(
-        QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=1
-    )
+    msgs2 = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=1)
     assert len(msgs2.get("Messages", [])) == 1
     body = json.loads(msgs2["Messages"][0]["Body"])
     assert body["Message"] == "blue message"
@@ -11431,12 +10856,8 @@ def test_sns_raw_message_delivery(sns, sqs):
     """RawMessageDelivery=true delivers raw message body, not SNS envelope."""
     topic_arn = sns.create_topic(Name="qa-sns-raw")["TopicArn"]
     q_url = sqs.create_queue(QueueName="qa-sns-raw-q")["QueueUrl"]
-    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
-        "Attributes"
-    ]["QueueArn"]
-    sub_arn = sns.subscribe(TopicArn=topic_arn, Protocol="sqs", Endpoint=q_arn)[
-        "SubscriptionArn"
-    ]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
+    sub_arn = sns.subscribe(TopicArn=topic_arn, Protocol="sqs", Endpoint=q_arn)["SubscriptionArn"]
     sns.set_subscription_attributes(
         SubscriptionArn=sub_arn,
         AttributeName="RawMessageDelivery",
@@ -11643,9 +11064,7 @@ def test_iam_policy_version_crud(iam):
             "Statement": [{"Effect": "Allow", "Action": "sqs:*", "Resource": "*"}],
         }
     )
-    arn = iam.create_policy(PolicyName="qa-iam-versions", PolicyDocument=doc1)[
-        "Policy"
-    ]["Arn"]
+    arn = iam.create_policy(PolicyName="qa-iam-versions", PolicyDocument=doc1)["Policy"]["Arn"]
     iam.create_policy_version(PolicyArn=arn, PolicyDocument=doc2, SetAsDefault=True)
     versions = iam.list_policy_versions(PolicyArn=arn)["Versions"]
     assert len(versions) == 2
@@ -11664,14 +11083,10 @@ def test_iam_inline_user_policy(iam):
     doc = json.dumps(
         {
             "Version": "2012-10-17",
-            "Statement": [
-                {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"}
-            ],
+            "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"}],
         }
     )
-    iam.put_user_policy(
-        UserName="qa-iam-inline-user", PolicyName="qa-inline", PolicyDocument=doc
-    )
+    iam.put_user_policy(UserName="qa-iam-inline-user", PolicyName="qa-inline", PolicyDocument=doc)
     policies = iam.list_user_policies(UserName="qa-iam-inline-user")["PolicyNames"]
     assert "qa-inline" in policies
     got = iam.get_user_policy(UserName="qa-iam-inline-user", PolicyName="qa-inline")
@@ -11689,17 +11104,13 @@ def test_iam_instance_profile_crud(iam):
         AssumeRolePolicyDocument=json.dumps({"Version": "2012-10-17", "Statement": []}),
     )
     iam.create_instance_profile(InstanceProfileName="qa-iam-ip")
-    iam.add_role_to_instance_profile(
-        InstanceProfileName="qa-iam-ip", RoleName="qa-iam-ip-role"
-    )
+    iam.add_role_to_instance_profile(InstanceProfileName="qa-iam-ip", RoleName="qa-iam-ip-role")
     ip = iam.get_instance_profile(InstanceProfileName="qa-iam-ip")["InstanceProfile"]
     assert ip["InstanceProfileName"] == "qa-iam-ip"
     assert any(r["RoleName"] == "qa-iam-ip-role" for r in ip["Roles"])
     profiles = iam.list_instance_profiles()["InstanceProfiles"]
     assert any(p["InstanceProfileName"] == "qa-iam-ip" for p in profiles)
-    iam.remove_role_from_instance_profile(
-        InstanceProfileName="qa-iam-ip", RoleName="qa-iam-ip-role"
-    )
+    iam.remove_role_from_instance_profile(InstanceProfileName="qa-iam-ip", RoleName="qa-iam-ip-role")
     iam.delete_instance_profile(InstanceProfileName="qa-iam-ip")
 
 
@@ -11707,18 +11118,12 @@ def test_iam_attach_detach_user_policy(iam):
     """AttachUserPolicy / DetachUserPolicy / ListAttachedUserPolicies."""
     iam.create_user(UserName="qa-iam-attach-user")
     doc = json.dumps({"Version": "2012-10-17", "Statement": []})
-    policy_arn = iam.create_policy(PolicyName="qa-iam-attach-pol", PolicyDocument=doc)[
-        "Policy"
-    ]["Arn"]
+    policy_arn = iam.create_policy(PolicyName="qa-iam-attach-pol", PolicyDocument=doc)["Policy"]["Arn"]
     iam.attach_user_policy(UserName="qa-iam-attach-user", PolicyArn=policy_arn)
-    attached = iam.list_attached_user_policies(UserName="qa-iam-attach-user")[
-        "AttachedPolicies"
-    ]
+    attached = iam.list_attached_user_policies(UserName="qa-iam-attach-user")["AttachedPolicies"]
     assert any(p["PolicyArn"] == policy_arn for p in attached)
     iam.detach_user_policy(UserName="qa-iam-attach-user", PolicyArn=policy_arn)
-    attached2 = iam.list_attached_user_policies(UserName="qa-iam-attach-user")[
-        "AttachedPolicies"
-    ]
+    attached2 = iam.list_attached_user_policies(UserName="qa-iam-attach-user")["AttachedPolicies"]
     assert not any(p["PolicyArn"] == policy_arn for p in attached2)
 
 
@@ -11787,9 +11192,7 @@ def test_ssm_describe_parameters_filter(ssm):
     ssm.put_parameter(Name="/qa/ssm/filter/a", Value="1", Type="String")
     ssm.put_parameter(Name="/qa/ssm/filter/b", Value="2", Type="String")
     ssm.put_parameter(Name="/qa/ssm/other/c", Value="3", Type="String")
-    resp = ssm.describe_parameters(
-        ParameterFilters=[{"Key": "Path", "Values": ["/qa/ssm/filter"]}]
-    )
+    resp = ssm.describe_parameters(ParameterFilters=[{"Key": "Path", "Values": ["/qa/ssm/filter"]}])
     names = [p["Name"] for p in resp["Parameters"]]
     assert "/qa/ssm/filter/a" in names
     assert "/qa/ssm/filter/b" in names
@@ -11815,15 +11218,11 @@ def test_eb_content_filter_prefix(eb, sqs):
     bus_name = "qa-eb-prefix-bus"
     eb.create_event_bus(Name=bus_name)
     q_url = sqs.create_queue(QueueName="qa-eb-prefix-q")["QueueUrl"]
-    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
-        "Attributes"
-    ]["QueueArn"]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
     eb.put_rule(
         Name="qa-eb-prefix-rule",
         EventBusName=bus_name,
-        EventPattern=json.dumps(
-            {"source": ["myapp"], "detail": {"env": [{"prefix": "prod"}]}}
-        ),
+        EventPattern=json.dumps({"source": ["myapp"], "detail": {"env": [{"prefix": "prod"}]}}),
         State="ENABLED",
     )
     eb.put_targets(
@@ -11853,9 +11252,7 @@ def test_eb_content_filter_prefix(eb, sqs):
             }
         ]
     )
-    msgs2 = sqs.receive_message(
-        QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0
-    )
+    msgs2 = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
     assert len(msgs2.get("Messages", [])) == 0
 
 
@@ -11864,9 +11261,7 @@ def test_eb_anything_but_filter(eb, sqs):
     bus_name = "qa-eb-anybut-bus"
     eb.create_event_bus(Name=bus_name)
     q_url = sqs.create_queue(QueueName="qa-eb-anybut-q")["QueueUrl"]
-    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
-        "Attributes"
-    ]["QueueArn"]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
     eb.put_rule(
         Name="qa-eb-anybut-rule",
         EventBusName=bus_name,
@@ -11905,9 +11300,7 @@ def test_eb_anything_but_filter(eb, sqs):
             }
         ]
     )
-    msgs2 = sqs.receive_message(
-        QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0
-    )
+    msgs2 = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
     assert len(msgs2.get("Messages", [])) == 0
 
 
@@ -11916,9 +11309,7 @@ def test_eb_input_transformer(eb, sqs):
     bus_name = "qa-eb-transform-bus"
     eb.create_event_bus(Name=bus_name)
     q_url = sqs.create_queue(QueueName="qa-eb-transform-q")["QueueUrl"]
-    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])[
-        "Attributes"
-    ]["QueueArn"]
+    q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
     eb.put_rule(
         Name="qa-eb-transform-rule",
         EventBusName=bus_name,
@@ -11982,14 +11373,10 @@ def test_kinesis_at_timestamp_iterator(kin):
 def test_kinesis_retention_period(kin):
     """IncreaseStreamRetentionPeriod / DecreaseStreamRetentionPeriod."""
     kin.create_stream(StreamName="qa-kin-retention", ShardCount=1)
-    kin.increase_stream_retention_period(
-        StreamName="qa-kin-retention", RetentionPeriodHours=48
-    )
+    kin.increase_stream_retention_period(StreamName="qa-kin-retention", RetentionPeriodHours=48)
     desc = kin.describe_stream(StreamName="qa-kin-retention")["StreamDescription"]
     assert desc["RetentionPeriodHours"] == 48
-    kin.decrease_stream_retention_period(
-        StreamName="qa-kin-retention", RetentionPeriodHours=24
-    )
+    kin.decrease_stream_retention_period(StreamName="qa-kin-retention", RetentionPeriodHours=24)
     desc2 = kin.describe_stream(StreamName="qa-kin-retention")["StreamDescription"]
     assert desc2["RetentionPeriodHours"] == 24
 
@@ -12049,16 +11436,12 @@ def test_sfn_choice_state(sfn):
         definition=definition,
         roleArn="arn:aws:iam::000000000000:role/r",
     )["stateMachineArn"]
-    exec_arn = sfn.start_execution(
-        stateMachineArn=arn, input=json.dumps({"value": 15})
-    )["executionArn"]
+    exec_arn = sfn.start_execution(stateMachineArn=arn, input=json.dumps({"value": 15}))["executionArn"]
     time.sleep(0.5)
     desc = sfn.describe_execution(executionArn=exec_arn)
     assert desc["status"] == "SUCCEEDED"
     assert json.loads(desc["output"])["result"] == "high"
-    exec_arn2 = sfn.start_execution(
-        stateMachineArn=arn, input=json.dumps({"value": 5})
-    )["executionArn"]
+    exec_arn2 = sfn.start_execution(stateMachineArn=arn, input=json.dumps({"value": 5}))["executionArn"]
     time.sleep(0.5)
     desc2 = sfn.describe_execution(executionArn=exec_arn2)
     assert desc2["status"] == "SUCCEEDED"
@@ -12153,9 +11536,7 @@ def test_sfn_list_executions_filter(sfn):
     )["stateMachineArn"]
     sfn.start_execution(stateMachineArn=arn, input="{}")
     time.sleep(0.5)
-    succeeded = sfn.list_executions(stateMachineArn=arn, statusFilter="SUCCEEDED")[
-        "executions"
-    ]
+    succeeded = sfn.list_executions(stateMachineArn=arn, statusFilter="SUCCEEDED")["executions"]
     assert all(e["status"] == "SUCCEEDED" for e in succeeded)
 
 
@@ -12207,26 +11588,18 @@ def test_cw_alarm_state_transitions(cw):
         Threshold=10.0,
         ComparisonOperator="GreaterThanThreshold",
     )
-    cw.set_alarm_state(
-        AlarmName="qa-cw-state-alarm", StateValue="ALARM", StateReason="Testing"
-    )
+    cw.set_alarm_state(AlarmName="qa-cw-state-alarm", StateValue="ALARM", StateReason="Testing")
     alarms = cw.describe_alarms(AlarmNames=["qa-cw-state-alarm"])["MetricAlarms"]
     assert alarms[0]["StateValue"] == "ALARM"
-    cw.set_alarm_state(
-        AlarmName="qa-cw-state-alarm", StateValue="OK", StateReason="Resolved"
-    )
+    cw.set_alarm_state(AlarmName="qa-cw-state-alarm", StateValue="OK", StateReason="Resolved")
     alarms2 = cw.describe_alarms(AlarmNames=["qa-cw-state-alarm"])["MetricAlarms"]
     assert alarms2[0]["StateValue"] == "OK"
 
 
 def test_cw_list_metrics_namespace_filter(cw):
     """ListMetrics with Namespace filter returns only matching metrics."""
-    cw.put_metric_data(
-        Namespace="qa/ns-a", MetricData=[{"MetricName": "MetA", "Value": 1.0}]
-    )
-    cw.put_metric_data(
-        Namespace="qa/ns-b", MetricData=[{"MetricName": "MetB", "Value": 1.0}]
-    )
+    cw.put_metric_data(Namespace="qa/ns-a", MetricData=[{"MetricName": "MetA", "Value": 1.0}])
+    cw.put_metric_data(Namespace="qa/ns-b", MetricData=[{"MetricName": "MetB", "Value": 1.0}])
     resp = cw.list_metrics(Namespace="qa/ns-a")
     names = [m["MetricName"] for m in resp["Metrics"]]
     assert "MetA" in names
@@ -12268,9 +11641,7 @@ def test_logs_filter_with_wildcard(logs):
             {"timestamp": int(time.time() * 1000), "message": "ERROR: timeout"},
         ],
     )
-    resp = logs.filter_log_events(
-        logGroupName="/qa/logs/wildcard", filterPattern="ERROR*"
-    )
+    resp = logs.filter_log_events(logGroupName="/qa/logs/wildcard", filterPattern="ERROR*")
     messages = [e["message"] for e in resp["events"]]
     assert all("ERROR" in m for m in messages)
     assert len(messages) == 2
@@ -12292,9 +11663,7 @@ def test_logs_retention_policy_invalid_value(logs):
     """PutRetentionPolicy with invalid days raises InvalidParameterException."""
     logs.create_log_group(logGroupName="/qa/logs/retention-invalid")
     with pytest.raises(ClientError) as exc:
-        logs.put_retention_policy(
-            logGroupName="/qa/logs/retention-invalid", retentionInDays=999
-        )
+        logs.put_retention_policy(logGroupName="/qa/logs/retention-invalid", retentionInDays=999)
     assert exc.value.response["Error"]["Code"] == "InvalidParameterException"
 
 
@@ -12400,9 +11769,7 @@ def test_r53_upsert_is_idempotent(r53):
             },
         )
     records = r53.list_resource_record_sets(HostedZoneId=zone_id)["ResourceRecordSets"]
-    a_records = [
-        r for r in records if r["Name"] == "api.qa-r53-upsert.com." and r["Type"] == "A"
-    ]
+    a_records = [r for r in records if r["Name"] == "api.qa-r53-upsert.com." and r["Type"] == "A"]
     assert len(a_records) == 1
     assert a_records[0]["ResourceRecords"][0]["Value"] == "2.2.2.2"
 
@@ -12456,9 +11823,7 @@ def test_r53_create_record_duplicate_fails(r53):
 
 def test_apigw_update_integration(apigw):
     """UpdateIntegration changes integrationUri."""
-    api_id = apigw.create_api(Name="qa-apigw-update-integ", ProtocolType="HTTP")[
-        "ApiId"
-    ]
+    api_id = apigw.create_api(Name="qa-apigw-update-integ", ProtocolType="HTTP")["ApiId"]
     integ_id = apigw.create_integration(
         ApiId=api_id,
         IntegrationType="AWS_PROXY",
@@ -12559,18 +11924,14 @@ def test_glue_partition_crud(glue):
         PartitionValues=["2024-01-01"],
     )["Partition"]
     assert part["Values"] == ["2024-01-01"]
-    parts = glue.get_partitions(
-        DatabaseName="qa-glue-partdb", TableName="qa-glue-parttbl"
-    )["Partitions"]
+    parts = glue.get_partitions(DatabaseName="qa-glue-partdb", TableName="qa-glue-parttbl")["Partitions"]
     assert len(parts) == 1
     glue.delete_partition(
         DatabaseName="qa-glue-partdb",
         TableName="qa-glue-parttbl",
         PartitionValues=["2024-01-01"],
     )
-    parts2 = glue.get_partitions(
-        DatabaseName="qa-glue-partdb", TableName="qa-glue-parttbl"
-    )["Partitions"]
+    parts2 = glue.get_partitions(DatabaseName="qa-glue-partdb", TableName="qa-glue-parttbl")["Partitions"]
     assert len(parts2) == 0
 
 
@@ -12640,25 +12001,19 @@ def test_athena_prepared_statement_crud(athena):
         QueryStatement="SELECT * FROM tbl WHERE id = ?",
         Description="test stmt",
     )
-    stmt = athena.get_prepared_statement(
-        StatementName="qa-athena-stmt", WorkGroup="primary"
-    )["PreparedStatement"]
+    stmt = athena.get_prepared_statement(StatementName="qa-athena-stmt", WorkGroup="primary")["PreparedStatement"]
     assert stmt["StatementName"] == "qa-athena-stmt"
     assert "SELECT" in stmt["QueryStatement"]
     stmts = athena.list_prepared_statements(WorkGroup="primary")["PreparedStatements"]
     assert any(s["StatementName"] == "qa-athena-stmt" for s in stmts)
-    athena.delete_prepared_statement(
-        StatementName="qa-athena-stmt", WorkGroup="primary"
-    )
+    athena.delete_prepared_statement(StatementName="qa-athena-stmt", WorkGroup="primary")
     stmts2 = athena.list_prepared_statements(WorkGroup="primary")["PreparedStatements"]
     assert not any(s["StatementName"] == "qa-athena-stmt" for s in stmts2)
 
 
 def test_athena_data_catalog_crud(athena):
     """CreateDataCatalog / GetDataCatalog / ListDataCatalogs / DeleteDataCatalog."""
-    athena.create_data_catalog(
-        Name="qa-athena-catalog", Type="HIVE", Description="test catalog"
-    )
+    athena.create_data_catalog(Name="qa-athena-catalog", Type="HIVE", Description="test catalog")
     catalog = athena.get_data_catalog(Name="qa-athena-catalog")["DataCatalog"]
     assert catalog["Name"] == "qa-athena-catalog"
     assert catalog["Type"] == "HIVE"
@@ -12678,6 +12033,7 @@ def test_athena_engine_mock_via_config(athena):
     """Switching ATHENA_ENGINE to 'mock' via /_ministack/config returns mock results."""
     import json as _json
     import urllib.request
+
     endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
     req = urllib.request.Request(
         f"{endpoint}/_ministack/config",
@@ -12694,6 +12050,7 @@ def test_athena_engine_mock_via_config(athena):
         ResultConfiguration={"OutputLocation": "s3://athena-results/"},
     )["QueryExecutionId"]
     import time as _time
+
     for _ in range(10):
         state = athena.get_query_execution(QueryExecutionId=qid)["QueryExecution"]["Status"]["State"]
         if state in ("SUCCEEDED", "FAILED"):
@@ -12715,13 +12072,16 @@ def test_ministack_config_invalid_key_ignored():
     """/_ministack/config silently ignores unknown keys and only applies valid ones."""
     import json as _json
     import urllib.request
+
     endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
     req = urllib.request.Request(
         f"{endpoint}/_ministack/config",
-        data=_json.dumps({
-            "nonexistent_module.VAR": "val",
-            "athena.ATHENA_ENGINE": "auto",
-        }).encode(),
+        data=_json.dumps(
+            {
+                "nonexistent_module.VAR": "val",
+                "athena.ATHENA_ENGINE": "auto",
+            }
+        ).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -12746,12 +12106,8 @@ def test_rds_snapshot_crud(rds):
         AllocatedStorage=20,
     )
     try:
-        rds.create_db_snapshot(
-            DBSnapshotIdentifier="qa-rds-snap-1", DBInstanceIdentifier="qa-rds-snap-db"
-        )
-        snaps = rds.describe_db_snapshots(DBSnapshotIdentifier="qa-rds-snap-1")[
-            "DBSnapshots"
-        ]
+        rds.create_db_snapshot(DBSnapshotIdentifier="qa-rds-snap-1", DBInstanceIdentifier="qa-rds-snap-db")
+        snaps = rds.describe_db_snapshots(DBSnapshotIdentifier="qa-rds-snap-1")["DBSnapshots"]
         assert len(snaps) == 1
         assert snaps[0]["DBSnapshotIdentifier"] == "qa-rds-snap-1"
         assert snaps[0]["Status"] == "available"
@@ -12759,9 +12115,7 @@ def test_rds_snapshot_crud(rds):
         snaps2 = rds.describe_db_snapshots()["DBSnapshots"]
         assert not any(s["DBSnapshotIdentifier"] == "qa-rds-snap-1" for s in snaps2)
     finally:
-        rds.delete_db_instance(
-            DBInstanceIdentifier="qa-rds-snap-db", SkipFinalSnapshot=True
-        )
+        rds.delete_db_instance(DBInstanceIdentifier="qa-rds-snap-db", SkipFinalSnapshot=True)
 
 
 def test_rds_deletion_protection(rds):
@@ -12785,9 +12139,7 @@ def test_rds_deletion_protection(rds):
             DeletionProtection=False,
             ApplyImmediately=True,
         )
-        rds.delete_db_instance(
-            DBInstanceIdentifier="qa-rds-protected", SkipFinalSnapshot=True
-        )
+        rds.delete_db_instance(DBInstanceIdentifier="qa-rds-protected", SkipFinalSnapshot=True)
 
 
 # ---------------------------------------------------------------------------
@@ -12816,13 +12168,9 @@ def test_ec_modify_cache_parameter_group(ec):
     )
     ec.modify_cache_parameter_group(
         CacheParameterGroupName="qa-ec-modify-params",
-        ParameterNameValues=[
-            {"ParameterName": "maxmemory-policy", "ParameterValue": "allkeys-lru"}
-        ],
+        ParameterNameValues=[{"ParameterName": "maxmemory-policy", "ParameterValue": "allkeys-lru"}],
     )
-    params = ec.describe_cache_parameters(
-        CacheParameterGroupName="qa-ec-modify-params"
-    )["Parameters"]
+    params = ec.describe_cache_parameters(CacheParameterGroupName="qa-ec-modify-params")["Parameters"]
     maxmem = next((p for p in params if p["ParameterName"] == "maxmemory-policy"), None)
     assert maxmem is not None
     assert maxmem["ParameterValue"] == "allkeys-lru"
@@ -12930,9 +12278,7 @@ def test_sfn_activity_worker_flow(sfn):
         roleArn="arn:aws:iam::000000000000:role/r",
     )["stateMachineArn"]
 
-    exec_arn = sfn.start_execution(
-        stateMachineArn=sm_arn, input=json.dumps({"msg": "hello"})
-    )["executionArn"]
+    exec_arn = sfn.start_execution(stateMachineArn=sm_arn, input=json.dumps({"msg": "hello"}))["executionArn"]
 
     def worker():
         task = sfn.get_activity_task(activityArn=act_arn, workerName="test-worker")
@@ -13024,9 +12370,7 @@ def test_ec2_describe_availability_zones(ec2):
 
 
 def test_ec2_run_describe_terminate_instances(ec2):
-    resp = ec2.run_instances(
-        ImageId="ami-00000000", MinCount=1, MaxCount=1, InstanceType="t2.micro"
-    )
+    resp = ec2.run_instances(ImageId="ami-00000000", MinCount=1, MaxCount=1, InstanceType="t2.micro")
     assert len(resp["Instances"]) == 1
     instance_id = resp["Instances"][0]["InstanceId"]
     assert instance_id.startswith("i-")
@@ -13068,9 +12412,7 @@ def test_ec2_describe_images(ec2):
 
 
 def test_ec2_security_group_crud(ec2):
-    sg_id = ec2.create_security_group(GroupName="qa-ec2-sg", Description="test sg")[
-        "GroupId"
-    ]
+    sg_id = ec2.create_security_group(GroupName="qa-ec2-sg", Description="test sg")["GroupId"]
     assert sg_id.startswith("sg-")
 
     desc = ec2.describe_security_groups(GroupIds=[sg_id])
@@ -13089,9 +12431,7 @@ def test_ec2_security_group_duplicate(ec2):
 
 
 def test_ec2_sg_authorize_revoke_ingress(ec2):
-    sg_id = ec2.create_security_group(
-        GroupName="qa-ec2-sg-rules", Description="rules test"
-    )["GroupId"]
+    sg_id = ec2.create_security_group(GroupName="qa-ec2-sg-rules", Description="rules test")["GroupId"]
 
     ec2.authorize_security_group_ingress(
         GroupId=sg_id,
@@ -13120,9 +12460,7 @@ def test_ec2_sg_authorize_revoke_ingress(ec2):
         ],
     )
     desc2 = ec2.describe_security_groups(GroupIds=[sg_id])
-    assert not any(
-        p.get("FromPort") == 80 for p in desc2["SecurityGroups"][0]["IpPermissions"]
-    )
+    assert not any(p.get("FromPort") == 80 for p in desc2["SecurityGroups"][0]["IpPermissions"])
 
     ec2.delete_security_group(GroupId=sg_id)
 
@@ -13162,9 +12500,7 @@ def test_ec2_vpc_create_delete(ec2):
 
 def test_ec2_subnet_create_delete(ec2):
     vpc_id = ec2.create_vpc(CidrBlock="10.2.0.0/16")["Vpc"]["VpcId"]
-    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.2.1.0/24")["Subnet"][
-        "SubnetId"
-    ]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.2.1.0/24")["Subnet"]["SubnetId"]
     assert subnet_id.startswith("subnet-")
 
     desc = ec2.describe_subnets(SubnetIds=[subnet_id])
@@ -13236,9 +12572,7 @@ def test_ec2_modify_vpc_attribute(ec2):
 
 def test_ec2_modify_subnet_attribute(ec2):
     vpc_id = ec2.create_vpc(CidrBlock="10.11.0.0/16")["Vpc"]["VpcId"]
-    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.11.1.0/24")["Subnet"][
-        "SubnetId"
-    ]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.11.1.0/24")["Subnet"]["SubnetId"]
     ec2.modify_subnet_attribute(SubnetId=subnet_id, MapPublicIpOnLaunch={"Value": True})
     desc = ec2.describe_subnets(SubnetIds=[subnet_id])
     assert desc["Subnets"][0]["MapPublicIpOnLaunch"] is True
@@ -13260,14 +12594,10 @@ def test_ec2_route_table_crud(ec2):
 
 def test_ec2_route_table_associate_disassociate(ec2):
     vpc_id = ec2.create_vpc(CidrBlock="10.21.0.0/16")["Vpc"]["VpcId"]
-    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.21.1.0/24")["Subnet"][
-        "SubnetId"
-    ]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.21.1.0/24")["Subnet"]["SubnetId"]
     rtb_id = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
 
-    assoc_id = ec2.associate_route_table(RouteTableId=rtb_id, SubnetId=subnet_id)[
-        "AssociationId"
-    ]
+    assoc_id = ec2.associate_route_table(RouteTableId=rtb_id, SubnetId=subnet_id)["AssociationId"]
     assert assoc_id.startswith("rtbassoc-")
 
     desc = ec2.describe_route_tables(RouteTableIds=[rtb_id])
@@ -13276,10 +12606,7 @@ def test_ec2_route_table_associate_disassociate(ec2):
 
     ec2.disassociate_route_table(AssociationId=assoc_id)
     desc2 = ec2.describe_route_tables(RouteTableIds=[rtb_id])
-    assert not any(
-        a["RouteTableAssociationId"] == assoc_id
-        for a in desc2["RouteTables"][0]["Associations"]
-    )
+    assert not any(a["RouteTableAssociationId"] == assoc_id for a in desc2["RouteTables"][0]["Associations"])
 
     ec2.delete_route_table(RouteTableId=rtb_id)
     ec2.delete_subnet(SubnetId=subnet_id)
@@ -13291,23 +12618,16 @@ def test_ec2_route_create_replace_delete(ec2):
     rtb_id = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
     igw_id = ec2.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
 
-    ec2.create_route(
-        RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id
-    )
+    ec2.create_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
     desc = ec2.describe_route_tables(RouteTableIds=[rtb_id])
     routes = desc["RouteTables"][0]["Routes"]
     assert any(r.get("DestinationCidrBlock") == "0.0.0.0/0" for r in routes)
 
-    ec2.replace_route(
-        RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0", GatewayId="local"
-    )
+    ec2.replace_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0", GatewayId="local")
 
     ec2.delete_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0")
     desc2 = ec2.describe_route_tables(RouteTableIds=[rtb_id])
-    assert not any(
-        r.get("DestinationCidrBlock") == "0.0.0.0/0"
-        for r in desc2["RouteTables"][0]["Routes"]
-    )
+    assert not any(r.get("DestinationCidrBlock") == "0.0.0.0/0" for r in desc2["RouteTables"][0]["Routes"])
 
     ec2.delete_internet_gateway(InternetGatewayId=igw_id)
     ec2.delete_route_table(RouteTableId=rtb_id)
@@ -13316,13 +12636,11 @@ def test_ec2_route_create_replace_delete(ec2):
 
 def test_ec2_network_interface_crud(ec2):
     vpc_id = ec2.create_vpc(CidrBlock="10.30.0.0/16")["Vpc"]["VpcId"]
-    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.30.1.0/24")["Subnet"][
-        "SubnetId"
-    ]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.30.1.0/24")["Subnet"]["SubnetId"]
 
-    eni_id = ec2.create_network_interface(SubnetId=subnet_id, Description="qa-eni")[
-        "NetworkInterface"
-    ]["NetworkInterfaceId"]
+    eni_id = ec2.create_network_interface(SubnetId=subnet_id, Description="qa-eni")["NetworkInterface"][
+        "NetworkInterfaceId"
+    ]
     assert eni_id.startswith("eni-")
 
     desc = ec2.describe_network_interfaces(NetworkInterfaceIds=[eni_id])
@@ -13331,9 +12649,7 @@ def test_ec2_network_interface_crud(ec2):
 
     ec2.delete_network_interface(NetworkInterfaceId=eni_id)
     desc2 = ec2.describe_network_interfaces()
-    assert not any(
-        e["NetworkInterfaceId"] == eni_id for e in desc2["NetworkInterfaces"]
-    )
+    assert not any(e["NetworkInterfaceId"] == eni_id for e in desc2["NetworkInterfaces"])
 
     ec2.delete_subnet(SubnetId=subnet_id)
     ec2.delete_vpc(VpcId=vpc_id)
@@ -13341,18 +12657,12 @@ def test_ec2_network_interface_crud(ec2):
 
 def test_ec2_network_interface_attach_detach(ec2):
     vpc_id = ec2.create_vpc(CidrBlock="10.31.0.0/16")["Vpc"]["VpcId"]
-    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.31.1.0/24")["Subnet"][
-        "SubnetId"
-    ]
-    eni_id = ec2.create_network_interface(SubnetId=subnet_id)["NetworkInterface"][
-        "NetworkInterfaceId"
-    ]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock="10.31.1.0/24")["Subnet"]["SubnetId"]
+    eni_id = ec2.create_network_interface(SubnetId=subnet_id)["NetworkInterface"]["NetworkInterfaceId"]
     resp = ec2.run_instances(ImageId="ami-00000000", MinCount=1, MaxCount=1)
     iid = resp["Instances"][0]["InstanceId"]
 
-    attach_resp = ec2.attach_network_interface(
-        NetworkInterfaceId=eni_id, InstanceId=iid, DeviceIndex=1
-    )
+    attach_resp = ec2.attach_network_interface(NetworkInterfaceId=eni_id, InstanceId=iid, DeviceIndex=1)
     attachment_id = attach_resp["AttachmentId"]
     assert attachment_id.startswith("eni-attach-")
 
@@ -13631,22 +12941,16 @@ def test_emr_modify_cluster(emr):
 def test_emr_block_public_access(emr):
     resp = emr.get_block_public_access_configuration()
     assert "BlockPublicAccessConfiguration" in resp
-    assert (
-        resp["BlockPublicAccessConfiguration"]["BlockPublicSecurityGroupRules"] is False
-    )
+    assert resp["BlockPublicAccessConfiguration"]["BlockPublicSecurityGroupRules"] is False
 
     emr.put_block_public_access_configuration(
         BlockPublicAccessConfiguration={
             "BlockPublicSecurityGroupRules": True,
-            "PermittedPublicSecurityGroupRuleRanges": [
-                {"MinRange": 22, "MaxRange": 22}
-            ],
+            "PermittedPublicSecurityGroupRuleRanges": [{"MinRange": 22, "MaxRange": 22}],
         }
     )
     resp2 = emr.get_block_public_access_configuration()
-    assert (
-        resp2["BlockPublicAccessConfiguration"]["BlockPublicSecurityGroupRules"] is True
-    )
+    assert resp2["BlockPublicAccessConfiguration"]["BlockPublicSecurityGroupRules"] is True
 
 
 def test_emr_instance_groups(emr):
@@ -13697,6 +13001,7 @@ def test_emr_instance_groups(emr):
 # ALB / ELBv2
 # ---------------------------------------------------------------------------
 
+
 def test_elbv2_create_describe_delete_lb(elbv2):
     resp = elbv2.create_load_balancer(Name="qa-alb", Type="application", Scheme="internet-facing")
     lb = resp["LoadBalancers"][0]
@@ -13727,6 +13032,7 @@ def test_elbv2_describe_lb_by_name(elbv2):
 def test_elbv2_duplicate_lb_name(elbv2):
     elbv2.create_load_balancer(Name="qa-alb-dup")
     import botocore.exceptions
+
     try:
         elbv2.create_load_balancer(Name="qa-alb-dup")
         assert False, "should have raised"
@@ -13756,7 +13062,10 @@ def test_elbv2_lb_attributes(elbv2):
 
 def test_elbv2_create_describe_delete_tg(elbv2):
     resp = elbv2.create_target_group(
-        Name="qa-tg", Protocol="HTTP", Port=80, VpcId="vpc-00000001",
+        Name="qa-tg",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
         HealthCheckPath="/health",
     )
     tg = resp["TargetGroups"][0]
@@ -13775,7 +13084,10 @@ def test_elbv2_create_describe_delete_tg(elbv2):
 
 def test_elbv2_tg_attributes(elbv2):
     tg_arn = elbv2.create_target_group(
-        Name="qa-tg-attrs", Protocol="HTTP", Port=80, VpcId="vpc-00000001",
+        Name="qa-tg-attrs",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
     )["TargetGroups"][0]["TargetGroupArn"]
     attrs = elbv2.describe_target_group_attributes(TargetGroupArn=tg_arn)["Attributes"]
     keys = {a["Key"] for a in attrs}
@@ -13794,7 +13106,10 @@ def test_elbv2_tg_attributes(elbv2):
 def test_elbv2_listener_crud(elbv2):
     lb_arn = elbv2.create_load_balancer(Name="qa-alb-listener")["LoadBalancers"][0]["LoadBalancerArn"]
     tg_arn = elbv2.create_target_group(
-        Name="qa-tg-l", Protocol="HTTP", Port=80, VpcId="vpc-00000001",
+        Name="qa-tg-l",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
     )["TargetGroups"][0]["TargetGroupArn"]
 
     l_resp = elbv2.create_listener(
@@ -13831,10 +13146,15 @@ def test_elbv2_listener_crud(elbv2):
 def test_elbv2_rule_crud(elbv2):
     lb_arn = elbv2.create_load_balancer(Name="qa-alb-rules")["LoadBalancers"][0]["LoadBalancerArn"]
     tg_arn = elbv2.create_target_group(
-        Name="qa-tg-r", Protocol="HTTP", Port=80, VpcId="vpc-00000001",
+        Name="qa-tg-r",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
     )["TargetGroups"][0]["TargetGroupArn"]
     l_arn = elbv2.create_listener(
-        LoadBalancerArn=lb_arn, Protocol="HTTP", Port=80,
+        LoadBalancerArn=lb_arn,
+        Protocol="HTTP",
+        Port=80,
         DefaultActions=[{"Type": "forward", "TargetGroupArn": tg_arn}],
     )["Listeners"][0]["ListenerArn"]
 
@@ -13868,7 +13188,10 @@ def test_elbv2_rule_crud(elbv2):
 
 def test_elbv2_register_deregister_targets(elbv2):
     tg_arn = elbv2.create_target_group(
-        Name="qa-tg-targets", Protocol="HTTP", Port=80, VpcId="vpc-00000001",
+        Name="qa-tg-targets",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
     )["TargetGroups"][0]["TargetGroupArn"]
 
     elbv2.register_targets(
@@ -13892,7 +13215,8 @@ def test_elbv2_register_deregister_targets(elbv2):
 
 def test_elbv2_tags(elbv2):
     lb_arn = elbv2.create_load_balancer(
-        Name="qa-alb-tags", Tags=[{"Key": "env", "Value": "test"}],
+        Name="qa-alb-tags",
+        Tags=[{"Key": "env", "Value": "test"}],
     )["LoadBalancers"][0]["LoadBalancerArn"]
 
     elbv2.add_tags(
@@ -13917,6 +13241,7 @@ def test_elbv2_tags(elbv2):
 # ALB data-plane (traffic routing)
 # ---------------------------------------------------------------------------
 
+
 def _alb_zip(code: str) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
@@ -13924,8 +13249,7 @@ def _alb_zip(code: str) -> bytes:
     return buf.getvalue()
 
 
-def _alb_setup(elbv2, lam, lb_name, fn_name, fn_code,
-               listener_port=80, extra_rules=None):
+def _alb_setup(elbv2, lam, lb_name, fn_name, fn_code, listener_port=80, extra_rules=None):
     """Create LB + Lambda TG + listener + register Lambda as target.
     Returns (lb_arn, tg_arn, l_arn, fn_arn).
     """
@@ -13942,18 +13266,22 @@ def _alb_setup(elbv2, lam, lb_name, fn_name, fn_code,
     # ALB infra
     lb_arn = elbv2.create_load_balancer(Name=lb_name)["LoadBalancers"][0]["LoadBalancerArn"]
     tg_arn = elbv2.create_target_group(
-        Name=f"{lb_name}-tg", Protocol="HTTP", Port=80,
-        VpcId="vpc-00000001", TargetType="lambda",
+        Name=f"{lb_name}-tg",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
+        TargetType="lambda",
     )["TargetGroups"][0]["TargetGroupArn"]
     elbv2.register_targets(TargetGroupArn=tg_arn, Targets=[{"Id": fn_arn}])
 
     l_arn = elbv2.create_listener(
         LoadBalancerArn=lb_arn,
-        Protocol="HTTP", Port=listener_port,
+        Protocol="HTTP",
+        Port=listener_port,
         DefaultActions=[{"Type": "forward", "TargetGroupArn": tg_arn}],
     )["Listeners"][0]["ListenerArn"]
 
-    for rule_kwargs in (extra_rules or []):
+    for rule_kwargs in extra_rules or []:
         elbv2.create_rule(ListenerArn=l_arn, **rule_kwargs)
 
     return lb_arn, tg_arn, l_arn, fn_arn
@@ -13991,9 +13319,7 @@ def test_alb_dataplane_forward_lambda(elbv2, lam):
         "        'body': json.dumps({'method': event['httpMethod'], 'path': event['path']}),\n"
         "    }\n"
     )
-    lb_arn, tg_arn, l_arn, fn_arn = _alb_setup(
-        elbv2, lam, "dp-alb-fwd", "dp-alb-fwd-fn", fn_code
-    )
+    lb_arn, tg_arn, l_arn, fn_arn = _alb_setup(elbv2, lam, "dp-alb-fwd", "dp-alb-fwd-fn", fn_code)
     try:
         url = f"{_endpoint}/_alb/dp-alb-fwd/api/hello"
         resp = _req.urlopen(_req.Request(url, method="GET"))
@@ -14019,9 +13345,7 @@ def test_alb_dataplane_event_shape(elbv2, lam):
         "        'body': json.dumps(event),\n"
         "    }\n"
     )
-    lb_arn, tg_arn, l_arn, fn_arn = _alb_setup(
-        elbv2, lam, "dp-alb-evt", "dp-alb-evt-fn", fn_code
-    )
+    lb_arn, tg_arn, l_arn, fn_arn = _alb_setup(elbv2, lam, "dp-alb-evt", "dp-alb-evt-fn", fn_code)
     try:
         url = f"{_endpoint}/_alb/dp-alb-evt/check?foo=bar"
         resp = _req.urlopen(_req.Request(url, method="GET"))
@@ -14045,19 +13369,26 @@ def test_alb_dataplane_fixed_response(elbv2, lam):
     fn_code = "def handler(event, context):\n    return {'statusCode': 200, 'body': 'should-not-reach'}\n"
     lb_arn = elbv2.create_load_balancer(Name="dp-alb-fixed")["LoadBalancers"][0]["LoadBalancerArn"]
     tg_arn = elbv2.create_target_group(
-        Name="dp-alb-fixed-tg", Protocol="HTTP", Port=80,
-        VpcId="vpc-00000001", TargetType="lambda",
+        Name="dp-alb-fixed-tg",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
+        TargetType="lambda",
     )["TargetGroups"][0]["TargetGroupArn"]
     l_arn = elbv2.create_listener(
-        LoadBalancerArn=lb_arn, Protocol="HTTP", Port=80,
-        DefaultActions=[{
-            "Type": "fixed-response",
-            "FixedResponseConfig": {
-                "StatusCode": "200",
-                "ContentType": "text/plain",
-                "MessageBody": "maintenance",
-            },
-        }],
+        LoadBalancerArn=lb_arn,
+        Protocol="HTTP",
+        Port=80,
+        DefaultActions=[
+            {
+                "Type": "fixed-response",
+                "FixedResponseConfig": {
+                    "StatusCode": "200",
+                    "ContentType": "text/plain",
+                    "MessageBody": "maintenance",
+                },
+            }
+        ],
     )["Listeners"][0]["ListenerArn"]
     try:
         url = f"{_endpoint}/_alb/dp-alb-fixed/any/path"
@@ -14081,20 +13412,27 @@ def test_alb_dataplane_redirect(elbv2):
 
     lb_arn = elbv2.create_load_balancer(Name="dp-alb-redir")["LoadBalancers"][0]["LoadBalancerArn"]
     tg_arn = elbv2.create_target_group(
-        Name="dp-alb-redir-tg", Protocol="HTTP", Port=80,
-        VpcId="vpc-00000001", TargetType="lambda",
+        Name="dp-alb-redir-tg",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
+        TargetType="lambda",
     )["TargetGroups"][0]["TargetGroupArn"]
     l_arn = elbv2.create_listener(
-        LoadBalancerArn=lb_arn, Protocol="HTTP", Port=80,
-        DefaultActions=[{
-            "Type": "redirect",
-            "RedirectConfig": {
-                "Protocol": "https",
-                "Host": "example.com",
-                "Path": "/new",
-                "StatusCode": "HTTP_301",
-            },
-        }],
+        LoadBalancerArn=lb_arn,
+        Protocol="HTTP",
+        Port=80,
+        DefaultActions=[
+            {
+                "Type": "redirect",
+                "RedirectConfig": {
+                    "Protocol": "https",
+                    "Host": "example.com",
+                    "Path": "/new",
+                    "StatusCode": "HTTP_301",
+                },
+            }
+        ],
     )["Listeners"][0]["ListenerArn"]
     try:
         # Use http.client directly — it never auto-follows redirects
@@ -14130,19 +13468,27 @@ def test_alb_dataplane_path_pattern_rule(elbv2, lam):
     )
     for fn_name, fn_code in [("dp-alb-api-fn", api_code), ("dp-alb-def-fn", default_code)]:
         lam.create_function(
-            FunctionName=fn_name, Runtime="python3.9",
+            FunctionName=fn_name,
+            Runtime="python3.9",
             Role="arn:aws:iam::000000000000:role/test-role",
-            Handler="index.handler", Code={"ZipFile": _alb_zip(fn_code)},
+            Handler="index.handler",
+            Code={"ZipFile": _alb_zip(fn_code)},
         )
 
     lb_arn = elbv2.create_load_balancer(Name="dp-alb-rules")["LoadBalancers"][0]["LoadBalancerArn"]
     api_tg_arn = elbv2.create_target_group(
-        Name="dp-alb-api-tg", Protocol="HTTP", Port=80,
-        VpcId="vpc-00000001", TargetType="lambda",
+        Name="dp-alb-api-tg",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
+        TargetType="lambda",
     )["TargetGroups"][0]["TargetGroupArn"]
     def_tg_arn = elbv2.create_target_group(
-        Name="dp-alb-def-tg", Protocol="HTTP", Port=80,
-        VpcId="vpc-00000001", TargetType="lambda",
+        Name="dp-alb-def-tg",
+        Protocol="HTTP",
+        Port=80,
+        VpcId="vpc-00000001",
+        TargetType="lambda",
     )["TargetGroups"][0]["TargetGroupArn"]
 
     api_fn_arn = lam.get_function(FunctionName="dp-alb-api-fn")["Configuration"]["FunctionArn"]
@@ -14151,11 +13497,14 @@ def test_alb_dataplane_path_pattern_rule(elbv2, lam):
     elbv2.register_targets(TargetGroupArn=def_tg_arn, Targets=[{"Id": def_fn_arn}])
 
     l_arn = elbv2.create_listener(
-        LoadBalancerArn=lb_arn, Protocol="HTTP", Port=80,
+        LoadBalancerArn=lb_arn,
+        Protocol="HTTP",
+        Port=80,
         DefaultActions=[{"Type": "forward", "TargetGroupArn": def_tg_arn}],
     )["Listeners"][0]["ListenerArn"]
     elbv2.create_rule(
-        ListenerArn=l_arn, Priority=10,
+        ListenerArn=l_arn,
+        Priority=10,
         Conditions=[{"Field": "path-pattern", "Values": ["/api/*"]}],
         Actions=[{"Type": "forward", "TargetGroupArn": api_tg_arn}],
     )
@@ -14209,9 +13558,7 @@ def test_alb_dataplane_host_header_routing(elbv2, lam):
         "    return {'statusCode': 200, 'headers': {'Content-Type': 'application/json'},\n"
         "            'body': json.dumps({'routed': True})}\n"
     )
-    lb_arn, tg_arn, l_arn, fn_arn = _alb_setup(
-        elbv2, lam, "dp-alb-host", "dp-alb-host-fn", fn_code
-    )
+    lb_arn, tg_arn, l_arn, fn_arn = _alb_setup(elbv2, lam, "dp-alb-host", "dp-alb-host-fn", fn_code)
     try:
         # Send to the plain ministack port but with the ALB host header
         req = _req.Request(f"{_endpoint}/hello", method="GET")
@@ -14222,8 +13569,11 @@ def test_alb_dataplane_host_header_routing(elbv2, lam):
         assert body["routed"] is True
     finally:
         _alb_teardown(elbv2, lam, lb_arn, tg_arn, l_arn, "dp-alb-host-fn")
+
+
 # EBS (Elastic Block Store) — uses ec2 client
 # ---------------------------------------------------------------------------
+
 
 def test_ebs_create_and_describe_volume(ebs):
     resp = ebs.create_volume(
@@ -14321,6 +13671,7 @@ def test_ebs_copy_snapshot(ebs):
 # EFS (Elastic File System)
 # ---------------------------------------------------------------------------
 
+
 def test_efs_create_and_describe_filesystem(efs):
     resp = efs.create_file_system(
         PerformanceMode="generalPurpose",
@@ -14367,6 +13718,7 @@ def test_efs_mount_target(efs):
     assert desc["MountTargets"][0]["MountTargetId"] == mt_id
 
     import botocore.exceptions
+
     try:
         efs.delete_file_system(FileSystemId=fs_id)
         assert False, "should raise"
@@ -14443,12 +13795,14 @@ def test_efs_backup_policy(efs):
 # "expected Timestamp to be a JSON Number, got string instead"
 # ---------------------------------------------------------------------------
 
+
 def test_apigwv1_created_date_is_unix_timestamp(apigw_v1):
     resp = apigw_v1.create_rest_api(name="tf-date-test")
     created = resp["createdDate"]
     # boto3 parses numeric timestamps as datetime.datetime — if it were a string
     # botocore would raise a deserialization error before we even get here.
     import datetime
+
     assert isinstance(created, datetime.datetime), (
         f"createdDate should be datetime (parsed from Unix int), got {type(created)}"
     )
@@ -14459,6 +13813,7 @@ def test_apigwv2_created_date_is_unix_timestamp(apigw):
     resp = apigw.create_api(Name="tf-date-test-v2", ProtocolType="HTTP")
     created = resp["CreatedDate"]
     import datetime
+
     assert isinstance(created, datetime.datetime), (
         f"CreatedDate should be datetime (parsed from Unix int), got {type(created)}"
     )
@@ -14469,6 +13824,7 @@ def test_apigwv2_created_date_is_unix_timestamp(apigw):
 # Regression: CloudWatch Logs ListTagsForResource fails when the ARN passed
 # by Terraform lacks the trailing ':*' that MiniStack appends when storing.
 # ---------------------------------------------------------------------------
+
 
 def test_logs_list_tags_for_resource_arn_without_star(logs):
     name = "/tf/regression/arn-no-star"
@@ -14490,9 +13846,11 @@ def test_logs_list_tags_for_resource_arn_without_star(logs):
 # AWS returns TooManyEntriesInBatchRequest; MiniStack was silently accepting them.
 # ---------------------------------------------------------------------------
 
+
 def test_sqs_send_message_batch_limit(sqs):
     import pytest
     from botocore.exceptions import ClientError
+
     q = sqs.create_queue(QueueName="batch-limit-regression")["QueueUrl"]
     entries = [{"Id": str(i), "MessageBody": f"msg {i}"} for i in range(11)]
     with pytest.raises(ClientError) as exc_info:
@@ -14506,6 +13864,7 @@ def test_sqs_send_message_batch_limit(sqs):
 # ReturnConsumedCapacity="TOTAL" is set. Was returning the key absent entirely.
 # ---------------------------------------------------------------------------
 
+
 def test_dynamodb_batch_write_consumed_capacity(ddb):
     ddb.create_table(
         TableName="batch-cap-regression",
@@ -14514,9 +13873,11 @@ def test_dynamodb_batch_write_consumed_capacity(ddb):
         BillingMode="PAY_PER_REQUEST",
     )
     resp = ddb.batch_write_item(
-        RequestItems={"batch-cap-regression": [
-            {"PutRequest": {"Item": {"pk": {"S": "k1"}}}},
-        ]},
+        RequestItems={
+            "batch-cap-regression": [
+                {"PutRequest": {"Item": {"pk": {"S": "k1"}}}},
+            ]
+        },
         ReturnConsumedCapacity="TOTAL",
     )
     assert "ConsumedCapacity" in resp, "ConsumedCapacity must be present when ReturnConsumedCapacity=TOTAL"
@@ -14539,11 +13900,13 @@ def test_dynamodb_put_item_gsi_capacity(ddb):
             {"AttributeName": "pk", "KeyType": "HASH"},
             {"AttributeName": "sk", "KeyType": "RANGE"},
         ],
-        GlobalSecondaryIndexes=[{
-            "IndexName": "last_name-index",
-            "KeySchema": [{"AttributeName": "last_name", "KeyType": "HASH"}],
-            "Projection": {"ProjectionType": "ALL"},
-        }],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "last_name-index",
+                "KeySchema": [{"AttributeName": "last_name", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
         BillingMode="PAY_PER_REQUEST",
     )
     resp = ddb.put_item(
@@ -14568,18 +13931,22 @@ def test_dynamodb_batch_write_gsi_capacity(ddb):
             {"AttributeName": "pk", "KeyType": "HASH"},
             {"AttributeName": "sk", "KeyType": "RANGE"},
         ],
-        GlobalSecondaryIndexes=[{
-            "IndexName": "age-index",
-            "KeySchema": [{"AttributeName": "age", "KeyType": "HASH"}],
-            "Projection": {"ProjectionType": "ALL"},
-        }],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "age-index",
+                "KeySchema": [{"AttributeName": "age", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
         BillingMode="PAY_PER_REQUEST",
     )
     resp = ddb.batch_write_item(
-        RequestItems={"gsi-cap-batch": [
-            {"PutRequest": {"Item": {"pk": {"S": "p2"}, "sk": {"S": "s2"}, "age": {"N": "25"}}}},
-            {"PutRequest": {"Item": {"pk": {"S": "p3"}, "sk": {"S": "s3"}, "age": {"N": "26"}}}},
-        ]},
+        RequestItems={
+            "gsi-cap-batch": [
+                {"PutRequest": {"Item": {"pk": {"S": "p2"}, "sk": {"S": "s2"}, "age": {"N": "25"}}}},
+                {"PutRequest": {"Item": {"pk": {"S": "p3"}, "sk": {"S": "s3"}, "age": {"N": "26"}}}},
+            ]
+        },
         ReturnConsumedCapacity="TOTAL",
     )
     assert resp["ConsumedCapacity"][0]["CapacityUnits"] == 4.0
@@ -14592,10 +13959,12 @@ def test_dynamodb_batch_write_gsi_capacity(ddb):
 # Without <Type>, botocore falls back to generic ClientError.
 # ---------------------------------------------------------------------------
 
+
 def test_sqs_typed_exception_queue_not_found(sqs):
     """client.exceptions.QueueDoesNotExist must be raised (not generic ClientError)
     when accessing a non-existent queue — requires <Type> in the XML error response."""
     import pytest
+
     with pytest.raises(sqs.exceptions.QueueDoesNotExist):
         sqs.get_queue_url(QueueName="queue-that-does-not-exist-typed-exc")
 
@@ -14607,15 +13976,14 @@ def test_sqs_typed_exception_queue_not_found(sqs):
 # strings still work against MiniStack exactly as they do against real AWS.
 # ---------------------------------------------------------------------------
 
+
 def test_sqs_query_compat_header_nonexistent_queue(sqs):
     """Error.Code must be the legacy 'AWS.SimpleQueueService.NonExistentQueue'
     (not 'QueueDoesNotExist') when x-amzn-query-error header is present."""
     with pytest.raises(ClientError) as exc:
         sqs.get_queue_url(QueueName="queue-compat-header-test-xyz")
     code = exc.value.response["Error"]["Code"]
-    assert code == "AWS.SimpleQueueService.NonExistentQueue", (
-        f"Expected legacy query-compat code, got '{code}'"
-    )
+    assert code == "AWS.SimpleQueueService.NonExistentQueue", f"Expected legacy query-compat code, got '{code}'"
 
 
 def test_sqs_query_compat_header_batch_limit(sqs):
@@ -14634,6 +14002,7 @@ def test_sqs_query_compat_header_batch_limit(sqs):
 # ---------------------------------------------------------------------------
 # VPC gaps: NAT Gateways
 # ---------------------------------------------------------------------------
+
 
 def test_ec2_nat_gateway_crud(ec2):
     vpc = ec2.create_vpc(CidrBlock="10.100.0.0/16")
@@ -14663,15 +14032,14 @@ def test_ec2_nat_gateway_filter_by_vpc(ec2):
     subnet_id = subnet["Subnet"]["SubnetId"]
     ec2.create_nat_gateway(SubnetId=subnet_id, ConnectivityType="private")
 
-    desc = ec2.describe_nat_gateways(
-        Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
-    )
+    desc = ec2.describe_nat_gateways(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
     assert all(n["VpcId"] == vpc_id for n in desc["NatGateways"])
 
 
 # ---------------------------------------------------------------------------
 # VPC gaps: Network ACLs
 # ---------------------------------------------------------------------------
+
 
 def test_ec2_network_acl_crud(ec2):
     vpc = ec2.create_vpc(CidrBlock="10.102.0.0/16")
@@ -14714,12 +14082,10 @@ def test_ec2_network_acl_replace_entry(ec2):
     acl_id = resp["NetworkAcl"]["NetworkAclId"]
 
     ec2.create_network_acl_entry(
-        NetworkAclId=acl_id, RuleNumber=200, Protocol="-1",
-        RuleAction="deny", Egress=False, CidrBlock="10.0.0.0/8"
+        NetworkAclId=acl_id, RuleNumber=200, Protocol="-1", RuleAction="deny", Egress=False, CidrBlock="10.0.0.0/8"
     )
     ec2.replace_network_acl_entry(
-        NetworkAclId=acl_id, RuleNumber=200, Protocol="-1",
-        RuleAction="allow", Egress=False, CidrBlock="10.0.0.0/8"
+        NetworkAclId=acl_id, RuleNumber=200, Protocol="-1", RuleAction="allow", Egress=False, CidrBlock="10.0.0.0/8"
     )
     desc = ec2.describe_network_acls(NetworkAclIds=[acl_id])
     entries = desc["NetworkAcls"][0]["Entries"]
@@ -14730,6 +14096,7 @@ def test_ec2_network_acl_replace_entry(ec2):
 # ---------------------------------------------------------------------------
 # VPC gaps: Flow Logs
 # ---------------------------------------------------------------------------
+
 
 def test_ec2_flow_logs_crud(ec2):
     vpc = ec2.create_vpc(CidrBlock="10.104.0.0/16")
@@ -14761,6 +14128,7 @@ def test_ec2_flow_logs_crud(ec2):
 # VPC gaps: VPC Peering Connections
 # ---------------------------------------------------------------------------
 
+
 def test_ec2_vpc_peering_crud(ec2):
     vpc1 = ec2.create_vpc(CidrBlock="10.105.0.0/16")
     vpc2 = ec2.create_vpc(CidrBlock="10.106.0.0/16")
@@ -14787,6 +14155,7 @@ def test_ec2_vpc_peering_crud(ec2):
 
 def test_ec2_vpc_peering_not_found(ec2):
     from botocore.exceptions import ClientError
+
     with pytest.raises(ClientError) as exc:
         ec2.accept_vpc_peering_connection(VpcPeeringConnectionId="pcx-nonexistent")
     assert "NotFound" in exc.value.response["Error"]["Code"]
@@ -14795,6 +14164,7 @@ def test_ec2_vpc_peering_not_found(ec2):
 # ---------------------------------------------------------------------------
 # VPC gaps: DHCP Options
 # ---------------------------------------------------------------------------
+
 
 def test_ec2_dhcp_options_crud(ec2):
     resp = ec2.create_dhcp_options(
@@ -14809,8 +14179,7 @@ def test_ec2_dhcp_options_crud(ec2):
 
     desc = ec2.describe_dhcp_options(DhcpOptionsIds=[dopt_id])
     assert len(desc["DhcpOptions"]) == 1
-    configs = {c["Key"]: [v["Value"] for v in c["Values"]]
-               for c in desc["DhcpOptions"][0]["DhcpConfigurations"]}
+    configs = {c["Key"]: [v["Value"] for v in c["Values"]] for c in desc["DhcpOptions"][0]["DhcpConfigurations"]}
     assert configs["domain-name"] == ["example.internal"]
     assert "10.0.0.1" in configs["domain-name-servers"]
 
@@ -14825,6 +14194,7 @@ def test_ec2_dhcp_options_crud(ec2):
 
 def test_ec2_dhcp_options_not_found(ec2):
     from botocore.exceptions import ClientError
+
     with pytest.raises(ClientError) as exc:
         ec2.delete_dhcp_options(DhcpOptionsId="dopt-nonexistent")
     assert "NotFound" in exc.value.response["Error"]["Code"]
@@ -14833,6 +14203,7 @@ def test_ec2_dhcp_options_not_found(ec2):
 # ---------------------------------------------------------------------------
 # VPC gaps: Egress-Only Internet Gateways
 # ---------------------------------------------------------------------------
+
 
 def test_ec2_egress_only_igw_crud(ec2):
     vpc = ec2.create_vpc(CidrBlock="10.108.0.0/16")
@@ -14845,31 +14216,27 @@ def test_ec2_egress_only_igw_crud(ec2):
     assert eigw["Attachments"][0]["State"] == "attached"
     assert eigw["Attachments"][0]["VpcId"] == vpc_id
 
-    desc = ec2.describe_egress_only_internet_gateways(
-        EgressOnlyInternetGatewayIds=[eigw_id]
-    )
+    desc = ec2.describe_egress_only_internet_gateways(EgressOnlyInternetGatewayIds=[eigw_id])
     assert len(desc["EgressOnlyInternetGateways"]) == 1
     assert desc["EgressOnlyInternetGateways"][0]["EgressOnlyInternetGatewayId"] == eigw_id
 
     ec2.delete_egress_only_internet_gateway(EgressOnlyInternetGatewayId=eigw_id)
-    desc2 = ec2.describe_egress_only_internet_gateways(
-        EgressOnlyInternetGatewayIds=[eigw_id]
-    )
+    desc2 = ec2.describe_egress_only_internet_gateways(EgressOnlyInternetGatewayIds=[eigw_id])
     assert len(desc2["EgressOnlyInternetGateways"]) == 0
 
 
 def test_ec2_egress_only_igw_not_found(ec2):
     from botocore.exceptions import ClientError
+
     with pytest.raises(ClientError) as exc:
-        ec2.delete_egress_only_internet_gateway(
-            EgressOnlyInternetGatewayId="eigw-nonexistent"
-        )
+        ec2.delete_egress_only_internet_gateway(EgressOnlyInternetGatewayId="eigw-nonexistent")
     assert "NotFound" in exc.value.response["Error"]["Code"]
 
 
 # ===========================================================================
 # ACM — Certificate Manager
 # ===========================================================================
+
 
 def test_acm_request_certificate(acm_client):
     resp = acm_client.request_certificate(
@@ -14941,6 +14308,7 @@ def test_acm_delete_certificate(acm_client):
 # SES v2
 # ===========================================================================
 
+
 def test_ses_v2_send_email(sesv2):
     resp = sesv2.send_email(
         FromEmailAddress="sender@example.com",
@@ -14989,8 +14357,10 @@ def test_ses_v2_get_account(sesv2):
 # Lambda Layers
 # ===========================================================================
 
+
 def test_lambda_layer_publish(lam):
     import base64, zipfile, io
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("layer.py", "# layer")
@@ -15025,6 +14395,7 @@ def test_lambda_layer_list_layers(lam):
 
 def test_lambda_layer_delete_version(lam):
     import base64, zipfile, io
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("tmp.py", "")
@@ -15035,7 +14406,6 @@ def test_lambda_layer_delete_version(lam):
 
 
 def test_lambda_function_with_layer(lam):
-    import base64, zipfile, io
     # Publish layer
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
@@ -15058,9 +14428,249 @@ def test_lambda_function_with_layer(lam):
     assert layer_arn in fn["Configuration"]["Layers"][0]["Arn"]
 
 
+def test_lambda_layer_content_location(lam):
+    """Content.Location should be a non-empty URL pointing to the layer zip."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("mod.py", "X=1")
+    resp = lam.publish_layer_version(
+        LayerName="loc-layer",
+        Content={"ZipFile": buf.getvalue()},
+    )
+    assert resp["Content"]["Location"]
+    assert "loc-layer" in resp["Content"]["Location"]
+    # Verify the URL actually serves zip data
+    import urllib.request
+
+    data = urllib.request.urlopen(resp["Content"]["Location"]).read()
+    assert len(data) == resp["Content"]["CodeSize"]
+
+
+def test_lambda_layer_pagination(lam):
+    """Publish 3 versions, paginate with MaxItems=1."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("p.py", "")
+    for _ in range(3):
+        lam.publish_layer_version(LayerName="page-layer", Content={"ZipFile": buf.getvalue()})
+    # List with MaxItems=1 (newest first)
+    resp = lam.list_layer_versions(LayerName="page-layer", MaxItems=1)
+    assert len(resp["LayerVersions"]) == 1
+    assert "NextMarker" in resp
+
+
+def test_lambda_layer_list_filter_runtime(lam):
+    """Filter list_layer_versions by CompatibleRuntime."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("r.py", "")
+    lam.publish_layer_version(
+        LayerName="rt-filter-layer",
+        Content={"ZipFile": buf.getvalue()},
+        CompatibleRuntimes=["python3.12"],
+    )
+    lam.publish_layer_version(
+        LayerName="rt-filter-layer",
+        Content={"ZipFile": buf.getvalue()},
+        CompatibleRuntimes=["nodejs18.x"],
+    )
+    resp = lam.list_layer_versions(
+        LayerName="rt-filter-layer",
+        CompatibleRuntime="python3.12",
+    )
+    assert all("python3.12" in v["CompatibleRuntimes"] for v in resp["LayerVersions"])
+
+
+def test_lambda_layer_list_filter_architecture(lam):
+    """Filter list_layer_versions by CompatibleArchitecture."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("a.py", "")
+    lam.publish_layer_version(
+        LayerName="arch-filter-layer",
+        Content={"ZipFile": buf.getvalue()},
+        CompatibleArchitectures=["x86_64"],
+    )
+    lam.publish_layer_version(
+        LayerName="arch-filter-layer",
+        Content={"ZipFile": buf.getvalue()},
+        CompatibleArchitectures=["arm64"],
+    )
+    resp = lam.list_layer_versions(
+        LayerName="arch-filter-layer",
+        CompatibleArchitecture="x86_64",
+    )
+    assert all("x86_64" in v["CompatibleArchitectures"] for v in resp["LayerVersions"])
+
+
+def test_lambda_layer_list_layers_pagination(lam):
+    """Multiple layers, paginate ListLayers."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("x.py", "")
+    for i in range(3):
+        lam.publish_layer_version(
+            LayerName=f"ll-page-{i}",
+            Content={"ZipFile": buf.getvalue()},
+        )
+    resp = lam.list_layers(MaxItems=1)
+    assert len(resp["Layers"]) == 1
+    assert "NextMarker" in resp
+
+
+def test_lambda_layer_list_layers_filter_runtime(lam):
+    """ListLayers filtered by CompatibleRuntime."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("f.py", "")
+    lam.publish_layer_version(
+        LayerName="ll-rt-py",
+        Content={"ZipFile": buf.getvalue()},
+        CompatibleRuntimes=["python3.12"],
+    )
+    lam.publish_layer_version(
+        LayerName="ll-rt-node",
+        Content={"ZipFile": buf.getvalue()},
+        CompatibleRuntimes=["nodejs18.x"],
+    )
+    resp = lam.list_layers(CompatibleRuntime="python3.12")
+    names = [l["LayerName"] for l in resp["Layers"]]
+    assert "ll-rt-py" in names
+    assert "ll-rt-node" not in names
+
+
+def test_lambda_layer_get_version_not_found(lam):
+    """Getting a nonexistent layer should raise 404."""
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError) as exc:
+        lam.get_layer_version(LayerName="no-such-layer-xyz", VersionNumber=1)
+    assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+
+
+def test_lambda_layer_get_version_by_arn(lam):
+    """GetLayerVersionByArn resolves by full ARN."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("ba.py", "")
+    pub = lam.publish_layer_version(
+        LayerName="by-arn-layer",
+        Content={"ZipFile": buf.getvalue()},
+    )
+    arn = pub["LayerVersionArn"]
+    resp = lam.get_layer_version_by_arn(Arn=arn)
+    assert resp["LayerVersionArn"] == arn
+    assert resp["Version"] == pub["Version"]
+
+
+def test_lambda_layer_version_permission_add(lam):
+    """Add a layer version permission and verify response."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("perm.py", "")
+    pub = lam.publish_layer_version(
+        LayerName="perm-layer",
+        Content={"ZipFile": buf.getvalue()},
+    )
+    resp = lam.add_layer_version_permission(
+        LayerName="perm-layer",
+        VersionNumber=pub["Version"],
+        StatementId="allow-all",
+        Action="lambda:GetLayerVersion",
+        Principal="*",
+    )
+    assert "Statement" in resp
+    import json
+
+    stmt = json.loads(resp["Statement"])
+    assert stmt["Sid"] == "allow-all"
+    assert stmt["Action"] == "lambda:GetLayerVersion"
+
+
+def test_lambda_layer_version_permission_get_policy(lam):
+    """Get policy after adding a permission."""
+    import json
+
+    resp = lam.get_layer_version_policy(LayerName="perm-layer", VersionNumber=1)
+    policy = json.loads(resp["Policy"])
+    assert len(policy["Statement"]) >= 1
+    assert policy["Statement"][0]["Sid"] == "allow-all"
+
+
+def test_lambda_layer_version_permission_remove(lam):
+    """Remove a layer version permission."""
+    lam.remove_layer_version_permission(
+        LayerName="perm-layer",
+        VersionNumber=1,
+        StatementId="allow-all",
+    )
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError) as exc:
+        lam.get_layer_version_policy(LayerName="perm-layer", VersionNumber=1)
+    assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+
+
+def test_lambda_layer_version_permission_duplicate_sid(lam):
+    """Adding a duplicate StatementId should raise conflict."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("dup.py", "")
+    pub = lam.publish_layer_version(
+        LayerName="dup-sid-layer",
+        Content={"ZipFile": buf.getvalue()},
+    )
+    lam.add_layer_version_permission(
+        LayerName="dup-sid-layer",
+        VersionNumber=pub["Version"],
+        StatementId="s1",
+        Action="lambda:GetLayerVersion",
+        Principal="*",
+    )
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError) as exc:
+        lam.add_layer_version_permission(
+            LayerName="dup-sid-layer",
+            VersionNumber=pub["Version"],
+            StatementId="s1",
+            Action="lambda:GetLayerVersion",
+            Principal="*",
+        )
+    assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
+
+
+def test_lambda_layer_version_permission_invalid_action(lam):
+    """Only lambda:GetLayerVersion is a valid action."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("inv.py", "")
+    pub = lam.publish_layer_version(
+        LayerName="inv-act-layer",
+        Content={"ZipFile": buf.getvalue()},
+    )
+    from botocore.exceptions import ClientError
+
+    with pytest.raises(ClientError) as exc:
+        lam.add_layer_version_permission(
+            LayerName="inv-act-layer",
+            VersionNumber=pub["Version"],
+            StatementId="s1",
+            Action="lambda:InvokeFunction",
+            Principal="*",
+        )
+    assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] in (400, 403)
+
+
+def test_lambda_layer_delete_idempotent(lam):
+    """Deleting a nonexistent version should not error."""
+    lam.delete_layer_version(LayerName="no-such-layer-del", VersionNumber=999)
+
+
 # ===========================================================================
 # WAF v2
 # ===========================================================================
+
 
 def test_waf_web_acl_crud(wafv2):
     resp = wafv2.create_web_acl(
@@ -15095,7 +14705,10 @@ def test_waf_update_web_acl(wafv2):
     uid = resp["Summary"]["Id"]
     lock = resp["Summary"]["LockToken"]
     upd = wafv2.update_web_acl(
-        Name="update-acl", Scope="REGIONAL", Id=uid, LockToken=lock,
+        Name="update-acl",
+        Scope="REGIONAL",
+        Id=uid,
+        LockToken=lock,
         DefaultAction={"Allow": {}},
         VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
     )
@@ -15104,7 +14717,8 @@ def test_waf_update_web_acl(wafv2):
 
 def test_waf_associate_disassociate(wafv2):
     resp = wafv2.create_web_acl(
-        Name="assoc-acl", Scope="REGIONAL",
+        Name="assoc-acl",
+        Scope="REGIONAL",
         DefaultAction={"Allow": {}},
         VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
     )
@@ -15123,7 +14737,8 @@ def test_waf_associate_disassociate(wafv2):
 
 def test_waf_ip_set_crud(wafv2):
     resp = wafv2.create_ip_set(
-        Name="test-ipset", Scope="REGIONAL",
+        Name="test-ipset",
+        Scope="REGIONAL",
         IPAddressVersion="IPV4",
         Addresses=["1.2.3.4/32"],
     )
@@ -15134,7 +14749,10 @@ def test_waf_ip_set_crud(wafv2):
     assert "1.2.3.4/32" in get_resp["IPSet"]["Addresses"]
 
     upd = wafv2.update_ip_set(
-        Name="test-ipset", Scope="REGIONAL", Id=uid, LockToken=lock,
+        Name="test-ipset",
+        Scope="REGIONAL",
+        Id=uid,
+        LockToken=lock,
         Addresses=["5.6.7.8/32"],
     )
     assert "NextLockToken" in upd
@@ -15151,7 +14769,9 @@ def test_waf_ip_set_crud(wafv2):
 
 def test_waf_rule_group_crud(wafv2):
     resp = wafv2.create_rule_group(
-        Name="test-rg", Scope="REGIONAL", Capacity=100,
+        Name="test-rg",
+        Scope="REGIONAL",
+        Capacity=100,
         VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
     )
     uid = resp["Summary"]["Id"]
@@ -15162,7 +14782,10 @@ def test_waf_rule_group_crud(wafv2):
     assert "LockToken" not in get_resp["RuleGroup"]
 
     upd = wafv2.update_rule_group(
-        Name="test-rg", Scope="REGIONAL", Id=uid, LockToken=lock,
+        Name="test-rg",
+        Scope="REGIONAL",
+        Id=uid,
+        LockToken=lock,
         VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m2"},
     )
     assert "NextLockToken" in upd
@@ -15179,7 +14802,8 @@ def test_waf_rule_group_crud(wafv2):
 
 def test_waf_tags(wafv2):
     resp = wafv2.create_web_acl(
-        Name="tag-acl", Scope="REGIONAL",
+        Name="tag-acl",
+        Scope="REGIONAL",
         DefaultAction={"Allow": {}},
         VisibilityConfig={"SampledRequestsEnabled": False, "CloudWatchMetricsEnabled": False, "MetricName": "m"},
         Tags=[{"Key": "env", "Value": "test"}],

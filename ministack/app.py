@@ -185,6 +185,15 @@ async def app(scope, receive, send):
 
     request_id = str(uuid.uuid4())
 
+    # Lambda layer content download: /_ministack/lambda-layers/{name}/{ver}/content
+    if path.startswith("/_ministack/lambda-layers/") and method == "GET":
+        lp = path.split("/")  # ['', '_ministack', 'lambda-layers', name, ver, 'content']
+        if len(lp) >= 6 and lp[5] == "content" and lp[4].isdigit():
+            from ministack.services import lambda_svc
+            status, resp_headers, resp_body = lambda_svc.serve_layer_content(lp[3], int(lp[4]))
+            await _send_response(send, status, resp_headers, resp_body)
+            return
+
     if path == "/_ministack/reset" and method == "POST":
         _reset_all_state()
         await _send_response(send, 200, {"Content-Type": "application/json"},

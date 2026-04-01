@@ -7,8 +7,10 @@ Supports: CreateFunction, DeleteFunction, GetFunction, GetFunctionConfiguration,
           CreateAlias, GetAlias, UpdateAlias, DeleteAlias, ListAliases,
           AddPermission, RemovePermission, GetPolicy,
           ListTags, TagResource, UntagResource,
-          PublishLayerVersion, GetLayerVersion, ListLayerVersions,
-          DeleteLayerVersion, ListLayers,
+          PublishLayerVersion, GetLayerVersion, GetLayerVersionByArn,
+          ListLayerVersions, DeleteLayerVersion, ListLayers,
+          AddLayerVersionPermission, RemoveLayerVersionPermission,
+          GetLayerVersionPolicy,
           CreateEventSourceMapping, DeleteEventSourceMapping,
           GetEventSourceMapping, ListEventSourceMappings, UpdateEventSourceMapping,
           GetFunctionEventInvokeConfig, PutFunctionEventInvokeConfig (stub),
@@ -55,9 +57,9 @@ except ImportError:
     docker_lib = None
     _docker_available = False
 
-_functions: dict = {}   # function_name -> FunctionRecord
-_layers: dict = {}      # layer_name -> {"versions": [...], "next_version": int}
-_esms: dict = {}        # uuid -> esm dict
+_functions: dict = {}  # function_name -> FunctionRecord
+_layers: dict = {}  # layer_name -> {"versions": [...], "next_version": int}
+_esms: dict = {}  # uuid -> esm dict
 _function_urls: dict = {}  # function_name -> FunctionUrlConfig dict
 _poller_started = False
 _poller_lock = threading.Lock()
@@ -155,6 +157,7 @@ if _result is not None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_name(name_or_arn: str) -> str:
     """Extract plain function name from a name, partial ARN, or full ARN."""
@@ -255,20 +258,26 @@ def _build_config(name: str, data: dict, code_zip: bytes | None = None) -> dict:
         "Environment": env,
         "Layers": layers_cfg,
         "TracingConfig": data.get("TracingConfig", {"Mode": "PassThrough"}),
-        "VpcConfig": data.get("VpcConfig", {
-            "SubnetIds": [],
-            "SecurityGroupIds": [],
-            "VpcId": "",
-        }),
+        "VpcConfig": data.get(
+            "VpcConfig",
+            {
+                "SubnetIds": [],
+                "SecurityGroupIds": [],
+                "VpcId": "",
+            },
+        ),
         "DeadLetterConfig": data.get("DeadLetterConfig", {"TargetArn": ""}),
         "KMSKeyArn": data.get("KMSKeyArn", ""),
         "RevisionId": new_uuid(),
         "EphemeralStorage": data.get("EphemeralStorage", {"Size": 512}),
         "SnapStart": {"ApplyOn": "None", "OptimizationStatus": "Off"},
-        "LoggingConfig": data.get("LoggingConfig", {
-            "LogFormat": "Text",
-            "LogGroup": f"/aws/lambda/{name}",
-        }),
+        "LoggingConfig": data.get(
+            "LoggingConfig",
+            {
+                "LogFormat": "Text",
+                "LogGroup": f"/aws/lambda/{name}",
+            },
+        ),
         "RuntimeVersionConfig": {
             "RuntimeVersionArn": "",
         },
@@ -317,8 +326,8 @@ def _get_func_record_for_qualifier(name: str, qualifier: str | None) -> tuple[di
 # Request router
 # ---------------------------------------------------------------------------
 
-async def handle_request(method: str, path: str, headers: dict,
-                         body: bytes, query_params: dict) -> tuple:
+
+async def handle_request(method: str, path: str, headers: dict, body: bytes, query_params: dict) -> tuple:
     """Route Lambda REST API requests."""
 
     path = unquote(path)
@@ -353,9 +362,14 @@ async def handle_request(method: str, path: str, headers: dict,
         if method == "DELETE":
             return _untag_resource(resource_arn, query_params)
 
-    # --- Layers: /2015-03-31/layers[/{name}[/versions[/{num}]]] ---
+    # --- Layers: /2015-03-31/layers[/{name}[/versions[/{num}[/policy[/{sid}]]]]] ---
     if len(parts) >= 3 and parts[2] == "layers":
         if len(parts) == 3 and method == "GET":
+            # GetLayerVersionByArn: GET /layers?find=LayerVersion&Arn=...
+            find = _qp_first(query_params, "find")
+            if find == "LayerVersion":
+                arn = _qp_first(query_params, "Arn")
+                return _get_layer_version_by_arn(arn)
             return _list_layers(query_params)
         layer_name = parts[3] if len(parts) > 3 else None
         if layer_name and len(parts) >= 5 and parts[4] == "versions":
@@ -365,10 +379,21 @@ async def handle_request(method: str, path: str, headers: dict,
                 return _publish_layer_version(layer_name, data)
             if method == "GET" and ver_num is None:
                 return _list_layer_versions(layer_name, query_params)
-            if method == "GET" and ver_num is not None:
-                return _get_layer_version(layer_name, ver_num)
-            if method == "DELETE" and ver_num is not None:
-                return _delete_layer_version(layer_name, ver_num)
+            if ver_num is not None:
+                # Check for policy sub-resource: .../versions/{num}/policy[/{sid}]
+                policy_sub = parts[6] if len(parts) > 6 else None
+                if policy_sub == "policy":
+                    policy_sid = parts[7] if len(parts) > 7 else None
+                    if method == "POST" and not policy_sid:
+                        return _add_layer_version_permission(layer_name, ver_num, data)
+                    if method == "GET" and not policy_sid:
+                        return _get_layer_version_policy(layer_name, ver_num)
+                    if method == "DELETE" and policy_sid:
+                        return _remove_layer_version_permission(layer_name, ver_num, policy_sid)
+                if method == "GET":
+                    return _get_layer_version(layer_name, ver_num)
+                if method == "DELETE":
+                    return _delete_layer_version(layer_name, ver_num)
 
     # --- Event Invoke Config: /2019-09-25/functions/{name}/event-invoke-config ---
     if "event-invoke-config" in path:
@@ -508,16 +533,20 @@ async def handle_request(method: str, path: str, headers: dict,
 # Function CRUD
 # ---------------------------------------------------------------------------
 
+
 def _create_function(data: dict):
     name = data.get("FunctionName")
     if not name:
         return error_response_json(
-            "InvalidParameterValueException", "FunctionName is required", 400,
+            "InvalidParameterValueException",
+            "FunctionName is required",
+            400,
         )
     if name in _functions:
         return error_response_json(
             "ResourceConflictException",
-            f"Function already exist: {name}", 409,
+            f"Function already exist: {name}",
+            409,
         )
 
     code_zip = None
@@ -547,14 +576,16 @@ def _get_function(name: str, qualifier: str | None = None):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     func = _functions[name]
     _, effective_config = _get_func_record_for_qualifier(name, qualifier)
     if effective_config is None:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
 
     result: dict = {
@@ -573,13 +604,15 @@ def _get_function_config(name: str, qualifier: str | None = None):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     _, effective_config = _get_func_record_for_qualifier(name, qualifier)
     if effective_config is None:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     return json_response(effective_config)
 
@@ -596,7 +629,7 @@ def _list_functions(query_params: dict):
                 start = i + 1
                 break
 
-    page = all_names[start:start + max_items]
+    page = all_names[start : start + max_items]
     configs = [_functions[n]["config"] for n in page]
     result: dict = {"Functions": configs}
     if start + max_items < len(all_names):
@@ -610,7 +643,8 @@ def _delete_function(name: str, query_params: dict):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     if qualifier and qualifier != "$LATEST":
         _functions[name]["versions"].pop(qualifier, None)
@@ -623,7 +657,8 @@ def _update_code(name: str, data: dict):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     func = _functions[name]
     if "ZipFile" in data:
@@ -643,14 +678,29 @@ def _update_config(name: str, data: dict):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     config = _functions[name]["config"]
-    for key in ("Runtime", "Handler", "Description", "Timeout", "MemorySize",
-                "Role", "Environment", "Layers", "TracingConfig",
-                "DeadLetterConfig", "KMSKeyArn", "EphemeralStorage",
-                "LoggingConfig", "VpcConfig", "Architectures",
-                "FileSystemConfigs", "ImageConfig"):
+    for key in (
+        "Runtime",
+        "Handler",
+        "Description",
+        "Timeout",
+        "MemorySize",
+        "Role",
+        "Environment",
+        "Layers",
+        "TracingConfig",
+        "DeadLetterConfig",
+        "KMSKeyArn",
+        "EphemeralStorage",
+        "LoggingConfig",
+        "VpcConfig",
+        "Architectures",
+        "FileSystemConfigs",
+        "ImageConfig",
+    ):
         if key in data:
             config[key] = data[key]
     config["LastModified"] = _now_iso()
@@ -663,20 +713,17 @@ def _update_config(name: str, data: dict):
 # Invoke
 # ---------------------------------------------------------------------------
 
-async def _invoke(name: str, event: dict, headers: dict,
-                  path_qualifier: str | None = None):
+
+async def _invoke(name: str, event: dict, headers: dict, path_qualifier: str | None = None):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
 
     func = _functions[name]
-    invocation_type = (
-        headers.get("x-amz-invocation-type")
-        or headers.get("X-Amz-Invocation-Type")
-        or "RequestResponse"
-    )
+    invocation_type = headers.get("x-amz-invocation-type") or headers.get("X-Amz-Invocation-Type") or "RequestResponse"
     qualifier = path_qualifier or _qp_first(headers, "x-amz-qualifier") or None
     executed_version = "$LATEST"
 
@@ -702,7 +749,9 @@ async def _invoke(name: str, event: dict, headers: dict,
 
     if invocation_type == "Event":
         threading.Thread(
-            target=_execute_function, args=(exec_record, event), daemon=True,
+            target=_execute_function,
+            args=(exec_record, event),
+            daemon=True,
         ).start()
         return 202, {"X-Amz-Executed-Version": executed_version}, b""
 
@@ -766,6 +815,7 @@ def _docker_image_for_runtime(runtime: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Function execution – Docker mode
 # ---------------------------------------------------------------------------
+
 
 def _execute_function_docker(func: dict, event: dict) -> dict:
     """Execute a Lambda function inside a Docker container.
@@ -947,6 +997,7 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
 # Function execution (subprocess, stdin-piped, no string interpolation)
 # ---------------------------------------------------------------------------
 
+
 def _execute_function(func: dict, event: dict) -> dict:
     """Dispatch to Docker or local subprocess executor."""
     if LAMBDA_EXECUTOR == "docker":
@@ -1010,23 +1061,25 @@ def _execute_function_local(func: dict, event: dict) -> dict:
                 wf.write(_WRAPPER_SCRIPT)
 
             env = dict(os.environ)
-            env.update({
-                "AWS_DEFAULT_REGION": REGION,
-                "AWS_REGION": REGION,
-                "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
-                "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
-                "AWS_SESSION_TOKEN": os.environ.get("AWS_SESSION_TOKEN", ""),
-                "AWS_LAMBDA_FUNCTION_NAME": config["FunctionName"],
-                "AWS_LAMBDA_FUNCTION_MEMORY_SIZE": str(config["MemorySize"]),
-                "AWS_LAMBDA_FUNCTION_VERSION": config.get("Version", "$LATEST"),
-                "AWS_LAMBDA_LOG_STREAM_NAME": new_uuid(),
-                "_LAMBDA_CODE_DIR": code_dir,
-                "_LAMBDA_HANDLER_MODULE": module_name,
-                "_LAMBDA_HANDLER_FUNC": func_name,
-                "_LAMBDA_FUNCTION_ARN": config["FunctionArn"],
-                "_LAMBDA_TIMEOUT": str(timeout),
-                "_LAMBDA_LAYERS_DIRS": os.pathsep.join(layers_dirs),
-            })
+            env.update(
+                {
+                    "AWS_DEFAULT_REGION": REGION,
+                    "AWS_REGION": REGION,
+                    "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
+                    "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+                    "AWS_SESSION_TOKEN": os.environ.get("AWS_SESSION_TOKEN", ""),
+                    "AWS_LAMBDA_FUNCTION_NAME": config["FunctionName"],
+                    "AWS_LAMBDA_FUNCTION_MEMORY_SIZE": str(config["MemorySize"]),
+                    "AWS_LAMBDA_FUNCTION_VERSION": config.get("Version", "$LATEST"),
+                    "AWS_LAMBDA_LOG_STREAM_NAME": new_uuid(),
+                    "_LAMBDA_CODE_DIR": code_dir,
+                    "_LAMBDA_HANDLER_MODULE": module_name,
+                    "_LAMBDA_HANDLER_FUNC": func_name,
+                    "_LAMBDA_FUNCTION_ARN": config["FunctionArn"],
+                    "_LAMBDA_TIMEOUT": str(timeout),
+                    "_LAMBDA_LAYERS_DIRS": os.pathsep.join(layers_dirs),
+                }
+            )
             endpoint = _normalize_endpoint_url(os.environ.get("AWS_ENDPOINT_URL", ""))
             if not endpoint:
                 endpoint = _normalize_endpoint_url(env_vars.get("AWS_ENDPOINT_URL", ""))
@@ -1123,11 +1176,13 @@ def _resolve_layer_zip(layer_arn_str: str) -> bytes | None:
 # Versioning
 # ---------------------------------------------------------------------------
 
+
 def _publish_version(name: str, data: dict):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     func = _functions[name]
     ver_num = func["next_version"]
@@ -1151,7 +1206,8 @@ def _list_versions(name: str, query_params: dict):
     if name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(name)}", 404,
+            f"Function not found: {_func_arn(name)}",
+            404,
         )
     func = _functions[name]
     versions = [func["config"]]
@@ -1167,7 +1223,7 @@ def _list_versions(name: str, query_params: dict):
                 start = i + 1
                 break
 
-    page = versions[start:start + max_items]
+    page = versions[start : start + max_items]
     result: dict = {"Versions": page}
     if start + max_items < len(versions):
         result["NextMarker"] = page[-1]["Version"] if page else ""
@@ -1178,22 +1234,27 @@ def _list_versions(name: str, query_params: dict):
 # Aliases
 # ---------------------------------------------------------------------------
 
+
 def _create_alias(func_name: str, data: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     alias_name = data.get("Name", "")
     if not alias_name:
         return error_response_json(
-            "InvalidParameterValueException", "Alias name is required", 400,
+            "InvalidParameterValueException",
+            "Alias name is required",
+            400,
         )
     func = _functions[func_name]
     if alias_name in func["aliases"]:
         return error_response_json(
             "ResourceConflictException",
-            f"Alias already exists: {alias_name}", 409,
+            f"Alias already exists: {alias_name}",
+            409,
         )
 
     alias: dict = {
@@ -1214,13 +1275,15 @@ def _get_alias(func_name: str, alias_name: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     alias = _functions[func_name]["aliases"].get(alias_name)
     if not alias:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Alias not found: {_func_arn(func_name)}:{alias_name}", 404,
+            f"Alias not found: {_func_arn(func_name)}:{alias_name}",
+            404,
         )
     return json_response(alias)
 
@@ -1229,13 +1292,15 @@ def _update_alias(func_name: str, alias_name: str, data: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     alias = _functions[func_name]["aliases"].get(alias_name)
     if not alias:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Alias not found: {_func_arn(func_name)}:{alias_name}", 404,
+            f"Alias not found: {_func_arn(func_name)}:{alias_name}",
+            404,
         )
     for key in ("FunctionVersion", "Description", "RoutingConfig"):
         if key in data:
@@ -1248,12 +1313,14 @@ def _delete_alias(func_name: str, alias_name: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     if alias_name not in _functions[func_name]["aliases"]:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Alias not found: {_func_arn(func_name)}:{alias_name}", 404,
+            f"Alias not found: {_func_arn(func_name)}:{alias_name}",
+            404,
         )
     del _functions[func_name]["aliases"][alias_name]
     return 204, {}, b""
@@ -1263,7 +1330,8 @@ def _list_aliases(func_name: str, query_params: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     aliases = list(_functions[func_name]["aliases"].values())
 
@@ -1275,7 +1343,7 @@ def _list_aliases(func_name: str, query_params: dict):
             if a["Name"] == marker:
                 start = i + 1
                 break
-    page = aliases[start:start + max_items]
+    page = aliases[start : start + max_items]
     result: dict = {"Aliases": page}
     if start + max_items < len(aliases):
         result["NextMarker"] = page[-1]["Name"] if page else ""
@@ -1286,11 +1354,13 @@ def _list_aliases(func_name: str, query_params: dict):
 # Permissions / Policy  (required by Terraform aws_lambda_permission)
 # ---------------------------------------------------------------------------
 
+
 def _add_permission(func_name: str, data: dict, query_params: dict | None = None):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     func = _functions[func_name]
     sid = data.get("StatementId", new_uuid())
@@ -1346,17 +1416,17 @@ def _remove_permission(func_name: str, sid: str, query_params: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     func = _functions[func_name]
     before = len(func["policy"]["Statement"])
-    func["policy"]["Statement"] = [
-        s for s in func["policy"]["Statement"] if s.get("Sid") != sid
-    ]
+    func["policy"]["Statement"] = [s for s in func["policy"]["Statement"] if s.get("Sid") != sid]
     if len(func["policy"]["Statement"]) == before:
         return error_response_json(
             "ResourceNotFoundException",
-            "No policy is associated with the given resource.", 404,
+            "No policy is associated with the given resource.",
+            404,
         )
     return 204, {}, b""
 
@@ -1365,25 +1435,30 @@ def _get_policy(func_name: str, query_params: dict | None = None):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     func = _functions[func_name]
-    return json_response({
-        "Policy": json.dumps(func["policy"]),
-        "RevisionId": func["config"]["RevisionId"],
-    })
+    return json_response(
+        {
+            "Policy": json.dumps(func["policy"]),
+            "RevisionId": func["config"]["RevisionId"],
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # Tags
 # ---------------------------------------------------------------------------
 
+
 def _list_tags(resource_arn: str):
     func_name = _resolve_name(resource_arn)
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {resource_arn}", 404,
+            f"Function not found: {resource_arn}",
+            404,
         )
     return json_response({"Tags": _functions[func_name].get("tags", {})})
 
@@ -1393,7 +1468,8 @@ def _tag_resource(resource_arn: str, data: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {resource_arn}", 404,
+            f"Function not found: {resource_arn}",
+            404,
         )
     _functions[func_name].setdefault("tags", {}).update(data.get("Tags", {}))
     return 204, {}, b""
@@ -1404,7 +1480,8 @@ def _untag_resource(resource_arn: str, query_params: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {resource_arn}", 404,
+            f"Function not found: {resource_arn}",
+            404,
         )
     raw = query_params.get("tagKeys", query_params.get("TagKeys", []))
     if isinstance(raw, list):
@@ -1423,7 +1500,28 @@ def _untag_resource(resource_arn: str, query_params: dict):
 # Layers
 # ---------------------------------------------------------------------------
 
+
+def _layer_content_url(layer_name: str, version: int) -> str:
+    port = os.environ.get("MINISTACK_PORT", "4566")
+    return f"http://localhost:{port}/_ministack/lambda-layers/{layer_name}/{version}/content"
+
+
 def _publish_layer_version(layer_name: str, data: dict):
+    runtimes = data.get("CompatibleRuntimes", [])
+    architectures = data.get("CompatibleArchitectures", [])
+    if len(runtimes) > 15:
+        return error_response_json(
+            "InvalidParameterValueException",
+            "CompatibleRuntimes list length exceeds maximum allowed length of 15.",
+            400,
+        )
+    if len(architectures) > 2:
+        return error_response_json(
+            "InvalidParameterValueException",
+            "CompatibleArchitectures list length exceeds maximum allowed length of 2.",
+            400,
+        )
+
     if layer_name not in _layers:
         _layers[layer_name] = {"versions": [], "next_version": 1}
     layer = _layers[layer_name]
@@ -1440,41 +1538,75 @@ def _publish_layer_version(layer_name: str, data: dict):
         "LayerVersionArn": f"{_layer_arn(layer_name)}:{ver}",
         "Version": ver,
         "Description": data.get("Description", ""),
-        "CompatibleRuntimes": data.get("CompatibleRuntimes", []),
-        "CompatibleArchitectures": data.get("CompatibleArchitectures", []),
+        "CompatibleRuntimes": runtimes,
+        "CompatibleArchitectures": architectures,
         "LicenseInfo": data.get("LicenseInfo", ""),
         "CreatedDate": _now_iso(),
         "Content": {
-            "Location": "",
-            "CodeSha256": (
-                base64.b64encode(hashlib.sha256(zip_data).digest()).decode()
-                if zip_data else ""
-            ),
+            "Location": _layer_content_url(layer_name, ver),
+            "CodeSha256": (base64.b64encode(hashlib.sha256(zip_data).digest()).decode() if zip_data else ""),
             "CodeSize": len(zip_data) if zip_data else 0,
         },
         "_zip_data": zip_data,
+        "_policy": {"Version": "2012-10-17", "Id": "default", "Statement": []},
     }
     layer["versions"].append(ver_config)
     out = {k: v for k, v in ver_config.items() if not k.startswith("_")}
     return json_response(out, 201)
 
 
+def _match_layer_version(vc: dict, runtime: str, arch: str) -> bool:
+    if runtime and runtime not in vc.get("CompatibleRuntimes", []):
+        return False
+    if arch and arch not in vc.get("CompatibleArchitectures", []):
+        return False
+    return True
+
+
 def _list_layer_versions(layer_name: str, query_params: dict):
     layer = _layers.get(layer_name)
     if not layer:
         return json_response({"LayerVersions": []})
-    versions = [
+
+    runtime = _qp_first(query_params, "CompatibleRuntime")
+    arch = _qp_first(query_params, "CompatibleArchitecture")
+
+    all_versions = [
         {k: v for k, v in vc.items() if not k.startswith("_")}
         for vc in layer["versions"]
+        if _match_layer_version(vc, runtime, arch)
     ]
-    return json_response({"LayerVersions": versions})
+    all_versions.sort(key=lambda v: v["Version"], reverse=True)
+
+    marker = _qp_first(query_params, "Marker")
+    max_items = int(_qp_first(query_params, "MaxItems", "50"))
+    start = 0
+    if marker:
+        for i, v in enumerate(all_versions):
+            if str(v["Version"]) == marker:
+                start = i + 1
+                break
+
+    page = all_versions[start : start + max_items]
+    result: dict = {"LayerVersions": page}
+    if start + max_items < len(all_versions):
+        result["NextMarker"] = str(page[-1]["Version"]) if page else ""
+    return json_response(result)
 
 
 def _get_layer_version(layer_name: str, version: int):
+    if version < 1:
+        return error_response_json(
+            "InvalidParameterValueException",
+            "Layer Version Cannot be less than 1.",
+            400,
+        )
     layer = _layers.get(layer_name)
     if not layer:
         return error_response_json(
-            "ResourceNotFoundException", f"Layer {layer_name} not found", 404,
+            "ResourceNotFoundException",
+            "The resource you requested does not exist.",
+            404,
         )
     for vc in layer["versions"]:
         if vc["Version"] == version:
@@ -1482,11 +1614,33 @@ def _get_layer_version(layer_name: str, version: int):
             return json_response(out)
     return error_response_json(
         "ResourceNotFoundException",
-        f"Layer version {version} not found for {layer_name}", 404,
+        "The resource you requested does not exist.",
+        404,
     )
 
 
+def _get_layer_version_by_arn(arn: str):
+    segs = arn.split(":")
+    if len(segs) < 8 or not segs[7].isdigit():
+        return error_response_json(
+            "ValidationException",
+            f"Value '{arn}' at 'arn' failed to satisfy constraint: "
+            "Member must satisfy regular expression pattern: "
+            "arn:(aws[a-zA-Z-]*)?:lambda:[a-z]{2}((-gov)|(-iso([a-z]?)))?-[a-z]+-\\d{{1}}:\\d{{12}}:layer:[a-zA-Z0-9-_]+:[0-9]+",
+            400,
+        )
+    layer_name = segs[6]
+    version = int(segs[7])
+    return _get_layer_version(layer_name, version)
+
+
 def _delete_layer_version(layer_name: str, version: int):
+    if version < 1:
+        return error_response_json(
+            "InvalidParameterValueException",
+            "Layer Version Cannot be less than 1.",
+            400,
+        )
     layer = _layers.get(layer_name)
     if not layer:
         return 204, {}, b""
@@ -1495,35 +1649,175 @@ def _delete_layer_version(layer_name: str, version: int):
 
 
 def _list_layers(query_params: dict):
+    runtime = _qp_first(query_params, "CompatibleRuntime")
+    arch = _qp_first(query_params, "CompatibleArchitecture")
+
     result = []
     for name, layer in _layers.items():
-        if layer["versions"]:
-            latest = layer["versions"][-1]
-            result.append({
-                "LayerName": name,
-                "LayerArn": _layer_arn(name),
-                "LatestMatchingVersion": {
-                    k: v for k, v in latest.items() if not k.startswith("_")
-                },
-            })
-    return json_response({"Layers": result})
+        matching = [vc for vc in layer["versions"] if _match_layer_version(vc, runtime, arch)]
+        if matching:
+            latest = matching[-1]
+            result.append(
+                {
+                    "LayerName": name,
+                    "LayerArn": _layer_arn(name),
+                    "LatestMatchingVersion": {k: v for k, v in latest.items() if not k.startswith("_")},
+                }
+            )
+
+    marker = _qp_first(query_params, "Marker")
+    max_items = int(_qp_first(query_params, "MaxItems", "50"))
+    start = 0
+    if marker:
+        for i, item in enumerate(result):
+            if item["LayerName"] == marker:
+                start = i + 1
+                break
+
+    page = result[start : start + max_items]
+    resp: dict = {"Layers": page}
+    if start + max_items < len(result):
+        resp["NextMarker"] = page[-1]["LayerName"] if page else ""
+    return json_response(resp)
+
+
+# ---------------------------------------------------------------------------
+# Layer Version Permissions
+# ---------------------------------------------------------------------------
+
+
+def _find_layer_version(layer_name: str, version: int):
+    """Return (layer_version_config, error_response) — one will be None."""
+    layer = _layers.get(layer_name)
+    lv_arn = f"{_layer_arn(layer_name)}:{version}"
+    if not layer:
+        return None, error_response_json(
+            "ResourceNotFoundException",
+            f"Layer version {lv_arn} does not exist.",
+            404,
+        )
+    for vc in layer["versions"]:
+        if vc["Version"] == version:
+            return vc, None
+    return None, error_response_json(
+        "ResourceNotFoundException",
+        f"Layer version {lv_arn} does not exist.",
+        404,
+    )
+
+
+def _add_layer_version_permission(layer_name: str, version: int, data: dict):
+    vc, err = _find_layer_version(layer_name, version)
+    if err:
+        return err
+
+    action = data.get("Action", "")
+    if action != "lambda:GetLayerVersion":
+        return error_response_json(
+            "ValidationException",
+            f"1 validation error detected: Value '{action}' at 'action' failed to satisfy "
+            "constraint: Member must satisfy regular expression pattern: lambda:GetLayerVersion",
+            400,
+        )
+
+    sid = data.get("StatementId", "")
+    policy = vc.setdefault("_policy", {"Version": "2012-10-17", "Id": "default", "Statement": []})
+    for s in policy["Statement"]:
+        if s.get("Sid") == sid:
+            return error_response_json(
+                "ResourceConflictException",
+                f"The statement id ({sid}) provided already exists. "
+                "Please provide a new statement id, or remove the existing statement.",
+                409,
+            )
+
+    statement = {
+        "Sid": sid,
+        "Effect": "Allow",
+        "Principal": data.get("Principal", "*"),
+        "Action": action,
+        "Resource": vc["LayerVersionArn"],
+    }
+    org_id = data.get("OrganizationId")
+    if org_id:
+        statement["Condition"] = {"StringEquals": {"aws:PrincipalOrgID": org_id}}
+
+    policy["Statement"].append(statement)
+    return json_response(
+        {
+            "Statement": json.dumps(statement),
+            "RevisionId": new_uuid(),
+        },
+        201,
+    )
+
+
+def _remove_layer_version_permission(layer_name: str, version: int, sid: str):
+    vc, err = _find_layer_version(layer_name, version)
+    if err:
+        return err
+
+    policy = vc.get("_policy", {"Statement": []})
+    before = len(policy["Statement"])
+    policy["Statement"] = [s for s in policy["Statement"] if s.get("Sid") != sid]
+    if len(policy["Statement"]) == before:
+        return error_response_json(
+            "ResourceNotFoundException",
+            f"Statement {sid} is not found in resource policy.",
+            404,
+        )
+    return 204, {}, b""
+
+
+def _get_layer_version_policy(layer_name: str, version: int):
+    vc, err = _find_layer_version(layer_name, version)
+    if err:
+        return err
+
+    policy = vc.get("_policy", {"Statement": []})
+    if not policy.get("Statement"):
+        return error_response_json(
+            "ResourceNotFoundException",
+            "No policy is associated with the given resource.",
+            404,
+        )
+    return json_response(
+        {
+            "Policy": json.dumps(policy),
+            "RevisionId": new_uuid(),
+        }
+    )
+
+
+def serve_layer_content(layer_name: str, version: int):
+    """Serve raw zip bytes for a layer version (called from app.py)."""
+    vc, err = _find_layer_version(layer_name, version)
+    if err:
+        return err
+    zip_data = vc.get("_zip_data")
+    if not zip_data:
+        return 404, {}, b""
+    return 200, {"Content-Type": "application/zip"}, zip_data
 
 
 # ---------------------------------------------------------------------------
 # Event Invoke Config (stubs — enough for Terraform to not error)
 # ---------------------------------------------------------------------------
 
+
 def _get_event_invoke_config(func_name: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     eic = _functions[func_name].get("event_invoke_config")
     if not eic:
         return error_response_json(
             "ResourceNotFoundException",
-            f"The function {func_name} doesn't have an EventInvokeConfig", 404,
+            f"The function {func_name} doesn't have an EventInvokeConfig",
+            404,
         )
     return json_response(eic)
 
@@ -1532,17 +1826,21 @@ def _put_event_invoke_config(func_name: str, data: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     eic = {
         "FunctionArn": _func_arn(func_name),
         "MaximumRetryAttempts": data.get("MaximumRetryAttempts", 2),
         "MaximumEventAgeInSeconds": data.get("MaximumEventAgeInSeconds", 21600),
         "LastModified": time.time(),
-        "DestinationConfig": data.get("DestinationConfig", {
-            "OnSuccess": {},
-            "OnFailure": {},
-        }),
+        "DestinationConfig": data.get(
+            "DestinationConfig",
+            {
+                "OnSuccess": {},
+                "OnFailure": {},
+            },
+        ),
     }
     _functions[func_name]["event_invoke_config"] = eic
     return json_response(eic)
@@ -1552,7 +1850,8 @@ def _delete_event_invoke_config(func_name: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     _functions[func_name]["event_invoke_config"] = None
     return 204, {}, b""
@@ -1562,11 +1861,13 @@ def _delete_event_invoke_config(func_name: str):
 # Concurrency (reserved)
 # ---------------------------------------------------------------------------
 
+
 def _get_function_concurrency(func_name: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     conc = _functions[func_name].get("concurrency")
     if conc is None:
@@ -1578,7 +1879,8 @@ def _put_function_concurrency(func_name: str, data: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     value = data.get("ReservedConcurrentExecutions", 0)
     _functions[func_name]["concurrency"] = value
@@ -1589,7 +1891,8 @@ def _delete_function_concurrency(func_name: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     _functions[func_name]["concurrency"] = None
     return 204, {}, b""
@@ -1599,18 +1902,21 @@ def _delete_function_concurrency(func_name: str):
 # Provisioned Concurrency (stubs)
 # ---------------------------------------------------------------------------
 
+
 def _get_provisioned_concurrency(func_name: str, qualifier: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     key = qualifier or "$LATEST"
     pc = _functions[func_name].get("provisioned_concurrency", {}).get(key)
     if not pc:
         return error_response_json(
             "ProvisionedConcurrencyConfigNotFoundException",
-            f"No Provisioned Concurrency Config found for function: {_func_arn(func_name)}", 404,
+            f"No Provisioned Concurrency Config found for function: {_func_arn(func_name)}",
+            404,
         )
     return json_response(pc)
 
@@ -1619,7 +1925,8 @@ def _put_provisioned_concurrency(func_name: str, qualifier: str, data: dict):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     key = qualifier or "$LATEST"
     requested = data.get("ProvisionedConcurrentExecutions", 0)
@@ -1638,7 +1945,8 @@ def _delete_provisioned_concurrency(func_name: str, qualifier: str):
     if func_name not in _functions:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Function not found: {_func_arn(func_name)}", 404,
+            f"Function not found: {_func_arn(func_name)}",
+            404,
         )
     key = qualifier or "$LATEST"
     _functions[func_name].get("provisioned_concurrency", {}).pop(key, None)
@@ -1648,6 +1956,7 @@ def _delete_provisioned_concurrency(func_name: str, qualifier: str):
 # ---------------------------------------------------------------------------
 # Event Source Mappings
 # ---------------------------------------------------------------------------
+
 
 def _create_esm(data: dict):
     esm_id = new_uuid()
@@ -1678,8 +1987,7 @@ def _get_esm(esm_id: str):
     if not esm:
         return error_response_json(
             "ResourceNotFoundException",
-            f"The resource you requested does not exist. (Service: Lambda, "
-            f"Status Code: 404, Request ID: {new_uuid()})",
+            f"The resource you requested does not exist. (Service: Lambda, Status Code: 404, Request ID: {new_uuid()})",
             404,
         )
     return json_response(esm)
@@ -1704,7 +2012,7 @@ def _list_esms(query_params: dict):
                 start = i + 1
                 break
 
-    page = result[start:start + max_items]
+    page = result[start : start + max_items]
     resp: dict = {"EventSourceMappings": page}
     if start + max_items < len(result):
         resp["NextMarker"] = page[-1]["UUID"] if page else ""
@@ -1716,13 +2024,20 @@ def _update_esm(esm_id: str, data: dict):
     if not esm:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Event source mapping not found: {esm_id}", 404,
+            f"Event source mapping not found: {esm_id}",
+            404,
         )
-    for key in ("BatchSize", "MaximumBatchingWindowInSeconds",
-                "FunctionResponseTypes", "MaximumRetryAttempts",
-                "MaximumRecordAgeInSeconds", "BisectBatchOnFunctionError",
-                "ParallelizationFactor", "DestinationConfig",
-                "FilterCriteria"):
+    for key in (
+        "BatchSize",
+        "MaximumBatchingWindowInSeconds",
+        "FunctionResponseTypes",
+        "MaximumRetryAttempts",
+        "MaximumRecordAgeInSeconds",
+        "BisectBatchOnFunctionError",
+        "ParallelizationFactor",
+        "DestinationConfig",
+        "FilterCriteria",
+    ):
         if key in data:
             esm[key] = data[key]
     if "Enabled" in data:
@@ -1741,7 +2056,8 @@ def _delete_esm(esm_id: str):
     if not esm:
         return error_response_json(
             "ResourceNotFoundException",
-            f"Event source mapping not found: {esm_id}", 404,
+            f"Event source mapping not found: {esm_id}",
+            404,
         )
     esm["State"] = "Deleting"
     return json_response(esm, 202)
@@ -1750,6 +2066,7 @@ def _delete_esm(esm_id: str):
 # ---------------------------------------------------------------------------
 # SQS ESM Poller (kept as-is — works well)
 # ---------------------------------------------------------------------------
+
 
 def _ensure_poller():
     global _poller_started
@@ -1794,7 +2111,6 @@ def _poll_once():
         batch_size = esm.get("BatchSize", 10)
         now = time.time()
 
-
         batch = _sqs._receive_messages_for_esm(queue_url, batch_size)
         if not batch:
             continue
@@ -1803,22 +2119,24 @@ def _poll_once():
         for msg in batch:
             # sqs._collect_msgs already increments receive_count and sets first_receive_at
             first_recv = msg.get("first_receive_at") or now
-            records.append({
-                "messageId": msg["id"],
-                "receiptHandle": msg["receipt_handle"],
-                "body": msg["body"],
-                "attributes": {
-                    "ApproximateReceiveCount": str(msg.get("receive_count", 1)),
-                    "SentTimestamp": str(int(msg["sent_at"] * 1000)),
-                    "SenderId": ACCOUNT_ID,
-                    "ApproximateFirstReceiveTimestamp": str(int(first_recv * 1000)),
-                },
-                "messageAttributes": msg.get("message_attributes", {}),
-                "md5OfBody": msg.get("md5_body") or msg.get("md5") or "",
-                "eventSource": "aws:sqs",
-                "eventSourceARN": source_arn,
-                "awsRegion": REGION,
-            })
+            records.append(
+                {
+                    "messageId": msg["id"],
+                    "receiptHandle": msg["receipt_handle"],
+                    "body": msg["body"],
+                    "attributes": {
+                        "ApproximateReceiveCount": str(msg.get("receive_count", 1)),
+                        "SentTimestamp": str(int(msg["sent_at"] * 1000)),
+                        "SenderId": ACCOUNT_ID,
+                        "ApproximateFirstReceiveTimestamp": str(int(first_recv * 1000)),
+                    },
+                    "messageAttributes": msg.get("message_attributes", {}),
+                    "md5OfBody": msg.get("md5_body") or msg.get("md5") or "",
+                    "eventSource": "aws:sqs",
+                    "eventSourceARN": source_arn,
+                    "awsRegion": REGION,
+                }
+            )
 
         event = {"Records": records}
         result = _execute_function(_functions[func_name], event)
@@ -1857,18 +2175,19 @@ def _poll_once():
 # Function URL Config
 # ---------------------------------------------------------------------------
 
+
 def _url_config_key(func_name: str, qualifier: str | None) -> str:
     return f"{func_name}:{qualifier}" if qualifier else func_name
 
 
 def _create_function_url_config(func_name: str, data: dict, qualifier: str | None):
     if func_name not in _functions:
-        return error_response_json("ResourceNotFoundException",
-                                   f"Function not found: {_func_arn(func_name)}", 404)
+        return error_response_json("ResourceNotFoundException", f"Function not found: {_func_arn(func_name)}", 404)
     key = _url_config_key(func_name, qualifier)
     if key in _function_urls:
-        return error_response_json("ResourceConflictException",
-                                   f"Function URL config already exists for {func_name}", 409)
+        return error_response_json(
+            "ResourceConflictException", f"Function URL config already exists for {func_name}", 409
+        )
     cfg = {
         "FunctionUrl": f"https://{new_uuid()}.lambda-url.us-east-1.on.aws/",
         "FunctionArn": _func_arn(func_name),
@@ -1885,8 +2204,7 @@ def _get_function_url_config(func_name: str, qualifier: str | None):
     key = _url_config_key(func_name, qualifier)
     cfg = _function_urls.get(key)
     if not cfg:
-        return error_response_json("ResourceNotFoundException",
-                                   f"Function URL config not found for {func_name}", 404)
+        return error_response_json("ResourceNotFoundException", f"Function URL config not found for {func_name}", 404)
     return json_response(cfg)
 
 
@@ -1894,8 +2212,7 @@ def _update_function_url_config(func_name: str, data: dict, qualifier: str | Non
     key = _url_config_key(func_name, qualifier)
     cfg = _function_urls.get(key)
     if not cfg:
-        return error_response_json("ResourceNotFoundException",
-                                   f"Function URL config not found for {func_name}", 404)
+        return error_response_json("ResourceNotFoundException", f"Function URL config not found for {func_name}", 404)
     if "AuthType" in data:
         cfg["AuthType"] = data["AuthType"]
     if "Cors" in data:
@@ -1907,20 +2224,19 @@ def _update_function_url_config(func_name: str, data: dict, qualifier: str | Non
 def _delete_function_url_config(func_name: str, qualifier: str | None):
     key = _url_config_key(func_name, qualifier)
     if key not in _function_urls:
-        return error_response_json("ResourceNotFoundException",
-                                   f"Function URL config not found for {func_name}", 404)
+        return error_response_json("ResourceNotFoundException", f"Function URL config not found for {func_name}", 404)
     del _function_urls[key]
     return 204, {}, b""
 
 
 def _list_function_url_configs(func_name: str, query_params: dict):
-    configs = [v for k, v in _function_urls.items()
-               if k == func_name or k.startswith(f"{func_name}:")]
+    configs = [v for k, v in _function_urls.items() if k == func_name or k.startswith(f"{func_name}:")]
     return json_response({"FunctionUrlConfigs": configs})
 
 
 def reset():
     from ministack.core import lambda_runtime
+
     _functions.clear()
     _layers.clear()
     _esms.clear()
