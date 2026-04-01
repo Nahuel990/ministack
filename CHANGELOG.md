@@ -7,6 +7,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.13] — 2026-04-01
+
+### Added
+- **CloudFormation** — full stack lifecycle: `CreateStack`, `UpdateStack`, `DeleteStack`, `DescribeStacks`, `ListStacks`, `DescribeStackEvents`, `DescribeStackResource`, `DescribeStackResources`, `GetTemplate`, `ValidateTemplate`, `GetTemplateSummary`, `ListExports`; change sets (`CreateChangeSet`, `DescribeChangeSet`, `ExecuteChangeSet`, `DeleteChangeSet`, `ListChangeSets`); JSON and YAML template support including `!Ref`, `!Sub`, `!GetAtt` shorthand; full intrinsic function resolution (`Ref`, `Fn::GetAtt`, `Fn::Join`, `Fn::Sub`, `Fn::Select`, `Fn::Split`, `Fn::If`, `Fn::Base64`, `Fn::FindInMap`, `Fn::ImportValue`, `Fn::GetAZs`, `Fn::Cidr`); conditions (`Fn::Equals`, `Fn::And`, `Fn::Or`, `Fn::Not`); parameters with `AllowedValues`, `Default`, `NoEcho`; rollback on failure with reverse-order cleanup; cross-stack exports via `Fn::ImportValue`; 12 resource types provisioned directly into service state (`AWS::S3::Bucket`, `AWS::SQS::Queue`, `AWS::SNS::Topic`, `AWS::SNS::Subscription`, `AWS::DynamoDB::Table`, `AWS::Lambda::Function`, `AWS::IAM::Role`, `AWS::IAM::Policy`, `AWS::IAM::InstanceProfile`, `AWS::SSM::Parameter`, `AWS::Logs::LogGroup`, `AWS::Events::Rule`). Contributed by @sam-fakhreddine
+
+### Fixed
+- **CloudFormation Lambda `ZipFile`** — inline `Code.ZipFile` source is now correctly packaged into a zip archive, making CFN-deployed Lambda functions invokable
+- **CloudFormation async task** — replaced deprecated `asyncio.ensure_future()` with `asyncio.get_event_loop().create_task()` in stack deploy, delete, and change set execution
+
+### Tests
+- 788 tests total, all passing
+
+---
+
 ## [1.1.12] — 2026-03-31
 
 ### Changed
@@ -35,7 +49,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [1.1.10] — 2026-03-31
 
 ### Fixed
-- **ECS Docker network detection** — ECS containers now automatically join the same Docker network that MiniStack is running on, so containers can reach sibling services (S3, SQS, etc.) without manual network configuration
+- **ECS Docker network detection** — ECS containers now automatically join the same Docker network that MiniStack is running on, so containers can reach sibling services (S3, SQS, etc.) without manual network configuration. Contributed by @mickabd
 - **Internal naming cleanup** — replaced all internal `localstack-*` references (logger name, default data dir `/tmp/localstack-data/s3` → `/tmp/ministack-data/s3`, healthcheck URLs, CI config) with `ministack` equivalents; `LOCALSTACK_PERSISTENCE` / `LOCALSTACK_HOSTNAME` env vars kept for migration compatibility
 - **DynamoDB GSI capacity accounting** — `PutItem`, `DeleteItem`, `UpdateItem`, `GetItem`, `Query`, `Scan`, and `BatchWriteItem` now return correct `ConsumedCapacity.CapacityUnits` when a table has Global Secondary Indexes: `1 + gsi_count` per write (matching real AWS); `INDEXES` mode also returns per-GSI breakdown. Contributed by @jespinoza-shippo.
 - **S3 `CreateBucket` idempotency** — creating a bucket you already own now returns 200 instead of 409 `BucketAlreadyOwnedByYou`, matching real AWS and fixing Terraform re-apply failures
@@ -58,6 +72,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   - `PutObjectRetention` / `GetObjectRetention` — per-object retention with `COMPLIANCE` (always blocks delete) and `GOVERNANCE` (`x-amz-bypass-governance-retention` header bypasses)
   - `PutObjectLegalHold` / `GetObjectLegalHold` — `ON` status unconditionally blocks deletion regardless of retention mode
   - Default retention auto-applied on `PutObject` when bucket lock configuration is present
+  @Contributed by @mickabd
 - **S3 Replication** — bucket-level replication configuration CRUD
   - `PutBucketReplication` / `GetBucketReplication` / `DeleteBucketReplication`
 - **S3 Tagging improvements** — URL-encoded tagging header parsing now correctly handles `x-amz-tagging` on `PutObject` and `CopyObject`
@@ -95,7 +110,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   - **Flow Logs**: `CreateFlowLogs`, `DescribeFlowLogs`, `DeleteFlowLogs` — supports VPC/subnet/ENI resource targets, CloudWatch Logs and S3 destinations, `resource-id` filter
   - **VPC Peering**: `CreateVpcPeeringConnection`, `AcceptVpcPeeringConnection`, `DescribeVpcPeeringConnections`, `DeleteVpcPeeringConnection` — full lifecycle from `pending-acceptance` → `active` → `deleted`, cross-account/cross-region params accepted
   - **DHCP Options**: `CreateDhcpOptions`, `AssociateDhcpOptions`, `DescribeDhcpOptions`, `DeleteDhcpOptions` — arbitrary key/value configurations, association updates `VpcId.DhcpOptionsId`
-  - **Egress-Only Internet Gateways**: `CreateEgressOnlyInternetGateway`, `DescribeEgressOnlyInternetGateways`, `DeleteEgressOnlyInternetGateway` — IPv6 egress-only IGW for VPCs
+  - **Egress-Only Internet Gateways**: `CreateEgressOnlyInternetGateway`, `DescribeEgressOnlyInternetGateways`, `DeleteEgressOnlyInternetGateway` — IPv6 egress-only IGW for VPCs. Contributed by @mickabd
 
 ### Fixed
 - **SQS `awsQueryCompatible` header** — all SQS JSON error responses now include the `x-amzn-query-error: <legacy_code>;<fault>` header required by the `awsQueryCompatible` service trait. botocore reads this header and overrides `Error.Code` with the legacy `AWS.SimpleQueueService.*` namespaced code (e.g. `AWS.SimpleQueueService.NonExistentQueue` instead of `QueueDoesNotExist`). Without this header, any SDK code that matched against the legacy string worked against real AWS but silently failed against MiniStack. Full mapping of all 28 SQS error shapes sourced from `aws-sdk-go` ErrCode constants. Contributed by @jespinoza-shippo.

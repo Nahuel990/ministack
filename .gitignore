@@ -50,14 +50,3 @@ data/
 
 # Logs
 *.log
-
-# Research artifacts
-localstack/
-
-# Lock files
-uv.lock
-
-# WFC plans (local)
-plans/
-.hypothesis/
-.claude/

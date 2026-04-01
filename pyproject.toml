@@ -39,7 +39,6 @@ dev = [
     "duckdb>=0.10.0",
     "docker>=7.0.0",
     "ruff>=0.4",
-    "hypothesis>=6.0",
 ]
 
 [project.urls]

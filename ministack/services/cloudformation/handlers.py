@@ -100,7 +100,7 @@ def _create_stack(params):
                "AWS::CloudFormation::Stack", "CREATE_IN_PROGRESS",
                physical_id=stack_id)
 
-    asyncio.ensure_future(
+    asyncio.get_event_loop().create_task(
         _deploy_stack_async(stack_name, stack_id, template,
                             param_values, disable_rollback, tags)
     )
@@ -387,7 +387,7 @@ def _delete_stack(params):
                                   f"Export {export_name} is imported by stack {other_name}")
 
     stack_id = stack["StackId"]
-    asyncio.ensure_future(_delete_stack_async(stack_name, stack_id))
+    asyncio.get_event_loop().create_task(_delete_stack_async(stack_name, stack_id))
 
     return _xml(200, "DeleteStackResponse", "")
 
@@ -461,7 +461,7 @@ def _update_stack(params):
                "AWS::CloudFormation::Stack", "UPDATE_IN_PROGRESS",
                physical_id=stack_id)
 
-    asyncio.ensure_future(
+    asyncio.get_event_loop().create_task(
         _deploy_stack_async(stack_name, stack_id, template,
                             param_values, disable_rollback, tags,
                             is_update=True, previous_stack=previous_stack)

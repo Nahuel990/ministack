@@ -15374,7 +15374,7 @@ def test_cfn_fn_sub(cfn, ssm):
     assert val == "cfn-t06-src-replica"
 
 
-def test_cfn_multi_resource_dependencies(cfn):
+def test_cfn_multi_resource_dependencies(cfn, iam, lam):
     template = {
         "AWSTemplateFormatVersion": "2010-09-09",
         "Resources": {
@@ -15408,10 +15408,6 @@ def test_cfn_multi_resource_dependencies(cfn):
     }
     cfn.create_stack(StackName="cfn-t07", TemplateBody=json.dumps(template))
     _wait_stack(cfn, "cfn-t07")
-
-    from tests.conftest import make_client
-    iam = make_client("iam")
-    lam = make_client("lambda")
     role = iam.get_role(RoleName="cfn-t07-role")["Role"]
     func = lam.get_function(FunctionName="cfn-t07-func")["Configuration"]
     assert func["Role"] == role["Arn"]

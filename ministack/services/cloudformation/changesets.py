@@ -261,7 +261,7 @@ def _execute_change_set(params):
                "AWS::CloudFormation::Stack", f"{status_prefix}_IN_PROGRESS",
                physical_id=stack_id)
 
-    asyncio.ensure_future(
+    asyncio.get_event_loop().create_task(
         _deploy_stack_async(real_stack_name, stack_id, template,
                             param_values, False, tags,
                             is_update=is_update,

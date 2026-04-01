@@ -2,9 +2,11 @@
 CloudFormation provisioners — resource create/delete handlers for each AWS resource type.
 """
 
+import io
 import json
 import logging
 import time
+import zipfile
 from collections import defaultdict
 
 from ministack.core.responses import new_uuid, now_iso
@@ -308,6 +310,17 @@ def _ddb_delete(physical_id, props):
 
 # --- Lambda Function ---
 
+def _zip_inline(source: str | None, handler: str) -> bytes | None:
+    """Wrap inline ZipFile source code into a real zip archive."""
+    if not source:
+        return None
+    module = handler.split(".")[0] if handler and "." in handler else "index"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{module}.py", source)
+    return buf.getvalue()
+
+
 def _lambda_create(logical_id, props, stack_name):
     name = props.get("FunctionName") or f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
     arn = f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:{name}"
@@ -344,7 +357,7 @@ def _lambda_create(logical_id, props, stack_name):
             "TracingConfig": props.get("TracingConfig", {"Mode": "PassThrough"}),
             "RevisionId": new_uuid(),
         },
-        "code_zip": None,
+        "code_zip": _zip_inline(code.get("ZipFile"), handler),
         "code_s3_bucket": code.get("S3Bucket"),
         "code_s3_key": code.get("S3Key"),
         "versions": {},
