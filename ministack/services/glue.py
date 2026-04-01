@@ -8,6 +8,7 @@ Job execution runs Python scripts via subprocess in background threads.
 Crawlers transition through RUNNING state with a configurable timer.
 """
 
+import fnmatch
 import json
 import logging
 import os
@@ -1070,7 +1071,6 @@ def _get_tags(data):
 
 def _simple_glob_match(pattern, name):
     """Very simple glob matching: * matches anything."""
-    import fnmatch
     return fnmatch.fnmatch(name, pattern)
 
 

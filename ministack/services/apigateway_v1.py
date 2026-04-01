@@ -70,7 +70,10 @@ Data plane:
 import datetime
 import json
 import logging
+import re
 import time
+import urllib.error
+import urllib.request
 
 from ministack.core.responses import new_uuid
 
@@ -673,9 +676,6 @@ async def _invoke_lambda_proxy_v1(integration, api_id, stage_name, stage, resour
 
 async def _invoke_http_proxy_v1(integration, path, method, headers, body, query_params):
     """Forward a request to an HTTP backend."""
-    import urllib.error
-    import urllib.request
-
     uri = integration.get("uri", "")
     url = uri.rstrip("/") + path
 
@@ -702,7 +702,6 @@ def _invoke_mock_v1(integration):
     matching AWS behaviour for MOCK where the input is always treated as
     successful (statusCode 200).
     """
-    import re
     int_responses = integration.get("integrationResponses", {})
     if not int_responses:
         return 200, {"Content-Type": "application/json"}, b"{}"

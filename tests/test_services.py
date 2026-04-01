@@ -15572,3 +15572,111 @@ def test_cfn_e2e_exports_available(cfn_e2e_stack, cfn):
     names = {e["Name"]: e["Value"] for e in exports}
     assert f"{_E2E_STACK}-bucket" in names
     assert names[f"{_E2E_STACK}-bucket"] == cfn_e2e_stack["BucketName"]
+
+
+# ========== CloudFormation — Auto-Generated Physical Names ==========
+
+
+def test_cfn_auto_name_s3_follows_aws_pattern(cfn, s3):
+    """S3 bucket auto-name: lowercase, stackName-logicalId-SUFFIX, max 63 chars."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "MyBucket": {"Type": "AWS::S3::Bucket", "Properties": {}},
+        },
+        "Outputs": {
+            "BucketName": {"Value": {"Ref": "MyBucket"}},
+        },
+    }
+    cfn.create_stack(StackName="cfn-autoname-s3", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-autoname-s3")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    bucket_name = next(o["OutputValue"] for o in stack["Outputs"] if o["OutputKey"] == "BucketName")
+    assert bucket_name == bucket_name.lower(), "S3 auto-name must be lowercase"
+    assert bucket_name.startswith("cfn-autoname-s3-mybucket-"), f"Expected AWS-pattern name, got: {bucket_name}"
+    assert len(bucket_name) <= 63, f"S3 name too long: {len(bucket_name)}"
+    # Verify bucket actually exists
+    s3.head_bucket(Bucket=bucket_name)
+
+    cfn.delete_stack(StackName="cfn-autoname-s3")
+    _wait_stack(cfn, "cfn-autoname-s3")
+
+
+def test_cfn_auto_name_sqs_follows_aws_pattern(cfn, sqs):
+    """SQS queue auto-name: stackName-logicalId-SUFFIX, max 80 chars, case preserved."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "MyQueue": {"Type": "AWS::SQS::Queue", "Properties": {}},
+        },
+        "Outputs": {
+            "QueueName": {"Value": {"Fn::GetAtt": ["MyQueue", "QueueName"]}},
+        },
+    }
+    cfn.create_stack(StackName="cfn-autoname-sqs", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-autoname-sqs")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    queue_name = next(o["OutputValue"] for o in stack["Outputs"] if o["OutputKey"] == "QueueName")
+    assert queue_name.startswith("cfn-autoname-sqs-MyQueue-"), f"Expected AWS-pattern name, got: {queue_name}"
+    assert len(queue_name) <= 80
+
+    cfn.delete_stack(StackName="cfn-autoname-sqs")
+    _wait_stack(cfn, "cfn-autoname-sqs")
+
+
+def test_cfn_auto_name_dynamodb_follows_aws_pattern(cfn, ddb):
+    """DynamoDB table auto-name: stackName-logicalId-SUFFIX, max 255 chars."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "MyTable": {
+                "Type": "AWS::DynamoDB::Table",
+                "Properties": {
+                    "AttributeDefinitions": [{"AttributeName": "pk", "AttributeType": "S"}],
+                    "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+                    "BillingMode": "PAY_PER_REQUEST",
+                },
+            },
+        },
+        "Outputs": {
+            "TableName": {"Value": {"Ref": "MyTable"}},
+        },
+    }
+    cfn.create_stack(StackName="cfn-autoname-ddb", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-autoname-ddb")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    table_name = next(o["OutputValue"] for o in stack["Outputs"] if o["OutputKey"] == "TableName")
+    assert table_name.startswith("cfn-autoname-ddb-MyTable-"), f"Expected AWS-pattern name, got: {table_name}"
+    assert len(table_name) <= 255
+    ddb.describe_table(TableName=table_name)
+
+    cfn.delete_stack(StackName="cfn-autoname-ddb")
+    _wait_stack(cfn, "cfn-autoname-ddb")
+
+
+def test_cfn_explicit_name_not_overridden(cfn, s3):
+    """Explicit BucketName must be used as-is, not overridden by auto-name logic."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "MyBucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-explicit-name-test"},
+            },
+        },
+        "Outputs": {
+            "BucketName": {"Value": {"Ref": "MyBucket"}},
+        },
+    }
+    cfn.create_stack(StackName="cfn-explicit-name", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-explicit-name")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    bucket_name = next(o["OutputValue"] for o in stack["Outputs"] if o["OutputKey"] == "BucketName")
+    assert bucket_name == "cfn-explicit-name-test"
+
+    cfn.delete_stack(StackName="cfn-explicit-name")
+    _wait_stack(cfn, "cfn-explicit-name")

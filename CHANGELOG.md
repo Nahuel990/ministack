@@ -11,9 +11,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **CloudFormation auto-generated physical names** — resources without explicit names now follow the AWS pattern `{stackName}-{logicalId}-{SUFFIX}` with a 13-char uppercase alphanumeric suffix; service-specific rules applied (S3: lowercase, max 63; SQS: max 80; DynamoDB: max 255; Lambda/IAM/EventBridge: max 64). Fixes CDK stacks that omit explicit resource names producing untraceable `cfn-xxx` names
+- **Import cleanup** — moved lazy stdlib imports (`base64`, `fnmatch`, `re`, `datetime`, `urllib`) to module level across `sqs`, `cloudwatch_logs`, `glue`, `cognito`, `rds`, `apigateway`, `apigateway_v1`; removed duplicate `os`/`re` imports in `s3`
 
 ### Tests
-- 808 tests total, all passing
+- 4 new CFN physical name tests (S3/SQS/DynamoDB auto-name pattern, explicit name not overridden)
+- 812 tests total, all passing
 
 ---
 

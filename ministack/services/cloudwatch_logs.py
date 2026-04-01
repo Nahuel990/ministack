@@ -15,6 +15,7 @@ Supports: CreateLogGroup, DeleteLogGroup, DescribeLogGroups,
 """
 
 import base64
+import fnmatch
 import json
 import logging
 import time
@@ -402,7 +403,6 @@ def _compile_filter_pattern(raw: str):
     # JSON-style patterns (starts with {) — treat as match-all for emulation
     if raw.startswith("{"):
         return lambda msg: True
-    import fnmatch
     terms = raw.split()
     include = []
     exclude = []

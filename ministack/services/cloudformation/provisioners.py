@@ -5,6 +5,8 @@ CloudFormation provisioners — resource create/delete handlers for each AWS res
 import io
 import json
 import logging
+import random
+import string
 import time
 import zipfile
 from collections import defaultdict
@@ -36,8 +38,6 @@ def _physical_name(stack_name: str, logical_id: str, *,
     local testing with CDK (which omits explicit names) produces names that are
     immediately traceable back to the stack and logical resource.
     """
-    import random
-    import string
     suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=13))
     base = f"{stack_name}-{logical_id}-{suffix}"
     if lowercase:

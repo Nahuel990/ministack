@@ -21,6 +21,7 @@ When Docker is available, CreateDBInstance spins up a real Postgres/MySQL contai
 and returns the actual host:port as the endpoint.
 """
 
+import datetime
 import logging
 import os
 import time
@@ -1817,7 +1818,6 @@ def _apply_cluster_filters(clusters, filters):
 
 
 def _format_time(ts):
-    import datetime
     dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 

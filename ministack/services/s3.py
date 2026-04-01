@@ -22,10 +22,8 @@ Supports: CreateBucket, DeleteBucket, ListBuckets, HeadBucket,
 Storage: In-memory (optionally backed by S3_DATA_DIR).
 """
 
-import datetime as _dt
-import os
-import re
 import base64
+import datetime as _dt
 import hashlib
 import json
 import logging

@@ -45,6 +45,8 @@ import logging
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 
 from ministack.core.responses import error_response_json, new_uuid
 
@@ -386,9 +388,6 @@ async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers
 
 async def _invoke_http_proxy(integration, path, method, headers, body, query_params):
     """Forward a request to an HTTP backend."""
-    import urllib.error
-    import urllib.request
-
     uri = integration.get("integrationUri", "")
     url = uri.rstrip("/") + path
 

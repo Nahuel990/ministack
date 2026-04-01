@@ -45,6 +45,7 @@ Wire protocol:
 import base64
 import json
 import logging
+import re
 import secrets
 import string
 import time
@@ -1878,7 +1879,6 @@ def _apply_user_filter(users: list, filter_str: str) -> list:
       attribute_name ^= "value"   (starts with)
       attribute_name != "value"
     """
-    import re
     m = re.match(r'(\w+)\s*(=|\^=|!=)\s*"([^"]*)"', filter_str.strip())
     if not m:
         return users

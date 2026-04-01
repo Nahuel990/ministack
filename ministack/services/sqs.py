@@ -22,6 +22,7 @@ Actions:
 """
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -761,7 +762,6 @@ def _md5_msg_attrs(attrs: dict | None) -> str | None:
             buf += b"\x02"
             val = a.get("BinaryValue", b"")
             if isinstance(val, str):
-                import base64
                 val = base64.b64decode(val)
             if isinstance(val, bytearray):
                 val = bytes(val)
