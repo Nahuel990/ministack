@@ -35,6 +35,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **RDS error code** — `DBInstanceAlreadyExists` corrected to `DBInstanceAlreadyExistsFault` matching AWS error codes
 
 - Thanks to @lubond @jimmyd-be @abedurftig @mig_mit for reporting issues and testing                       
+- Thanks to @jv2222 and @santiagodoldan for their massive contributions
 
 ### Tests
 - 834 tests total, all passing
