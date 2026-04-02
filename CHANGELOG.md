@@ -7,6 +7,12 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.19] — 2026-04-02
+
+- Version bump from v1.1.18 — no code changes, re-tag for PyPI publish
+
+---
+
 ## [1.1.18] — 2026-04-02
 
 ### Added
