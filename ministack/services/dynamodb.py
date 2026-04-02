@@ -33,6 +33,63 @@ _ttl_settings: dict = {}
 _pitr_settings: dict = {}
 _lock = threading.Lock()
 
+# DynamoDB Streams: table_name -> list of stream records
+# Each record follows the DynamoDB Streams event format consumed by Lambda ESMs.
+_stream_records: dict = {}
+_stream_seq_counter = 0
+_stream_seq_lock = threading.Lock()
+
+
+def _next_stream_seq():
+    global _stream_seq_counter
+    with _stream_seq_lock:
+        _stream_seq_counter += 1
+        return f"{int(time.time() * 1000):020d}{_stream_seq_counter:010d}"
+
+
+def _emit_stream_event(table_name: str, event_name: str, old_item: dict | None, new_item: dict | None):
+    """Emit a DynamoDB Streams record if the table has StreamSpecification enabled."""
+    table = _tables.get(table_name)
+    if not table:
+        return
+    spec = table.get("StreamSpecification")
+    if not spec or not spec.get("StreamEnabled"):
+        return
+
+    view_type = spec.get("StreamViewType", "NEW_AND_OLD_IMAGES")
+    record: dict = {
+        "eventID": new_uuid(),
+        "eventName": event_name,
+        "eventVersion": "1.1",
+        "eventSource": "aws:dynamodb",
+        "awsRegion": REGION,
+        "dynamodb": {
+            "ApproximateCreationDateTime": int(time.time()),
+            "Keys": {},
+            "SequenceNumber": _next_stream_seq(),
+            "SizeBytes": 0,
+            "StreamViewType": view_type,
+        },
+        "eventSourceARN": f"{table['TableArn']}/stream/{now_iso()}",
+    }
+
+    ref_item = new_item or old_item or {}
+    pk_name = table["pk_name"]
+    sk_name = table["sk_name"]
+    if pk_name and pk_name in ref_item:
+        record["dynamodb"]["Keys"][pk_name] = ref_item[pk_name]
+    if sk_name and sk_name in ref_item:
+        record["dynamodb"]["Keys"][sk_name] = ref_item[sk_name]
+
+    if view_type in ("NEW_AND_OLD_IMAGES", "OLD_IMAGE") and old_item:
+        record["dynamodb"]["OldImage"] = old_item
+    if view_type in ("NEW_AND_OLD_IMAGES", "NEW_IMAGE") and new_item:
+        record["dynamodb"]["NewImage"] = new_item
+
+    if table_name not in _stream_records:
+        _stream_records[table_name] = []
+    _stream_records[table_name].append(record)
+
 # ---------------------------------------------------------------------------
 # TTL background reaper
 # ---------------------------------------------------------------------------
@@ -297,6 +354,9 @@ def _put_item(data):
     table["items"][pk_val][sk_val] = item
     _update_counts(table)
 
+    event_name = "MODIFY" if old_item else "INSERT"
+    _emit_stream_event(name, event_name, old_item, item)
+
     result = {}
     if data.get("ReturnValues") == "ALL_OLD" and old_item:
         result["Attributes"] = old_item
@@ -342,6 +402,7 @@ def _delete_item(data):
 
     if old_item is not None:
         table["items"].get(pk_val, {}).pop(sk_val, None)
+        _emit_stream_event(name, "REMOVE", old_item, None)
     _update_counts(table)
 
     result = {}
@@ -381,6 +442,9 @@ def _update_item(data):
 
     table["items"][pk_val][sk_val] = item
     _update_counts(table)
+
+    event_name = "MODIFY" if old_item else "INSERT"
+    _emit_stream_event(name, event_name, old_item, item)
 
     result = {}
     rv = data.get("ReturnValues", "NONE")
@@ -544,13 +608,18 @@ def _batch_write_item(data):
                 pk_val, sk_val, key_err = _resolve_table_key_values(table, item, allow_extra=True)
                 if key_err:
                     return key_err
+                old_item = table["items"].get(pk_val, {}).get(sk_val)
                 table["items"][pk_val][sk_val] = item
+                _emit_stream_event(table_name, "MODIFY" if old_item else "INSERT", old_item, item)
             elif "DeleteRequest" in req:
                 key = req["DeleteRequest"]["Key"]
                 pk_val, sk_val, key_err = _resolve_table_key_values(table, key, allow_extra=False)
                 if key_err:
                     return key_err
+                old_item = table["items"].get(pk_val, {}).get(sk_val)
                 table["items"].get(pk_val, {}).pop(sk_val, None)
+                if old_item:
+                    _emit_stream_event(table_name, "REMOVE", old_item, None)
         _update_counts(table)
     result = {"UnprocessedItems": unprocessed}
     rc = data.get("ReturnConsumedCapacity", "NONE")
@@ -623,28 +692,36 @@ def _transact_write_items(data):
         op_type, op = _extract_transact_op(transact)
         if op is None or op_type == "ConditionCheck":
             continue
-        tbl = _tables.get(op.get("TableName", ""))
+        table_name = op.get("TableName", "")
+        tbl = _tables.get(table_name)
         if not tbl:
             continue
         if op_type == "Put":
             item = op["Item"]
             pk_val = _extract_key_val(item.get(tbl["pk_name"]))
             sk_val = _extract_key_val(item.get(tbl["sk_name"])) if tbl["sk_name"] else "__no_sort__"
+            old_item = tbl["items"].get(pk_val, {}).get(sk_val)
             tbl["items"][pk_val][sk_val] = item
+            _emit_stream_event(table_name, "MODIFY" if old_item else "INSERT", old_item, item)
         elif op_type == "Delete":
             key = op["Key"]
             pk_val = _extract_key_val(key.get(tbl["pk_name"]))
             sk_val = _extract_key_val(key.get(tbl["sk_name"])) if tbl["sk_name"] else "__no_sort__"
+            old_item = tbl["items"].get(pk_val, {}).get(sk_val)
             tbl["items"].get(pk_val, {}).pop(sk_val, None)
+            if old_item:
+                _emit_stream_event(table_name, "REMOVE", old_item, None)
         elif op_type == "Update":
             key = op["Key"]
             pk_val = _extract_key_val(key.get(tbl["pk_name"]))
             sk_val = _extract_key_val(key.get(tbl["sk_name"])) if tbl["sk_name"] else "__no_sort__"
-            item = copy.deepcopy(tbl["items"].get(pk_val, {}).get(sk_val, dict(key)))
+            old_item = copy.deepcopy(tbl["items"].get(pk_val, {}).get(sk_val))
+            item = copy.deepcopy(old_item) if old_item else dict(key)
             ue = op.get("UpdateExpression", "")
             if ue:
                 item = _apply_update_expression(item, ue, op.get("ExpressionAttributeValues", {}), op.get("ExpressionAttributeNames", {}))
             tbl["items"][pk_val][sk_val] = item
+            _emit_stream_event(table_name, "MODIFY" if old_item else "INSERT", old_item, item)
         _update_counts(tbl)
 
     return json_response({})

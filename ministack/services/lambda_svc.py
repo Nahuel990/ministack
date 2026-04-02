@@ -217,6 +217,18 @@ def _normalize_endpoint_url(value: str) -> str:
     return f"http://{host}"
 
 
+def _fetch_code_from_s3(bucket: str, key: str) -> bytes | None:
+    """Fetch Lambda code zip from the in-memory S3 service."""
+    try:
+        from ministack.services import s3 as s3_svc
+        obj = s3_svc._get_object_data(bucket, key)
+        if obj is not None:
+            return obj
+    except Exception as e:
+        logger.warning("Failed to fetch Lambda code from s3://%s/%s: %s", bucket, key, e)
+    return None
+
+
 def _build_config(name: str, data: dict, code_zip: bytes | None = None) -> dict:
     code_size = len(code_zip) if code_zip else 0
     code_sha = base64.b64encode(hashlib.sha256(code_zip).digest()).decode() if code_zip else ""
@@ -553,6 +565,8 @@ def _create_function(data: dict):
     code_data = data.get("Code", {})
     if "ZipFile" in code_data:
         code_zip = base64.b64decode(code_data["ZipFile"])
+    elif "S3Bucket" in code_data and "S3Key" in code_data:
+        code_zip = _fetch_code_from_s3(code_data["S3Bucket"], code_data["S3Key"])
 
     config = _build_config(name, data, code_zip)
 
@@ -568,6 +582,17 @@ def _create_function(data: dict):
         "concurrency": None,
         "provisioned_concurrency": {},
     }
+
+    if data.get("Publish"):
+        ver_num = _functions[name]["next_version"]
+        _functions[name]["next_version"] = ver_num + 1
+        ver_config = copy.deepcopy(config)
+        ver_config["Version"] = str(ver_num)
+        _functions[name]["versions"][str(ver_num)] = {
+            "config": ver_config,
+            "code_zip": code_zip,
+        }
+        config["Version"] = str(ver_num)
 
     return json_response(config, 201)
 
@@ -661,8 +686,12 @@ def _update_code(name: str, data: dict):
             404,
         )
     func = _functions[name]
+    code_zip = None
     if "ZipFile" in data:
         code_zip = base64.b64decode(data["ZipFile"])
+    elif "S3Bucket" in data and "S3Key" in data:
+        code_zip = _fetch_code_from_s3(data["S3Bucket"], data["S3Key"])
+    if code_zip:
         func["code_zip"] = code_zip
         func["config"]["CodeSize"] = len(code_zip)
         func["config"]["CodeSha256"] = base64.b64encode(
@@ -671,6 +700,18 @@ def _update_code(name: str, data: dict):
     func["config"]["LastModified"] = _now_iso()
     func["config"]["LastUpdateStatus"] = "Successful"
     func["config"]["RevisionId"] = new_uuid()
+
+    if data.get("Publish"):
+        ver_num = func["next_version"]
+        func["next_version"] = ver_num + 1
+        ver_config = copy.deepcopy(func["config"])
+        ver_config["Version"] = str(ver_num)
+        func["versions"][str(ver_num)] = {
+            "config": ver_config,
+            "code_zip": func.get("code_zip"),
+        }
+        func["config"]["Version"] = str(ver_num)
+
     return json_response(func["config"])
 
 
@@ -999,19 +1040,53 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
 
 
 def _execute_function(func: dict, event: dict) -> dict:
-    """Dispatch to Docker or local subprocess executor."""
+    """Dispatch to warm worker pool (Python + Node.js) or Docker executor."""
+    config = func.get("config") or func
+    runtime = config.get("Runtime", "python3.9")
+
+    if runtime.startswith("python") or runtime.startswith("nodejs"):
+        return _execute_function_warm(func, event)
+
     if LAMBDA_EXECUTOR == "docker":
         return _execute_function_docker(func, event)
     return _execute_function_local(func, event)
 
 
-def _execute_function_local(func: dict, event: dict) -> dict:
-    """Execute a Python Lambda function in a subprocess.
+def _execute_function_warm(func: dict, event: dict) -> dict:
+    """Execute a Lambda function using the warm worker pool (Python + Node.js)."""
+    from ministack.core.lambda_runtime import get_or_create_worker
 
-    The event is serialised to JSON and piped through stdin.  Handler module,
-    function name, and all configuration are passed via environment variables so
-    there is zero string interpolation of user data into code.
-    """
+    config = func.get("config") or func
+    code_zip = func.get("code_zip")
+    if not code_zip:
+        return {"body": {"statusCode": 200, "body": "Mock response - no code deployed"}}
+
+    func_name = config.get("FunctionName", "unknown")
+    try:
+        worker = get_or_create_worker(func_name, config, code_zip)
+        result = worker.invoke(event, new_uuid())
+        if result.get("status") == "ok":
+            return {"body": result.get("result"), "log": ""}
+        else:
+            return {
+                "body": {
+                    "errorMessage": result.get("error", "Unknown error"),
+                    "errorType": "Runtime.HandlerError",
+                },
+                "error": True,
+                "log": result.get("trace", result.get("error", "")),
+            }
+    except Exception as e:
+        logger.error("Warm worker execution error for %s: %s", func_name, e)
+        return {
+            "body": {"errorMessage": str(e), "errorType": type(e).__name__},
+            "error": True,
+            "log": "",
+        }
+
+
+def _execute_function_local(func: dict, event: dict) -> dict:
+    """Execute a Lambda function in a one-shot subprocess (fallback for unsupported runtimes)."""
     config = func.get("config") or func
     code_zip = func.get("code_zip")
     if not code_zip:
@@ -2065,8 +2140,13 @@ def _delete_esm(esm_id: str):
 
 
 # ---------------------------------------------------------------------------
-# SQS ESM Poller (kept as-is — works well)
+# ESM Poller (SQS + Kinesis + DynamoDB Streams)
 # ---------------------------------------------------------------------------
+
+# Per-ESM Kinesis iterator tracking: esm_uuid -> {shard_id: position}
+_kinesis_positions: dict = {}
+# Per-ESM DynamoDB stream tracking: esm_uuid -> {shard_id: position}
+_dynamodb_stream_positions: dict = {}
 
 
 def _ensure_poller():
@@ -2079,24 +2159,31 @@ def _ensure_poller():
 
 
 def _poll_loop():
-    """Background thread: polls SQS queues for active ESMs and invokes Lambda."""
+    """Background thread: polls SQS/Kinesis/DynamoDB for active ESMs and invokes Lambda."""
     while True:
         try:
-            _poll_once()
+            _poll_sqs()
         except Exception as e:
-            logger.error(f"ESM poller error: {e}")
+            logger.error("ESM SQS poller error: %s", e)
+        try:
+            _poll_kinesis()
+        except Exception as e:
+            logger.error("ESM Kinesis poller error: %s", e)
+        try:
+            _poll_dynamodb_streams()
+        except Exception as e:
+            logger.error("ESM DynamoDB streams poller error: %s", e)
         time.sleep(1)
 
 
-def _poll_once():
+def _poll_sqs():
     from ministack.services import sqs as _sqs
 
     for esm in list(_esms.values()):
         if not esm.get("Enabled", True):
             continue
-
         source_arn = esm.get("EventSourceArn", "")
-        if "sqs" not in source_arn:
+        if ":sqs:" not in source_arn:
             continue
 
         func_name = esm["FunctionName"]
@@ -2118,57 +2205,193 @@ def _poll_once():
 
         records = []
         for msg in batch:
-            # sqs._collect_msgs already increments receive_count and sets first_receive_at
             first_recv = msg.get("first_receive_at") or now
-            records.append(
-                {
-                    "messageId": msg["id"],
-                    "receiptHandle": msg["receipt_handle"],
-                    "body": msg["body"],
-                    "attributes": {
-                        "ApproximateReceiveCount": str(msg.get("receive_count", 1)),
-                        "SentTimestamp": str(int(msg["sent_at"] * 1000)),
-                        "SenderId": ACCOUNT_ID,
-                        "ApproximateFirstReceiveTimestamp": str(int(first_recv * 1000)),
-                    },
-                    "messageAttributes": msg.get("message_attributes", {}),
-                    "md5OfBody": msg.get("md5_body") or msg.get("md5") or "",
-                    "eventSource": "aws:sqs",
-                    "eventSourceARN": source_arn,
-                    "awsRegion": REGION,
-                }
-            )
+            records.append({
+                "messageId": msg["id"],
+                "receiptHandle": msg["receipt_handle"],
+                "body": msg["body"],
+                "attributes": {
+                    "ApproximateReceiveCount": str(msg.get("receive_count", 1)),
+                    "SentTimestamp": str(int(msg["sent_at"] * 1000)),
+                    "SenderId": ACCOUNT_ID,
+                    "ApproximateFirstReceiveTimestamp": str(int(first_recv * 1000)),
+                },
+                "messageAttributes": msg.get("message_attributes", {}),
+                "md5OfBody": msg.get("md5_body") or msg.get("md5") or "",
+                "eventSource": "aws:sqs",
+                "eventSourceARN": source_arn,
+                "awsRegion": REGION,
+            })
 
         event = {"Records": records}
         result = _execute_function(_functions[func_name], event)
 
         if result.get("error"):
-            # Surface Lambda failure details (otherwise debugging is impossible).
-            # `result` follows the shape returned by `_execute_function_*`:
-            # - body: Lambda payload (often contains errorType/errorMessage on failure)
-            # - log:  stderr / traceback tail (best signal for root cause)
             err_body = result.get("body") or {}
-            err_type = None
-            err_msg = None
-            if isinstance(err_body, dict):
-                err_type = err_body.get("errorType")
-                err_msg = err_body.get("errorMessage")
-            err_log = result.get("log") or ""
+            err_type = err_body.get("errorType") if isinstance(err_body, dict) else None
+            err_msg = err_body.get("errorMessage") if isinstance(err_body, dict) else None
             esm["LastProcessingResult"] = "FAILED"
             logger.warning(
-                "ESM: Lambda %s failed processing batch from %s (errorType=%s errorMessage=%s)\n%s",
-                func_name,
-                queue_name,
-                err_type,
-                err_msg,
-                err_log,
+                "ESM: Lambda %s failed processing SQS batch from %s (errorType=%s errorMessage=%s)\n%s",
+                func_name, queue_name, err_type, err_msg, result.get("log", ""),
             )
         else:
             receipt_handles = {msg["receipt_handle"] for msg in batch if msg.get("receipt_handle")}
             _sqs._delete_messages_for_esm(queue_url, receipt_handles)
             esm["LastProcessingResult"] = f"OK - {len(batch)} records"
+            logger.info("ESM: Lambda %s processed %d SQS messages from %s", func_name, len(batch), queue_name)
+
+
+def _poll_kinesis():
+    from ministack.services import kinesis as _kin
+
+    for esm in list(_esms.values()):
+        if not esm.get("Enabled", True):
+            continue
+        source_arn = esm.get("EventSourceArn", "")
+        if ":kinesis:" not in source_arn:
+            continue
+
+        func_name = esm["FunctionName"]
+        if func_name not in _functions:
+            continue
+
+        stream_name = source_arn.split("/")[-1]
+        stream = _kin._streams.get(stream_name)
+        if not stream or stream["StreamStatus"] != "ACTIVE":
+            continue
+
+        esm_id = esm["UUID"]
+        if esm_id not in _kinesis_positions:
+            starting = esm.get("StartingPosition", "LATEST")
+            _kinesis_positions[esm_id] = {}
+            for shard_id, shard in stream["shards"].items():
+                if starting == "TRIM_HORIZON":
+                    _kinesis_positions[esm_id][shard_id] = 0
+                else:
+                    _kinesis_positions[esm_id][shard_id] = len(shard["records"])
+
+        batch_size = esm.get("BatchSize", 100)
+        positions = _kinesis_positions[esm_id]
+
+        for shard_id, shard in stream["shards"].items():
+            if shard_id not in positions:
+                positions[shard_id] = len(shard["records"])
+                continue
+
+            pos = positions[shard_id]
+            raw_records = shard["records"][pos:pos + batch_size]
+            if not raw_records:
+                continue
+
+            records = []
+            for r in raw_records:
+                data_val = r["Data"]
+                if isinstance(data_val, bytes):
+                    data_b64 = base64.b64encode(data_val).decode("ascii")
+                elif isinstance(data_val, str):
+                    try:
+                        base64.b64decode(data_val, validate=True)
+                        data_b64 = data_val
+                    except Exception:
+                        data_b64 = base64.b64encode(data_val.encode("utf-8")).decode("ascii")
+                else:
+                    data_b64 = base64.b64encode(str(data_val).encode("utf-8")).decode("ascii")
+
+                records.append({
+                    "kinesis": {
+                        "kinesisSchemaVersion": "1.0",
+                        "partitionKey": r["PartitionKey"],
+                        "sequenceNumber": r["SequenceNumber"],
+                        "data": data_b64,
+                        "approximateArrivalTimestamp": r["ApproximateArrivalTimestamp"],
+                    },
+                    "eventSource": "aws:kinesis",
+                    "eventVersion": "1.0",
+                    "eventID": f"{shard_id}:{r['SequenceNumber']}",
+                    "eventName": "aws:kinesis:record",
+                    "invokeIdentityArn": f"arn:aws:iam::{ACCOUNT_ID}:role/lambda-role",
+                    "awsRegion": REGION,
+                    "eventSourceARN": source_arn,
+                })
+
+            event = {"Records": records}
+            result = _execute_function(_functions[func_name], event)
+
+            if result.get("error"):
+                err_body = result.get("body") or {}
+                err_type = err_body.get("errorType") if isinstance(err_body, dict) else None
+                err_msg = err_body.get("errorMessage") if isinstance(err_body, dict) else None
+                esm["LastProcessingResult"] = "FAILED"
+                logger.warning(
+                    "ESM: Lambda %s failed processing Kinesis batch from %s/%s (errorType=%s errorMessage=%s)\n%s",
+                    func_name, stream_name, shard_id, err_type, err_msg, result.get("log", ""),
+                )
+            else:
+                positions[shard_id] = pos + len(raw_records)
+                esm["LastProcessingResult"] = f"OK - {len(raw_records)} records"
+                logger.info(
+                    "ESM: Lambda %s processed %d Kinesis records from %s/%s",
+                    func_name, len(raw_records), stream_name, shard_id,
+                )
+
+
+def _poll_dynamodb_streams():
+    from ministack.services import dynamodb as _ddb
+
+    stream_records = getattr(_ddb, "_stream_records", None)
+    if not stream_records:
+        return
+
+    for esm in list(_esms.values()):
+        if not esm.get("Enabled", True):
+            continue
+        source_arn = esm.get("EventSourceArn", "")
+        if ":dynamodb:" not in source_arn or "/stream/" not in source_arn:
+            continue
+
+        func_name = esm["FunctionName"]
+        if func_name not in _functions:
+            continue
+
+        table_arn = source_arn.split("/stream/")[0]
+        table_name = table_arn.split("/")[-1]
+        table_records = stream_records.get(table_name, [])
+        if not table_records:
+            continue
+
+        esm_id = esm["UUID"]
+        if esm_id not in _dynamodb_stream_positions:
+            starting = esm.get("StartingPosition", "LATEST")
+            if starting == "TRIM_HORIZON":
+                _dynamodb_stream_positions[esm_id] = 0
+            else:
+                _dynamodb_stream_positions[esm_id] = len(table_records)
+
+        pos = _dynamodb_stream_positions[esm_id]
+        batch_size = esm.get("BatchSize", 100)
+        batch = table_records[pos:pos + batch_size]
+        if not batch:
+            continue
+
+        event = {"Records": batch}
+        result = _execute_function(_functions[func_name], event)
+
+        if result.get("error"):
+            err_body = result.get("body") or {}
+            err_type = err_body.get("errorType") if isinstance(err_body, dict) else None
+            err_msg = err_body.get("errorMessage") if isinstance(err_body, dict) else None
+            esm["LastProcessingResult"] = "FAILED"
+            logger.warning(
+                "ESM: Lambda %s failed processing DynamoDB stream batch from %s (errorType=%s errorMessage=%s)\n%s",
+                func_name, table_name, err_type, err_msg, result.get("log", ""),
+            )
+        else:
+            _dynamodb_stream_positions[esm_id] = pos + len(batch)
+            esm["LastProcessingResult"] = f"OK - {len(batch)} records"
             logger.info(
-                f"ESM: Lambda {func_name} processed {len(batch)} messages from {queue_name}",
+                "ESM: Lambda %s processed %d DynamoDB stream records from %s",
+                func_name, len(batch), table_name,
             )
 
 
