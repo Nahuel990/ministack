@@ -1265,21 +1265,31 @@ def test_sns_subscription_attributes(sns):
     assert resp["Attributes"]["RawMessageDelivery"] == "true"
 
 
-def test_sns_subscribe_with_attributes(sns):
-    arn = sns.create_topic(Name="intg-sns-subwithattr")["TopicArn"]
+def test_sns_subscribe_with_raw_message_delivery(sns):
+    arn = sns.create_topic(Name="intg-sns-sub-raw")["TopicArn"]
     sub = sns.subscribe(
         TopicArn=arn,
-        Protocol="sqs",
-        Endpoint="arn:aws:sqs:us-east-1:000000000000:intg-sns-subwithattr-q",
-        Attributes={
-            "RawMessageDelivery": "true",
-            "FilterPolicy": json.dumps({"event": ["OrderCreated"]}),
-        },
+        Protocol="email",
+        Endpoint="raw@example.com",
+        Attributes={"RawMessageDelivery": "true"},
     )
     sub_arn = sub["SubscriptionArn"]
-    resp = sns.get_subscription_attributes(SubscriptionArn=sub_arn)
-    assert resp["Attributes"]["RawMessageDelivery"] == "true"
-    assert json.loads(resp["Attributes"]["FilterPolicy"]) == {"event": ["OrderCreated"]}
+    attrs = sns.get_subscription_attributes(SubscriptionArn=sub_arn)["Attributes"]
+    assert attrs["RawMessageDelivery"] == "true"
+
+
+def test_sns_subscribe_with_filter_policy(sns):
+    arn = sns.create_topic(Name="intg-sns-sub-filter")["TopicArn"]
+    filter_policy = json.dumps({"event": ["MyEvent"]})
+    sub = sns.subscribe(
+        TopicArn=arn,
+        Protocol="email",
+        Endpoint="filter@example.com",
+        Attributes={"FilterPolicy": filter_policy},
+    )
+    sub_arn = sub["SubscriptionArn"]
+    attrs = sns.get_subscription_attributes(SubscriptionArn=sub_arn)["Attributes"]
+    assert attrs["FilterPolicy"] == filter_policy
 
 
 def test_sns_sqs_fanout_raw_message_delivery(sns, sqs):

@@ -7,14 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [1.1.17] — 2026-04-02
+## [1.1.18] — 2026-04-02
 
 ### Added
 - **EC2 `DescribeInstanceCreditSpecifications`** — returns `standard` CPU credits; fixes Terraform v6 provider compatibility
-- **EC2 Terraform v6 stubs** — `DescribeInstanceMaintenanceOptions`, `DescribeInstanceAutoRecoveryAttribute`, `ModifyInstanceMaintenanceOptions`, `DescribeInstanceTopology`, `DescribeSpotInstanceRequests`, `DescribeCapacityReservations` all return sensible empty/default responses to prevent Terraform v6 from failing on unknown actions
+- **EC2 Terraform v6 stubs** — `DescribeInstanceMaintenanceOptions`, `DescribeInstanceAutoRecoveryAttribute`, `ModifyInstanceMaintenanceOptions`, `DescribeInstanceTopology`, `DescribeSpotInstanceRequests`, `DescribeCapacityReservations` all return sensible empty/default responses
+
+### Fixed
+- **SNS `Subscribe` ignores `Attributes` parameter** — `RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `DeliveryPolicy`, and `RedrivePolicy` passed at subscription creation time are now applied immediately instead of being silently ignored
 
 ### Tests
-- 818 tests total, all passing
+- 820 tests total, all passing
 
 ---
 
