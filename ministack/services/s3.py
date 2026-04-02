@@ -113,6 +113,17 @@ def _error(code: str, message: str, status: int, resource: str = "") -> tuple:
     return status, {"Content-Type": "application/xml"}, _xml_body(root)
 
 
+def _get_object_data(bucket_name: str, key: str) -> bytes | None:
+    """Return raw object bytes, or None if not found. Used by Lambda S3 code fetch."""
+    bucket = _buckets.get(bucket_name)
+    if bucket is None:
+        return None
+    obj = bucket["objects"].get(key)
+    if obj is None:
+        return None
+    return obj["body"]
+
+
 def _ensure_bucket(name: str):
     return _buckets.get(name)
 
