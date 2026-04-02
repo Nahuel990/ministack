@@ -14,9 +14,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
         uvicorn==0.30.6 \
         "cbor2>=5.4.0" \
         "docker>=7.0.0" \
-        "pyyaml>=6.0"
+        "pyyaml>=6.0" \
+        "aiohttp>=3.9.0" \
+        "asyncpg>=0.29.0"
 
 COPY ministack/ ministack/
+COPY config/ config/
 
 RUN addgroup -S ministack && adduser -S ministack -G ministack
 RUN mkdir -p /tmp/ministack-data/s3 && chown -R ministack:ministack /tmp/ministack-data
@@ -32,7 +35,14 @@ ENV GATEWAY_PORT=4566 \
     RDS_BASE_PORT=15432 \
     ELASTICACHE_BASE_PORT=16379 \
     LAMBDA_EXECUTOR=local \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    LITELLM_BASE_URL=http://litellm:4000 \
+    PGVECTOR_HOST=pgvector \
+    PGVECTOR_PORT=5432 \
+    PGVECTOR_DB=bedrock_kb \
+    PGVECTOR_USER=bedrock \
+    PGVECTOR_PASSWORD=bedrock \
+    BEDROCK_MODELS_CONFIG=config/bedrock_models.yaml
 
 EXPOSE 4566
 

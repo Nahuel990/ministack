@@ -28,7 +28,7 @@ _EXECUTE_API_RE = re.compile(
 _S3_VHOST_RE = re.compile(
     r"^([^.]+)(?:\.s3)?\." + re.escape(_MINISTACK_HOST) + r"(?::\d+)?$"
 )
-_S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache)\.")
+_S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache|bedrock|bedrock-runtime|bedrock-agent|bedrock-agent-runtime)\.")
 
 from ministack.core.persistence import PERSIST_STATE, load_state, save_all
 from ministack.core.router import detect_service, extract_account_id, extract_region
@@ -38,6 +38,10 @@ from ministack.services import (
     apigateway,
     apigateway_v1,
     athena,
+    bedrock,
+    bedrock_agent,
+    bedrock_agent_runtime,
+    bedrock_runtime,
     cloudformation,
     cloudwatch,
     cloudwatch_logs,
@@ -108,6 +112,10 @@ SERVICE_HANDLERS = {
     "elasticmapreduce": emr.handle_request,
     "elasticloadbalancing": alb.handle_request,
     "elasticfilesystem": efs.handle_request,
+    "bedrock": bedrock.handle_request,
+    "bedrock-runtime": bedrock_runtime.handle_request,
+    "bedrock-agent": bedrock_agent.handle_request,
+    "bedrock-agent-runtime": bedrock_agent_runtime.handle_request,
 }
 
 SERVICE_NAME_ALIASES = {
@@ -124,6 +132,7 @@ SERVICE_NAME_ALIASES = {
     "cognito-identity": "cognito-identity",
     "elbv2": "elasticloadbalancing",
     "elb": "elasticloadbalancing",
+    "bedrock-agent-runtime": "bedrock-agent-runtime",
 }
 
 
@@ -160,7 +169,8 @@ BANNER = r"""
  Services: S3, SQS, SNS, DynamoDB, Lambda, IAM, STS, SecretsManager, CloudWatch Logs,
           SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
-          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation
+          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation,
+          Bedrock, Bedrock Runtime, Bedrock Agent, Bedrock Agent Runtime
 """
 
 
@@ -393,7 +403,8 @@ async def app(scope, receive, send):
         _non_s3_hosts = {"s3", "sqs", "sns", "dynamodb", "lambda", "iam", "sts",
                          "secretsmanager", "logs", "ssm", "events", "kinesis",
                          "monitoring", "ses", "states", "ecs", "rds", "elasticache",
-                         "glue", "athena", "apigateway", "cloudformation"}
+                         "glue", "athena", "apigateway", "cloudformation",
+                         "bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime"}
         if bucket not in _non_s3_hosts:
             vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
             try:
@@ -568,6 +579,10 @@ def _reset_all_state():
         (waf, waf.reset),
         (efs, efs.reset),
         (cloudformation, cloudformation.reset),
+        (bedrock, bedrock.reset),
+        (bedrock_runtime, bedrock_runtime.reset),
+        (bedrock_agent, bedrock_agent.reset),
+        (bedrock_agent_runtime, bedrock_agent_runtime.reset),
     ]:
         try:
             fn()

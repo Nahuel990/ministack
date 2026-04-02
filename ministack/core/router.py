@@ -148,6 +148,23 @@ SERVICE_PATTERNS = {
     "cloudformation": {
         "host_patterns": [r"cloudformation\."],
     },
+    "bedrock": {
+        "host_patterns": [r"bedrock\."],
+        "path_patterns": [r"^/inference-profiles", r"^/tags/"],
+        "credential_scope": "bedrock",
+    },
+    "bedrock-runtime": {
+        "host_patterns": [r"bedrock-runtime\."],
+        "path_patterns": [r"^/model/.*/converse", r"^/model/.*/invoke", r"^/guardrail/"],
+    },
+    "bedrock-agent": {
+        "host_patterns": [r"bedrock-agent\."],
+        "path_patterns": [r"^/knowledgebases/.*/datasources", r"^/knowledgebases/.*/documents"],
+    },
+    "bedrock-agent-runtime": {
+        "host_patterns": [r"bedrock-agent-runtime\."],
+        "path_patterns": [r"^/knowledgebases/.*/retrieve"],
+    },
 }
 
 
@@ -196,6 +213,10 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "elasticloadbalancing": "elasticloadbalancing",
                 "elasticfilesystem": "elasticfilesystem",
                 "cloudformation": "cloudformation",
+                "bedrock": "bedrock",
+                "bedrock-runtime": "bedrock-runtime",
+                "bedrock-agent": "bedrock-agent",
+                "bedrock-agent-runtime": "bedrock-agent-runtime",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]

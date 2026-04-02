@@ -1,0 +1,40 @@
+# LiteLLM proxy configuration for MiniStack Bedrock
+# Proxies requests to Ollama (local) or GitHub Copilot (remote)
+
+model_list:
+  # --- Ollama local models ---
+  - model_name: "qwen2.5:3b"
+    litellm_params:
+      model: "ollama/qwen2.5:3b"
+      api_base: "http://ollama:11434"
+
+  - model_name: "qwen2.5:1.5b"
+    litellm_params:
+      model: "ollama/qwen2.5:1.5b"
+      api_base: "http://ollama:11434"
+
+  - model_name: "llama3.2:3b"
+    litellm_params:
+      model: "ollama/llama3.2:3b"
+      api_base: "http://ollama:11434"
+
+  - model_name: "nomic-embed-text"
+    litellm_params:
+      model: "ollama/nomic-embed-text"
+      api_base: "http://ollama:11434"
+
+  # --- GitHub Copilot (uncomment if GITHUB_COPILOT_TOKEN is available) ---
+  # When enabled, these real models take priority over Ollama local models.
+  # Set GITHUB_COPILOT_TOKEN in your environment before starting LiteLLM.
+  #
+  # - model_name: "gpt-4o"
+  #   litellm_params:
+  #     model: "openai/gpt-4o"
+  #     api_key: "os.environ/GITHUB_COPILOT_TOKEN"
+  #     api_base: "https://api.githubcopilot.com"
+  #
+  # - model_name: "gpt-4o-mini"
+  #   litellm_params:
+  #     model: "openai/gpt-4o-mini"
+  #     api_key: "os.environ/GITHUB_COPILOT_TOKEN"
+  #     api_base: "https://api.githubcopilot.com"

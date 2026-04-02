@@ -192,6 +192,22 @@ def cfn():
     return make_client("cloudformation")
 
 @pytest.fixture(scope="session")
+def bedrock_client():
+    return make_client("bedrock")
+
+@pytest.fixture(scope="session")
+def bedrock_runtime():
+    return make_client("bedrock-runtime")
+
+@pytest.fixture(scope="session")
+def bedrock_agent():
+    return make_client("bedrock-agent")
+
+@pytest.fixture(scope="session")
+def bedrock_agent_runtime():
+    return make_client("bedrock-agent-runtime")
+
+@pytest.fixture(scope="session")
 def sfn_sync():
     """SFN client for StartSyncExecution — forces same endpoint (boto3 normally prefixes sync-)."""
     from botocore.config import Config as BotoConfig
