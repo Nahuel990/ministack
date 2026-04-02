@@ -1259,6 +1259,48 @@ def test_sns_subscription_attributes(sns):
     assert resp["Attributes"]["RawMessageDelivery"] == "true"
 
 
+def test_sns_subscribe_with_attributes(sns):
+    arn = sns.create_topic(Name="intg-sns-subwithattr")["TopicArn"]
+    sub = sns.subscribe(
+        TopicArn=arn,
+        Protocol="sqs",
+        Endpoint="arn:aws:sqs:us-east-1:000000000000:intg-sns-subwithattr-q",
+        Attributes={
+            "RawMessageDelivery": "true",
+            "FilterPolicy": json.dumps({"event": ["OrderCreated"]}),
+        },
+    )
+    sub_arn = sub["SubscriptionArn"]
+    resp = sns.get_subscription_attributes(SubscriptionArn=sub_arn)
+    assert resp["Attributes"]["RawMessageDelivery"] == "true"
+    assert json.loads(resp["Attributes"]["FilterPolicy"]) == {"event": ["OrderCreated"]}
+
+
+def test_sns_sqs_fanout_raw_message_delivery(sns, sqs):
+    topic_arn = sns.create_topic(Name="intg-sns-fanout-raw")["TopicArn"]
+    q_url = sqs.create_queue(QueueName="intg-sns-fanout-raw-q")["QueueUrl"]
+    q_arn = sqs.get_queue_attributes(
+        QueueUrl=q_url,
+        AttributeNames=["QueueArn"],
+    )["Attributes"]["QueueArn"]
+
+    sns.subscribe(
+        TopicArn=topic_arn,
+        Protocol="sqs",
+        Endpoint=q_arn,
+        Attributes={"RawMessageDelivery": "true"},
+    )
+    sns.publish(TopicArn=topic_arn, Message="raw fanout msg")
+
+    msgs = sqs.receive_message(
+        QueueUrl=q_url,
+        MaxNumberOfMessages=1,
+        WaitTimeSeconds=1,
+    )
+    assert len(msgs.get("Messages", [])) == 1
+    assert msgs["Messages"][0]["Body"] == "raw fanout msg"
+
+
 def test_sns_publish_batch(sns):
     arn = sns.create_topic(Name="intg-sns-batch")["TopicArn"]
     resp = sns.publish_batch(
