@@ -219,6 +219,13 @@ def _subscribe(params):
         },
     }
 
+    i = 1
+    while _p(params, f"Attributes.entry.{i}.key"):
+        key = _p(params, f"Attributes.entry.{i}.key")
+        val = _p(params, f"Attributes.entry.{i}.value")
+        sub["attributes"][key] = val
+        i += 1
+
     topic["subscriptions"].append(sub)
     _sub_arn_to_topic[sub_arn] = topic_arn
     _refresh_subscription_counts(topic)
