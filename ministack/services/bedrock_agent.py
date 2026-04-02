@@ -38,44 +38,83 @@ _lock = threading.Lock()
 # Path routing patterns (Bedrock Agent REST API)
 # ---------------------------------------------------------------------------
 
-# PUT /knowledgebases/{kbId}/datasources/{dsId}/ingestionjobs
+# Knowledge Base CRUD
+_RE_KB_ID = re.compile(r"^/knowledgebases/([^/]+)$")
+_RE_KBS = re.compile(r"^/knowledgebases/?$")
+
+# Data Source CRUD
+_RE_DS_ID = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)$")
+_RE_DSS = re.compile(r"^/knowledgebases/([^/]+)/datasources/?$")
+
+# Ingestion jobs
 _RE_START_INGESTION = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/ingestionjobs/?$")
-# GET /knowledgebases/{kbId}/datasources/{dsId}/ingestionjobs/{jobId}
 _RE_GET_INGESTION = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/ingestionjobs/([^/]+)$")
-# POST /knowledgebases/{kbId}/datasources/{dsId}/documents/get
-_RE_GET_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/documents/get$")
-# POST /knowledgebases/{kbId}/datasources/{dsId}/documents/list
-_RE_LIST_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/documents/list$")
-# POST /knowledgebases/{kbId}/datasources/{dsId}/documents/delete
-_RE_DELETE_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/documents/delete$")
+
+# Document operations
+_RE_GET_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/documents/getDocuments$")
+_RE_LIST_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/documents/?$")
+_RE_DELETE_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/documents/deleteDocuments$")
 
 
 async def handle_request(method, path, headers, body, query_params):
     """Main entry point for Bedrock Agent requests."""
-    # StartIngestionJob
-    m = _RE_START_INGESTION.match(path)
-    if m and method == "PUT":
-        return await _start_ingestion_job(m.group(1), m.group(2), body)
 
-    # GetIngestionJob
+    # --- Ingestion jobs (most specific paths first) ---
     m = _RE_GET_INGESTION.match(path)
     if m and method == "GET":
         return _get_ingestion_job(m.group(1), m.group(2), m.group(3))
 
-    # GetKnowledgeBaseDocuments
+    m = _RE_START_INGESTION.match(path)
+    if m and method == "PUT":
+        return await _start_ingestion_job(m.group(1), m.group(2), body)
+    if m and method == "POST":
+        return _list_ingestion_jobs(m.group(1), m.group(2), body)
+
+    # --- Document operations ---
     m = _RE_GET_DOCUMENTS.match(path)
     if m and method == "POST":
         return await _get_knowledge_base_documents(m.group(1), m.group(2), body)
 
-    # ListKnowledgeBaseDocuments
+    m = _RE_DELETE_DOCUMENTS.match(path)
+    if m and method == "POST":
+        return await _delete_knowledge_base_documents(m.group(1), m.group(2), body)
+
     m = _RE_LIST_DOCUMENTS.match(path)
     if m and method == "POST":
         return await _list_knowledge_base_documents(m.group(1), m.group(2), body)
 
-    # DeleteKnowledgeBaseDocuments
-    m = _RE_DELETE_DOCUMENTS.match(path)
-    if m and method == "POST":
-        return await _delete_knowledge_base_documents(m.group(1), m.group(2), body)
+    # --- Data Source CRUD ---
+    m = _RE_DS_ID.match(path)
+    if m:
+        kb_id, ds_id = m.group(1), m.group(2)
+        if method == "GET":
+            return _get_data_source(kb_id, ds_id)
+        elif method == "DELETE":
+            return _delete_data_source(kb_id, ds_id)
+
+    m = _RE_DSS.match(path)
+    if m:
+        kb_id = m.group(1)
+        if method == "PUT":
+            return _create_data_source(kb_id, body)
+        elif method == "POST":
+            return _list_data_sources(kb_id, body)
+
+    # --- Knowledge Base CRUD ---
+    m = _RE_KB_ID.match(path)
+    if m:
+        kb_id = m.group(1)
+        if method == "GET":
+            return _get_knowledge_base(kb_id)
+        elif method == "DELETE":
+            return _delete_knowledge_base(kb_id)
+
+    m = _RE_KBS.match(path)
+    if m:
+        if method == "PUT":
+            return _create_knowledge_base(body)
+        elif method == "POST":
+            return _list_knowledge_bases(body)
 
     return error_response_json("UnrecognizedClientException",
                                f"Unrecognized operation: {method} {path}", 400)
@@ -161,19 +200,24 @@ async def _start_ingestion_job(kb_id: str, ds_id: str, body: bytes):
     with _lock:
         _ingestion_jobs[job_id] = job
         # Auto-register KB and DS if not already known
+        _now = now_iso()
         if kb_id not in _knowledge_bases:
             _knowledge_bases[kb_id] = {
                 "knowledgeBaseId": kb_id,
+                "knowledgeBaseArn": f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:knowledge-base/{kb_id}",
                 "name": f"kb-{kb_id}",
                 "status": "ACTIVE",
-                "createdAt": now_iso(),
+                "createdAt": _now,
+                "updatedAt": _now,
             }
         if ds_id not in _data_sources:
             _data_sources[ds_id] = {
                 "dataSourceId": ds_id,
                 "knowledgeBaseId": kb_id,
+                "name": f"ds-{ds_id}",
                 "status": "AVAILABLE",
-                "createdAt": now_iso(),
+                "createdAt": _now,
+                "updatedAt": _now,
             }
 
     # Launch background ingestion thread
@@ -279,6 +323,36 @@ def _get_ingestion_job(kb_id: str, ds_id: str, job_id: str):
                                    f"Ingestion job {job_id} not found for KB {kb_id} / DS {ds_id}", 404)
 
     return json_response({"ingestionJob": job})
+
+
+def _list_ingestion_jobs(kb_id: str, ds_id: str, body: bytes):
+    """ListIngestionJobs — list all ingestion jobs for a knowledge base data source."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        data = {}
+
+    max_results = data.get("maxResults", 100)
+
+    with _lock:
+        jobs = [j for j in _ingestion_jobs.values()
+                if j.get("knowledgeBaseId") == kb_id and j.get("dataSourceId") == ds_id]
+
+    summaries = [{
+        "ingestionJobId": j["ingestionJobId"],
+        "knowledgeBaseId": j["knowledgeBaseId"],
+        "dataSourceId": j["dataSourceId"],
+        "status": j["status"],
+        "startedAt": j.get("startedAt", ""),
+        "updatedAt": j.get("updatedAt", ""),
+        "statistics": j.get("statistics", {}),
+        "description": j.get("description", ""),
+    } for j in jobs[:max_results]]
+
+    result = {"ingestionJobSummaries": summaries}
+    if len(jobs) > max_results:
+        result["nextToken"] = str(max_results)
+    return json_response(result)
 
 
 async def _get_knowledge_base_documents(kb_id: str, ds_id: str, body: bytes):
@@ -430,6 +504,196 @@ async def _delete_knowledge_base_documents(kb_id: str, ds_id: str, body: bytes):
         await conn.close()
 
     return json_response({"documentDetails": deleted})
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base CRUD
+# ---------------------------------------------------------------------------
+
+def _create_knowledge_base(body: bytes):
+    """CreateKnowledgeBase — create a new knowledge base."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    name = data.get("name", "")
+    if not name:
+        return error_response_json("ValidationException", "name is required", 400)
+
+    kb_id = new_uuid()[:10].upper()
+    now = now_iso()
+    kb = {
+        "knowledgeBaseId": kb_id,
+        "knowledgeBaseArn": f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:knowledge-base/{kb_id}",
+        "name": name,
+        "description": data.get("description", ""),
+        "roleArn": data.get("roleArn", f"arn:aws:iam::{ACCOUNT_ID}:role/bedrock-kb-role"),
+        "knowledgeBaseConfiguration": data.get("knowledgeBaseConfiguration", {
+            "type": "VECTOR", "vectorKnowledgeBaseConfiguration": {"embeddingModelArn": ""}
+        }),
+        "storageConfiguration": data.get("storageConfiguration", {}),
+        "status": "ACTIVE",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    with _lock:
+        _knowledge_bases[kb_id] = kb
+
+    return json_response({"knowledgeBase": kb}, 202)
+
+
+def _get_knowledge_base(kb_id: str):
+    """GetKnowledgeBase — return knowledge base metadata."""
+    with _lock:
+        kb = _knowledge_bases.get(kb_id)
+    if not kb:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Knowledge base {kb_id} not found", 404)
+    return json_response({"knowledgeBase": kb})
+
+
+def _list_knowledge_bases(body: bytes):
+    """ListKnowledgeBases — list all knowledge bases."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        data = {}
+
+    max_results = data.get("maxResults", 100)
+
+    with _lock:
+        items = list(_knowledge_bases.values())
+
+    summaries = [{
+        "knowledgeBaseId": kb["knowledgeBaseId"],
+        "name": kb["name"],
+        "description": kb.get("description", ""),
+        "status": kb["status"],
+        "updatedAt": kb.get("updatedAt") or kb.get("createdAt") or now_iso(),
+    } for kb in items[:max_results]]
+
+    result = {"knowledgeBaseSummaries": summaries}
+    if len(items) > max_results:
+        result["nextToken"] = str(max_results)
+    return json_response(result)
+
+
+def _delete_knowledge_base(kb_id: str):
+    """DeleteKnowledgeBase — delete a knowledge base."""
+    with _lock:
+        if kb_id not in _knowledge_bases:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Knowledge base {kb_id} not found", 404)
+        del _knowledge_bases[kb_id]
+        # Also remove associated data sources
+        to_remove = [ds_id for ds_id, ds in _data_sources.items()
+                     if ds.get("knowledgeBaseId") == kb_id]
+        for ds_id in to_remove:
+            del _data_sources[ds_id]
+
+    return json_response({"knowledgeBaseId": kb_id, "status": "DELETING"}, 202)
+
+
+# ---------------------------------------------------------------------------
+# Data Source CRUD
+# ---------------------------------------------------------------------------
+
+def _create_data_source(kb_id: str, body: bytes):
+    """CreateDataSource — create a new data source for a knowledge base."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    with _lock:
+        if kb_id not in _knowledge_bases:
+            # Auto-create KB if not found (matches existing ingestion behavior)
+            _knowledge_bases[kb_id] = {
+                "knowledgeBaseId": kb_id, "name": f"kb-{kb_id}",
+                "status": "ACTIVE", "createdAt": now_iso(),
+            }
+
+    name = data.get("name", "")
+    if not name:
+        return error_response_json("ValidationException", "name is required", 400)
+
+    ds_id = new_uuid()[:10].upper()
+    now = now_iso()
+    ds_config = data.get("dataSourceConfiguration", {})
+
+    ds = {
+        "dataSourceId": ds_id,
+        "knowledgeBaseId": kb_id,
+        "name": name,
+        "description": data.get("description", ""),
+        "status": "AVAILABLE",
+        "dataSourceConfiguration": ds_config,
+        "dataDeletionPolicy": data.get("dataDeletionPolicy", "RETAIN"),
+        "vectorIngestionConfiguration": data.get("vectorIngestionConfiguration", {}),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    with _lock:
+        _data_sources[ds_id] = ds
+
+    return json_response({"dataSource": ds})
+
+
+def _get_data_source(kb_id: str, ds_id: str):
+    """GetDataSource — return data source metadata."""
+    with _lock:
+        ds = _data_sources.get(ds_id)
+    if not ds or ds.get("knowledgeBaseId") != kb_id:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Data source {ds_id} not found in KB {kb_id}", 404)
+    return json_response({"dataSource": ds})
+
+
+def _list_data_sources(kb_id: str, body: bytes):
+    """ListDataSources — list all data sources for a knowledge base."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        data = {}
+
+    max_results = data.get("maxResults", 100)
+
+    with _lock:
+        items = [ds for ds in _data_sources.values()
+                 if ds.get("knowledgeBaseId") == kb_id]
+
+    summaries = [{
+        "dataSourceId": ds["dataSourceId"],
+        "knowledgeBaseId": ds["knowledgeBaseId"],
+        "name": ds["name"],
+        "description": ds.get("description", ""),
+        "status": ds["status"],
+        "updatedAt": ds.get("updatedAt") or ds.get("createdAt") or now_iso(),
+    } for ds in items[:max_results]]
+
+    result = {"dataSourceSummaries": summaries}
+    if len(items) > max_results:
+        result["nextToken"] = str(max_results)
+    return json_response(result)
+
+
+def _delete_data_source(kb_id: str, ds_id: str):
+    """DeleteDataSource — delete a data source."""
+    with _lock:
+        ds = _data_sources.get(ds_id)
+        if not ds or ds.get("knowledgeBaseId") != kb_id:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Data source {ds_id} not found in KB {kb_id}", 404)
+        del _data_sources[ds_id]
+
+    return json_response({
+        "dataSourceId": ds_id,
+        "knowledgeBaseId": kb_id,
+        "status": "DELETING",
+    }, 202)
 
 
 def reset():

@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   ministack:
     build: .
@@ -75,14 +73,14 @@ services:
 
   # Ollama for local LLM inference (Bedrock models)
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.20.0
     container_name: ministack-ollama
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/tags || exit 1"]
+      test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -91,7 +89,7 @@ services:
 
   # LiteLLM proxy — routes inference requests to Ollama (or GitHub Copilot)
   litellm:
-    image: ghcr.io/berriai/litellm:main-latest
+    image: ghcr.io/berriai/litellm:main-v1.82.3
     container_name: ministack-litellm
     ports:
       - "4000:4000"
@@ -102,7 +100,7 @@ services:
       ollama:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4000/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:4000/health')\""]
       interval: 10s
       timeout: 5s
       retries: 5

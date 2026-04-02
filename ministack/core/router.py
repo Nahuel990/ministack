@@ -150,7 +150,7 @@ SERVICE_PATTERNS = {
     },
     "bedrock": {
         "host_patterns": [r"bedrock\."],
-        "path_patterns": [r"^/inference-profiles", r"^/tags/"],
+        "path_patterns": [r"^/inference-profiles", r"^/foundation-models", r"^/guardrails", r"^/listTagsForResource", r"^/tagResource", r"^/untagResource"],
         "credential_scope": "bedrock",
     },
     "bedrock-runtime": {
@@ -159,11 +159,11 @@ SERVICE_PATTERNS = {
     },
     "bedrock-agent": {
         "host_patterns": [r"bedrock-agent\."],
-        "path_patterns": [r"^/knowledgebases/.*/datasources", r"^/knowledgebases/.*/documents"],
+        "path_patterns": [r"^/knowledgebases/.*/datasources", r"^/knowledgebases/.*/documents", r"^/knowledgebases/?$"],
     },
     "bedrock-agent-runtime": {
         "host_patterns": [r"bedrock-agent-runtime\."],
-        "path_patterns": [r"^/knowledgebases/.*/retrieve"],
+        "path_patterns": [r"^/knowledgebases/.*/retrieve", r"^/agents/"],
     },
 }
 
@@ -187,6 +187,18 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
         match = re.search(r"Credential=[^/]+/[^/]+/[^/]+/([^/]+)/", auth)
         if match:
             svc_name = match.group(1)
+            # Bedrock sub-services all share credential scope "bedrock" —
+            # disambiguate by path before returning.
+            if svc_name == "bedrock":
+                if re.match(r"^/model/|^/guardrail/", path):
+                    return "bedrock-runtime"
+                if re.match(r"^/agents/", path):
+                    return "bedrock-agent-runtime"
+                if re.match(r"^/knowledgebases/[^/]+/retrieve", path):
+                    return "bedrock-agent-runtime"
+                if re.match(r"^/knowledgebases/", path):
+                    return "bedrock-agent"
+                return "bedrock"
             if svc_name in SERVICE_PATTERNS:
                 return svc_name
             # Map common credential scope names

@@ -30,6 +30,8 @@ _guardrails: dict = {}  # guardrail_id -> config
 
 # POST /model/{modelId}/converse
 _RE_CONVERSE = re.compile(r"^/model/([^/]+)/converse$")
+# POST /model/{modelId}/invoke
+_RE_INVOKE = re.compile(r"^/model/([^/]+)/invoke$")
 # POST /guardrail/{guardrailId}/version/{version}/apply
 _RE_GUARDRAIL = re.compile(r"^/guardrail/([^/]+)/version/([^/]+)/apply$")
 
@@ -41,6 +43,12 @@ async def handle_request(method, path, headers, body, query_params):
     if m and method == "POST":
         model_id = m.group(1)
         return await _converse(model_id, body)
+
+    # InvokeModel API
+    m = _RE_INVOKE.match(path)
+    if m and method == "POST":
+        model_id = m.group(1)
+        return await _invoke_model(model_id, body, headers)
 
     # ApplyGuardrail API
     m = _RE_GUARDRAIL.match(path)
@@ -165,6 +173,125 @@ async def _converse(model_id: str, body: bytes):
     return json_response(bedrock_response)
 
 
+async def _invoke_model(model_id: str, body: bytes, headers: dict):
+    """
+    InvokeModel — legacy model invocation API.
+    Supports Anthropic Messages format, Amazon Titan, and generic text completion.
+    Proxies to LiteLLM and transforms the response to the provider-specific format.
+    """
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    from ministack.services.bedrock import resolve_model
+    local_model = resolve_model(model_id)
+
+    # Build OpenAI-format messages from the provider-specific input
+    openai_messages = []
+    max_tokens = 1024
+    temperature = 0.7
+
+    if "messages" in data:
+        # Anthropic Messages API format
+        system = data.get("system", "")
+        if system:
+            openai_messages.append({"role": "system", "content": system})
+        for msg in data["messages"]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                text_parts = [b.get("text", "") for b in content if isinstance(b, dict) and "text" in b]
+                content = " ".join(text_parts)
+            openai_messages.append({"role": role, "content": content})
+        max_tokens = data.get("max_tokens", 1024)
+        temperature = data.get("temperature", 0.7)
+    elif "inputText" in data:
+        # Amazon Titan format
+        openai_messages.append({"role": "user", "content": data["inputText"]})
+        tc = data.get("textGenerationConfig", {})
+        max_tokens = tc.get("maxTokenCount", 1024)
+        temperature = tc.get("temperature", 0.7)
+    elif "prompt" in data:
+        # Generic / Llama / Mistral format
+        openai_messages.append({"role": "user", "content": data["prompt"]})
+        max_tokens = data.get("max_gen_len", data.get("max_tokens", 1024))
+        temperature = data.get("temperature", 0.7)
+    else:
+        openai_messages.append({"role": "user", "content": json.dumps(data)})
+
+    import aiohttp
+    litellm_payload = {
+        "model": local_model,
+        "messages": openai_messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{LITELLM_BASE_URL}/v1/chat/completions",
+                json=litellm_payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status != 200:
+                    error_body = await resp.text()
+                    return error_response_json("ModelErrorException",
+                                               f"Inference backend error: {error_body}", 500)
+                result = await resp.json()
+    except (aiohttp.ClientError, OSError) as e:
+        return error_response_json("ServiceUnavailableException",
+                                   f"Inference backend unavailable: {e}", 503)
+
+    choice = result.get("choices", [{}])[0]
+    response_text = choice.get("message", {}).get("content", "")
+    finish_reason = choice.get("finish_reason", "stop")
+    usage = result.get("usage", {})
+
+    # Format response based on model provider
+    if "anthropic" in model_id.lower():
+        # Anthropic Messages response format
+        response_body = {
+            "id": f"msg_{new_uuid()[:24]}",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": response_text}],
+            "model": model_id,
+            "stop_reason": "end_turn" if finish_reason == "stop" else finish_reason,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+            },
+        }
+    elif "titan" in model_id.lower():
+        # Amazon Titan response format
+        response_body = {
+            "inputTextTokenCount": usage.get("prompt_tokens", 0),
+            "results": [{
+                "tokenCount": usage.get("completion_tokens", 0),
+                "outputText": response_text,
+                "completionReason": "FINISH",
+            }],
+        }
+    else:
+        # Generic format (Llama, Mistral, etc.)
+        response_body = {
+            "generation": response_text,
+            "prompt_token_count": usage.get("prompt_tokens", 0),
+            "generation_token_count": usage.get("completion_tokens", 0),
+            "stop_reason": finish_reason,
+        }
+
+    resp_body = json.dumps(response_body).encode("utf-8")
+    return 200, {
+        "Content-Type": "application/json",
+        "x-amzn-bedrock-input-token-count": str(usage.get("prompt_tokens", 0)),
+        "x-amzn-bedrock-output-token-count": str(usage.get("completion_tokens", 0)),
+    }, resp_body
+
+
 async def _apply_guardrail(guardrail_id: str, version: str, body: bytes):
     """
     ApplyGuardrail — checks content against configured guardrail patterns.
@@ -178,11 +305,19 @@ async def _apply_guardrail(guardrail_id: str, version: str, body: bytes):
     source = data.get("source", "INPUT")
     content = data.get("content", [])
 
-    # Load guardrail config
-    from ministack.services.bedrock import get_models_config
+    # Load guardrail config — merge YAML defaults with dynamic guardrails
+    from ministack.services.bedrock import get_models_config, get_guardrail_config
     config = get_models_config()
     guardrail_config = config.get("guardrails", {})
-    blocked_patterns = guardrail_config.get("blocked_patterns", [])
+    blocked_patterns = list(guardrail_config.get("blocked_patterns", []))
+
+    # Also check dynamically created guardrails for word policies
+    dynamic = get_guardrail_config(guardrail_id)
+    if dynamic:
+        word_policy = dynamic.get("wordPolicy", {})
+        for w in word_policy.get("wordsConfig", []):
+            if isinstance(w, dict) and "text" in w:
+                blocked_patterns.append(re.escape(w["text"]))
 
     # Check each content block against blocked patterns
     assessments = []

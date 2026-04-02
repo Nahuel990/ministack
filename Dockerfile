@@ -14,9 +14,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
         uvicorn==0.30.6 \
         "cbor2>=5.4.0" \
         "docker>=7.0.0" \
-        "pyyaml>=6.0" \
-        "aiohttp>=3.9.0" \
-        "asyncpg>=0.29.0"
+        "pyyaml==6.0.3" \
+        "aiohttp==3.13.5" \
+        "asyncpg==0.31.0"
 
 COPY ministack/ ministack/
 COPY config/ config/

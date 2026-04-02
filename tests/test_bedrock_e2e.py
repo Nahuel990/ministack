@@ -314,6 +314,60 @@ def test_bedrock(ctx: TestContext, r: TestResult):
 
     run(r, "bedrock.list_tags_for_resource", _list_tags_for_resource)
 
+    # ---- list_foundation_models ----
+    def _list_foundation_models():
+        resp = br.list_foundation_models()
+        models = resp.get("modelSummaries", [])
+        log.info("    %d foundation model(s)", len(models))
+        for m in models[:3]:
+            log.info("      - %s (%s)", m["modelId"], m["providerName"])
+        assert len(models) > 0
+
+    if not ctx.is_aws:
+        run(r, "bedrock.list_foundation_models", _list_foundation_models)
+    else:
+        run(r, "bedrock.list_foundation_models", _list_foundation_models)
+
+    # ---- get_foundation_model ----
+    def _get_foundation_model():
+        mid = ctx.model_id
+        resp = br.get_foundation_model(modelIdentifier=mid)
+        d = resp["modelDetails"]
+        log.info("    %s — %s — streaming=%s", d["modelId"], d["providerName"],
+                 d.get("responseStreamingSupported"))
+        assert d["modelId"] == mid
+
+    run(r, "bedrock.get_foundation_model", _get_foundation_model)
+
+    # ---- guardrail CRUD (MiniStack only) ----
+    if not ctx.is_aws:
+        _gid = [None]
+
+        def _create_guardrail():
+            resp = br.create_guardrail(
+                name="e2e-guardrail",
+                blockedInputMessaging="Blocked.",
+                blockedOutputsMessaging="Blocked.",
+                wordPolicyConfig={"wordsConfig": [{"text": "badword"}], "managedWordListsConfig": []},
+            )
+            _gid[0] = resp["guardrailId"]
+            log.info("    Created guardrail: %s", _gid[0])
+
+        run(r, "bedrock.create_guardrail", _create_guardrail)
+
+        def _list_guardrails():
+            resp = br.list_guardrails()
+            log.info("    %d guardrail(s)", len(resp["guardrails"]))
+            assert any(g["id"] == _gid[0] for g in resp["guardrails"])
+
+        run(r, "bedrock.list_guardrails", _list_guardrails)
+
+        def _delete_guardrail():
+            br.delete_guardrail(guardrailIdentifier=_gid[0])
+            log.info("    Deleted guardrail %s", _gid[0])
+
+        run(r, "bedrock.delete_guardrail", _delete_guardrail)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Bedrock Runtime — inference & guardrails
@@ -411,6 +465,25 @@ def test_bedrock_runtime(ctx: TestContext, r: TestResult):
         # On real AWS, depends on guardrail configuration
 
     run(r, "bedrock-runtime.apply_guardrail (blocked)", _apply_guardrail_blocked)
+
+    # ---- invoke_model ----
+    def _invoke_model():
+        body = json.dumps({
+            "messages": [{"role": "user", "content": "Say hi in one word"}],
+            "max_tokens": 20,
+            "anthropic_version": "bedrock-2023-05-31",
+        })
+        resp = rt.invoke_model(
+            modelId=ctx.model_id,
+            body=body,
+            contentType="application/json",
+        )
+        result = json.loads(resp["body"].read())
+        text = result.get("content", [{}])[0].get("text", result.get("generation", ""))
+        log.info("    invoke_model response: %s", text[:80])
+        assert len(text) > 0
+
+    run(r, "bedrock-runtime.invoke_model", _invoke_model)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -524,6 +597,62 @@ def test_bedrock_agent(ctx: TestContext, r: TestResult):
         log.info("    Deleted %d document(s)", len(docs))
 
     run(r, "bedrock-agent.delete_knowledge_base_documents", _delete_knowledge_base_documents)
+
+    # ---- KB + DS lifecycle (MiniStack only) ----
+    if not ctx.is_aws:
+        _kb = [None]
+        _ds = [None]
+
+        def _create_kb():
+            resp = agent.create_knowledge_base(
+                name="e2e-kb", description="E2E test",
+                roleArn="arn:aws:iam::000000000000:role/r",
+                knowledgeBaseConfiguration={
+                    "type": "VECTOR",
+                    "vectorKnowledgeBaseConfiguration": {
+                        "embeddingModelArn": "arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v1"
+                    },
+                },
+            )
+            _kb[0] = resp["knowledgeBase"]["knowledgeBaseId"]
+            log.info("    Created KB: %s", _kb[0])
+            assert resp["knowledgeBase"]["status"] == "ACTIVE"
+
+        run(r, "bedrock-agent.create_knowledge_base", _create_kb)
+
+        def _list_kbs():
+            resp = agent.list_knowledge_bases()
+            log.info("    %d KB(s)", len(resp["knowledgeBaseSummaries"]))
+            assert any(s["knowledgeBaseId"] == _kb[0] for s in resp["knowledgeBaseSummaries"])
+
+        run(r, "bedrock-agent.list_knowledge_bases", _list_kbs)
+
+        def _create_ds():
+            resp = agent.create_data_source(
+                knowledgeBaseId=_kb[0], name="e2e-ds",
+                dataSourceConfiguration={"type": "S3", "s3Configuration": {"bucketArn": "arn:aws:s3:::b"}},
+            )
+            _ds[0] = resp["dataSource"]["dataSourceId"]
+            log.info("    Created DS: %s", _ds[0])
+
+        run(r, "bedrock-agent.create_data_source", _create_ds)
+
+        def _list_ds():
+            resp = agent.list_data_sources(knowledgeBaseId=_kb[0])
+            log.info("    %d DS(s)", len(resp["dataSourceSummaries"]))
+            assert len(resp["dataSourceSummaries"]) == 1
+
+        run(r, "bedrock-agent.list_data_sources", _list_ds)
+
+        def _delete_ds():
+            agent.delete_data_source(knowledgeBaseId=_kb[0], dataSourceId=_ds[0])
+
+        run(r, "bedrock-agent.delete_data_source", _delete_ds)
+
+        def _delete_kb():
+            agent.delete_knowledge_base(knowledgeBaseId=_kb[0])
+
+        run(r, "bedrock-agent.delete_knowledge_base", _delete_kb)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
