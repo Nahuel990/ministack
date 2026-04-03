@@ -148,6 +148,10 @@ SERVICE_PATTERNS = {
     "cloudformation": {
         "host_patterns": [r"cloudformation\."],
     },
+    "kms": {
+        "target_prefixes": ["TrentService"],
+        "host_patterns": [r"kms\."],
+    },
 }
 
 
@@ -196,6 +200,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "elasticloadbalancing": "elasticloadbalancing",
                 "elasticfilesystem": "elasticfilesystem",
                 "cloudformation": "cloudformation",
+                "kms": "kms",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]

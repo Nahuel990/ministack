@@ -52,6 +52,7 @@ from ministack.services import (
     firehose,
     glue,
     kinesis,
+    kms,
     lambda_svc,
     rds,
     route53,
@@ -108,6 +109,7 @@ SERVICE_HANDLERS = {
     "elasticmapreduce": emr.handle_request,
     "elasticloadbalancing": alb.handle_request,
     "elasticfilesystem": efs.handle_request,
+    "kms": kms.handle_request,
 }
 
 SERVICE_NAME_ALIASES = {
@@ -160,7 +162,7 @@ BANNER = r"""
  Services: S3, SQS, SNS, DynamoDB, Lambda, IAM, STS, SecretsManager, CloudWatch Logs,
           SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
-          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation
+          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation, KMS
 """
 
 
@@ -600,6 +602,7 @@ def _reset_all_state():
         (waf, waf.reset),
         (efs, efs.reset),
         (cloudformation, cloudformation.reset),
+        (kms, kms.reset),
     ]:
         try:
             fn()
