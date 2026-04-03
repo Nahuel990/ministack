@@ -314,11 +314,19 @@ async def _run_ingestion_job(job_id: str, kb_id: str, ds_id: str):
         job["updatedAt"] = now_iso()
 
     # Get S3 objects from the data source
-    # Convention: data source bucket = ds_id (or configured via data source config)
     from ministack.services import s3 as s3_svc
 
-    # Try to list objects from an S3 bucket matching the data source ID
+    # Resolve bucket name: check data source config first, then fall back to ds_id
     bucket_name = ds_id
+    with _lock:
+        ds_meta = _data_sources.get(ds_id, {})
+    ds_config = ds_meta.get("dataSourceConfiguration", {})
+    s3_config = ds_config.get("s3Configuration", {})
+    bucket_arn = s3_config.get("bucketArn", "")
+    if bucket_arn:
+        # Extract bucket name from ARN: arn:aws:s3:::my-bucket -> my-bucket
+        bucket_name = bucket_arn.split(":::")[-1] if ":::" in bucket_arn else bucket_arn
+
     objects = []
     if bucket_name in s3_svc._buckets:
         for key, obj_data in s3_svc._buckets[bucket_name].get("objects", {}).items():

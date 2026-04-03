@@ -166,7 +166,7 @@ SERVICE_PATTERNS = {
     },
     "bedrock-agent-runtime": {
         "host_patterns": [r"bedrock-agent-runtime\."],
-        "path_patterns": [r"^/knowledgebases/.*/retrieve", r"^/rerank"],
+        "path_patterns": [r"^/knowledgebases/.*/retrieve", r"^/rerank", r"^/retrieveAndGenerate"],
     },
     "kms": {
         "target_prefixes": ["TrentService"],
@@ -199,7 +199,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             if svc_name == "bedrock":
                 if re.match(r"^/model/|^/guardrail/|^/async-invoke", path):
                     return "bedrock-runtime"
-                if re.match(r"^/rerank", path):
+                if re.match(r"^/rerank|^/retrieveAndGenerate", path):
                     return "bedrock-agent-runtime"
                 if re.match(r"^/knowledgebases/[^/]+/retrieve", path):
                     return "bedrock-agent-runtime"

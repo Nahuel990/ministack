@@ -32,6 +32,7 @@ PGVECTOR_PASSWORD = os.environ.get("PGVECTOR_PASSWORD", "bedrock")
 # POST /knowledgebases/{kbId}/retrieve
 _RE_RETRIEVE = re.compile(r"^/knowledgebases/([^/]+)/retrieve$")
 _RE_RETRIEVE_AND_GENERATE = re.compile(r"^/knowledgebases/([^/]+)/retrieve-and-generate$")
+_RE_RETRIEVE_AND_GENERATE_TOP = re.compile(r"^/retrieveAndGenerate/?$")
 _RE_RERANK = re.compile(r"^/rerank/?$")
 
 
@@ -42,10 +43,22 @@ async def handle_request(method, path, headers, body, query_params):
     if m and method == "POST":
         return await _retrieve(m.group(1), body)
 
-    # RetrieveAndGenerate
+    # RetrieveAndGenerate — path-prefixed form
     m = _RE_RETRIEVE_AND_GENERATE.match(path)
     if m and method == "POST":
         return await _retrieve_and_generate(m.group(1), body)
+
+    # RetrieveAndGenerate — top-level form (boto3 sends POST /retrieveAndGenerate)
+    if _RE_RETRIEVE_AND_GENERATE_TOP.match(path) and method == "POST":
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            return error_response_json("ValidationException", "Invalid JSON body", 400)
+        # Extract KB ID from request body
+        kb_id = (data.get("retrieveAndGenerateConfiguration", {})
+                     .get("knowledgeBaseConfiguration", {})
+                     .get("knowledgeBaseId", ""))
+        return await _retrieve_and_generate(kb_id, body)
 
     # Rerank
     if _RE_RERANK.match(path) and method == "POST":
