@@ -99,6 +99,20 @@ def _s3_create(logical_id, props, stack_name):
     return name, attrs
 
 
+def _s3_bucket_policy_create(logical_id, props, stack_name):
+    bucket = props.get("Bucket", "")
+    policy = props.get("PolicyDocument")
+    if bucket and policy:
+        import json
+        _s3._bucket_policies[bucket] = json.dumps(policy) if isinstance(policy, dict) else policy
+    return f"{bucket}-policy", {}
+
+
+def _s3_bucket_policy_delete(physical_id, props):
+    bucket = props.get("Bucket", "")
+    _s3._bucket_policies.pop(bucket, None)
+
+
 def _s3_delete(physical_id, props):
     _s3._buckets.pop(physical_id, None)
     _s3._bucket_versioning.pop(physical_id, None)
@@ -631,6 +645,7 @@ def _eb_rule_delete(physical_id, props):
 
 _RESOURCE_HANDLERS = {
     "AWS::S3::Bucket": {"create": _s3_create, "delete": _s3_delete},
+    "AWS::S3::BucketPolicy": {"create": _s3_bucket_policy_create, "delete": _s3_bucket_policy_delete},
     "AWS::SQS::Queue": {"create": _sqs_create, "delete": _sqs_delete},
     "AWS::SNS::Topic": {"create": _sns_create, "delete": _sns_delete},
     "AWS::SNS::Subscription": {"create": _sns_sub_create, "delete": _sns_sub_delete},

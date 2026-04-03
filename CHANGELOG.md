@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.29] — 2026-04-03
+
+### Fixed
+- **CloudFormation `AWS::S3::BucketPolicy`** — new resource type; provisions and deletes S3 bucket policies via CFN stacks. Fixes Serverless Framework deployment failures
+
+---
+
 ## [1.1.28] — 2026-04-03
 
 ### Fixed
