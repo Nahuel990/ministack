@@ -293,7 +293,7 @@ def _start_execution(data):
     threading.Thread(
         target=_run_execution, args=(exec_arn,), daemon=True).start()
 
-    logger.info(f"Step Functions execution started: {exec_arn}")
+    logger.info("Step Functions execution started: %s", exec_arn)
     return json_response({"executionArn": exec_arn, "startDate": start_date})
 
 
@@ -973,7 +973,7 @@ def _run_execution(exec_arn):
     except _ExecutionError as err:
         _fail_execution(execution, err.error, err.cause)
     except Exception as exc:
-        logger.exception(f"Unexpected error in execution {exec_arn}")
+        logger.exception("Unexpected error in execution %s", exec_arn)
         _fail_execution(execution, "States.Runtime", str(exc))
 
 

@@ -166,7 +166,7 @@ def _put_parameter(data):
         _parameter_history[name] = []
     _parameter_history[name].append(history_entry)
 
-    logger.info(f"SSM PutParameter: {name} v{version} type={param_type}")
+    logger.info("SSM PutParameter: %s v%s type=%s", name, version, param_type)
     return json_response({"Version": version, "Tier": record["Tier"]})
 
 

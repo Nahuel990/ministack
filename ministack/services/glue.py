@@ -533,13 +533,13 @@ def _start_crawler(data):
                 "StartTime": start_time,
                 "EndTime": time.time(),
             }
-            logger.info(f"Glue: Crawler {name} finished after {CRAWLER_RUN_SECONDS}s")
+            logger.info("Glue: Crawler %s finished after %ss", name, CRAWLER_RUN_SECONDS)
 
     timer = threading.Timer(CRAWLER_RUN_SECONDS, _finish_crawl)
     timer.daemon = True
     timer.start()
 
-    logger.info(f"Glue: Crawler {name} started (will run for {CRAWLER_RUN_SECONDS}s)")
+    logger.info("Glue: Crawler %s started (will run for %ss)", name, CRAWLER_RUN_SECONDS)
     return json_response({})
 
 

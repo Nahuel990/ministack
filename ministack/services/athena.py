@@ -245,7 +245,7 @@ def _execute_query(query_id, query, database):
             len(str(row)) for row in results.get("rows", [])
         )
     except Exception as e:
-        logger.error(f"Athena query {query_id} failed: {e}")
+        logger.error("Athena query %s failed: %s", query_id, e)
         execution["Status"]["State"] = "FAILED"
         execution["Status"]["StateChangeReason"] = str(e)[:2000]
         execution["_error"] = str(e)

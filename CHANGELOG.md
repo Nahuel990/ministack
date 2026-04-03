@@ -7,6 +7,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.30] — 2026-04-03
+
+### Added
+- **CloudFormation `AWS::Lambda::Permission`** — provisions Lambda invoke permissions via CFN stacks
+- **CloudFormation `AWS::Lambda::Version`** — creates immutable Lambda versions via CFN stacks
+- **CloudFormation `AWS::CloudFormation::WaitCondition`** — no-op stub, returns immediately
+- **CloudFormation `AWS::CloudFormation::WaitConditionHandle`** — no-op stub, returns placeholder URL
+
+### Fixed
+- **Router duplicate action keys** — removed `ListTagsForResource` and `GetTemplate` from action map (shared across services, routed via credential scope instead)
+- **ElastiCache reset missing state** — `_param_group_params` now cleared and `_port_counter` reset to `BASE_PORT` on reset
+- **Bare except in Docker cleanup** — RDS, ECS, ElastiCache reset() now log warnings instead of silently swallowing errors
+- **52 f-string logger calls** — converted to lazy % formatting across 13 service files; avoids unnecessary string formatting when log level is disabled
+- **Detached mode log handle** — documented intentional fd inheritance in subprocess.Popen
+
+Thanks to @moabukar for #104 (error handling, routing conflicts, persistence hardening)
+
+---
+
 ## [1.1.29] — 2026-04-03
 
 ### Fixed

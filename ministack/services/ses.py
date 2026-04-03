@@ -132,7 +132,7 @@ def _send_email(params):
     if config_set:
         record["ConfigurationSetName"] = config_set
     _sent_emails.append(record)
-    logger.info(f"SES SendEmail: {source} -> {to_addrs} | {subject}")
+    logger.info("SES SendEmail: %s -> %s | %s", source, to_addrs, subject)
     return _xml(200, "SendEmailResponse",
                 f"<SendEmailResult><MessageId>{msg_id}</MessageId></SendEmailResult>")
 
@@ -153,7 +153,7 @@ def _send_raw_email(params):
         "Type": "SendRawEmail",
     }
     _sent_emails.append(record)
-    logger.info(f"SES SendRawEmail: {msg_id}")
+    logger.info("SES SendRawEmail: %s", msg_id)
     return _xml(200, "SendRawEmailResponse",
                 f"<SendRawEmailResult><MessageId>{msg_id}</MessageId></SendRawEmailResult>")
 
@@ -191,7 +191,7 @@ def _send_templated_email(params):
     if config_set:
         record["ConfigurationSetName"] = config_set
     _sent_emails.append(record)
-    logger.info(f"SES SendTemplatedEmail: {source} -> {to_addrs} | template={template_name}")
+    logger.info("SES SendTemplatedEmail: %s -> %s | template=%s", source, to_addrs, template_name)
     return _xml(200, "SendTemplatedEmailResponse",
                 f"<SendTemplatedEmailResult><MessageId>{msg_id}</MessageId></SendTemplatedEmailResult>")
 
@@ -238,8 +238,8 @@ def _send_bulk_templated_email(params):
             f"<member><Status>Success</Status>"
             f"<MessageId>{msg_id}</MessageId></member>")
 
-    logger.info(f"SES SendBulkTemplatedEmail: {source} | template={template_name} | "
-                f"{len(destinations)} destinations")
+    logger.info("SES SendBulkTemplatedEmail: %s | template=%s | %s destinations",
+                source, template_name, len(destinations))
     return _xml(200, "SendBulkTemplatedEmailResponse",
                 f"<SendBulkTemplatedEmailResult>"
                 f"<Status>{''.join(statuses)}</Status>"
@@ -644,7 +644,7 @@ def _v2_send_email(data):
     if config_set:
         record["ConfigurationSetName"] = config_set
     _sent_emails.append(record)
-    logger.info(f"SES v2 SendEmail: {from_addr} -> {to_addrs}")
+    logger.info("SES v2 SendEmail: %s -> %s", from_addr, to_addrs)
     return _json_response(200, {"MessageId": msg_id})
 
 
@@ -681,8 +681,8 @@ def _v2_send_bulk_email(data):
         _sent_emails.append(record)
         results.append({"Status": "SUCCESS", "MessageId": msg_id})
 
-    logger.info(f"SES v2 SendBulkEmail: {from_addr} | template={template_name} | "
-                f"{len(entries)} entries")
+    logger.info("SES v2 SendBulkEmail: %s | template=%s | %s entries",
+                from_addr, template_name, len(entries))
     return _json_response(200, {"BulkEmailEntryResults": results})
 
 

@@ -1335,7 +1335,7 @@ def _execute_function_local(func: dict, event: dict) -> dict:
             "log": _log,
         }
     except Exception as e:
-        logger.error(f"Lambda execution error: {e}")
+        logger.error("Lambda execution error: %s", e)
         return {
             "body": {"errorMessage": str(e), "errorType": type(e).__name__},
             "error": True,

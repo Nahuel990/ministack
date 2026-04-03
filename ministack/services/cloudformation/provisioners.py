@@ -639,6 +639,81 @@ def _eb_rule_delete(physical_id, props):
     _eb._targets.pop(key, None)
 
 
+# --- Lambda Permission ---
+
+def _lambda_permission_create(logical_id, props, stack_name):
+    func_name = props.get("FunctionName", "")
+    # Resolve ARN to function name
+    if func_name.startswith("arn:"):
+        func_name = func_name.rsplit(":", 1)[-1]
+    func = _lambda_svc._functions.get(func_name)
+    if func:
+        stmt = {
+            "Sid": props.get("Id") or logical_id,
+            "Effect": "Allow",
+            "Principal": props.get("Principal", "*"),
+            "Action": props.get("Action", "lambda:InvokeFunction"),
+            "Resource": func["config"]["FunctionArn"],
+        }
+        source_arn = props.get("SourceArn")
+        if source_arn:
+            stmt["Condition"] = {"ArnLike": {"AWS:SourceArn": source_arn}}
+        func["policy"]["Statement"].append(stmt)
+    pid = f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
+    return pid, {}
+
+
+def _lambda_permission_delete(physical_id, props):
+    func_name = props.get("FunctionName", "")
+    if func_name.startswith("arn:"):
+        func_name = func_name.rsplit(":", 1)[-1]
+    func = _lambda_svc._functions.get(func_name)
+    if func:
+        sid = props.get("Id") or ""
+        func["policy"]["Statement"] = [
+            s for s in func["policy"]["Statement"] if s.get("Sid") != sid
+        ]
+
+
+# --- Lambda Version ---
+
+def _lambda_version_create(logical_id, props, stack_name):
+    func_name = props.get("FunctionName", "")
+    if func_name.startswith("arn:"):
+        func_name = func_name.rsplit(":", 1)[-1]
+    func = _lambda_svc._functions.get(func_name)
+    if func:
+        import copy
+        ver_num = func["next_version"]
+        func["next_version"] = ver_num + 1
+        ver_str = str(ver_num)
+        ver_config = copy.deepcopy(func["config"])
+        ver_config["Version"] = ver_str
+        ver_arn = f"{ver_config['FunctionArn']}"
+        func["versions"][ver_str] = {
+            "config": ver_config,
+            "code_zip": func.get("code_zip"),
+        }
+        return ver_arn, {"Version": ver_str}
+    ver_arn = f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:{func_name}:1"
+    return ver_arn, {"Version": "1"}
+
+
+# --- CloudFormation WaitCondition / WaitConditionHandle (no-ops) ---
+
+def _cfn_wait_condition_create(logical_id, props, stack_name):
+    """WaitCondition — no-op, return immediately (no real signalling in local emulation)."""
+    pid = f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
+    return pid, {"Data": "{}"}
+
+
+def _cfn_wait_condition_handle_create(logical_id, props, stack_name):
+    """WaitConditionHandle — no-op, return a presigned-style URL."""
+    pid = f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
+    url = f"https://cloudformation-waitcondition-{REGION}.s3.amazonaws.com/{pid}"
+    return pid, {"Ref": url}
+
+
 # ===========================================================================
 # Resource Handler Registry
 # ===========================================================================
@@ -657,4 +732,8 @@ _RESOURCE_HANDLERS = {
     "AWS::SSM::Parameter": {"create": _ssm_create, "delete": _ssm_delete},
     "AWS::Logs::LogGroup": {"create": _cwlogs_create, "delete": _cwlogs_delete},
     "AWS::Events::Rule": {"create": _eb_rule_create, "delete": _eb_rule_delete},
+    "AWS::Lambda::Permission": {"create": _lambda_permission_create, "delete": _lambda_permission_delete},
+    "AWS::Lambda::Version": {"create": _lambda_version_create},
+    "AWS::CloudFormation::WaitCondition": {"create": _cfn_wait_condition_create},
+    "AWS::CloudFormation::WaitConditionHandle": {"create": _cfn_wait_condition_handle_create},
 }

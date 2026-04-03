@@ -237,7 +237,9 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "ListSubscriptionsByTopic": "sns",
             "GetSubscriptionAttributes": "sns", "SetSubscriptionAttributes": "sns",
             "PublishBatch": "sns",
-            "ListTagsForResource": "sns", "TagResource": "sns", "UntagResource": "sns",
+            # Note: ListTagsForResource is shared by SNS, RDS, and ElastiCache.
+            # Routed via credential scope or host header instead.
+            "TagResource": "sns", "UntagResource": "sns",
             "CreatePlatformApplication": "sns", "CreatePlatformEndpoint": "sns",
             # IAM actions
             "CreateRole": "iam", "GetRole": "iam", "ListRoles": "iam",
@@ -287,7 +289,9 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "SetIdentityFeedbackForwardingEnabled": "ses",
             "CreateConfigurationSet": "ses", "DeleteConfigurationSet": "ses",
             "DescribeConfigurationSet": "ses", "ListConfigurationSets": "ses",
-            "CreateTemplate": "ses", "GetTemplate": "ses",
+            # Note: GetTemplate is shared by SES and CloudFormation.
+            # Routed via credential scope or host header instead.
+            "CreateTemplate": "ses",
             "DeleteTemplate": "ses", "ListTemplates": "ses", "UpdateTemplate": "ses",
             "SendTemplatedEmail": "ses", "SendBulkTemplatedEmail": "ses",
             # RDS actions
@@ -304,7 +308,6 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "CreateDBSnapshot": "rds", "DeleteDBSnapshot": "rds", "DescribeDBSnapshots": "rds",
             "CreateDBInstanceReadReplica": "rds", "RestoreDBInstanceFromDBSnapshot": "rds",
             "AddTagsToResource": "rds", "RemoveTagsFromResource": "rds",
-            "ListTagsForResource": "rds",
             # ElastiCache actions
             "CreateCacheCluster": "elasticache", "DeleteCacheCluster": "elasticache",
             "DescribeCacheClusters": "elasticache", "ModifyCacheCluster": "elasticache",
@@ -389,7 +392,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             "DescribeStackEvents": "cloudformation",
             "DescribeStackResource": "cloudformation", "DescribeStackResources": "cloudformation",
             "ListStackResources": "cloudformation",
-            "GetTemplate": "cloudformation", "GetTemplateSummary": "cloudformation",
+            "GetTemplateSummary": "cloudformation",
             "ValidateTemplate": "cloudformation",
             "CreateChangeSet": "cloudformation", "DescribeChangeSet": "cloudformation",
             "ExecuteChangeSet": "cloudformation", "DeleteChangeSet": "cloudformation",

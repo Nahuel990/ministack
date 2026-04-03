@@ -244,13 +244,13 @@ async def handle_request(method, path, headers, body, query_params):
 
                 cbor_data = cbor2.loads(body) or {}
             except Exception as e:
-                logger.error(f"CBOR decode error: {e}")
+                logger.error("CBOR decode error: %s", e)
                 cbor_data = {}
         elif is_json:
             try:
                 cbor_data = json.loads(body) or {}
             except Exception as e:
-                logger.error(f"JSON decode error: {e}")
+                logger.error("JSON decode error: %s", e)
                 cbor_data = {}
         else:
             for k, v in parse_qs(body.decode("utf-8", errors="replace")).items():

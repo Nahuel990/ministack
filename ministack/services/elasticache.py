@@ -246,9 +246,9 @@ def _create_cache_cluster(p):
                 volumes={},
             )
             docker_container_id = container.id
-            logger.info(f"ElastiCache: started {engine} container for {cluster_id} on port {host_port}")
+            logger.info("ElastiCache: started %s container for %s on port %s", engine, cluster_id, host_port)
         except Exception as e:
-            logger.warning(f"ElastiCache: Docker failed for {cluster_id}: {e}")
+            logger.warning("ElastiCache: Docker failed for %s: %s", cluster_id, e)
             endpoint_host = REDIS_DEFAULT_HOST
             endpoint_port = REDIS_DEFAULT_PORT
 
@@ -312,7 +312,7 @@ def _delete_cache_cluster(p):
             container.stop(timeout=5)
             container.remove()
         except Exception as e:
-            logger.warning(f"ElastiCache: failed to remove container for {cluster_id}: {e}")
+            logger.warning("ElastiCache: failed to remove container for %s: %s", cluster_id, e)
 
     cluster["CacheClusterStatus"] = "deleting"
     del _clusters[cluster_id]
@@ -1335,13 +1335,15 @@ def reset():
                     c = docker_client.containers.get(cid)
                     c.stop(timeout=2)
                     c.remove(v=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("reset: failed to stop/remove container %s: %s", cid, e)
     _clusters.clear()
     _replication_groups.clear()
     _subnet_groups.clear()
     _param_groups.clear()
+    _param_group_params.clear()
     _snapshots.clear()
     _users.clear()
     _user_groups.clear()
     _events.clear()
+    _port_counter[0] = BASE_PORT

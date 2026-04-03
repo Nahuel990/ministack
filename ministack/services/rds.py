@@ -197,9 +197,9 @@ def _create_db_instance(p):
                            "/var/lib/mysql": "rw,noexec,nosuid,size=256m"},
                 )
                 docker_container_id = container.id
-                logger.info(f"RDS: started {engine} container for {db_id} on port {host_port}")
+                logger.info("RDS: started %s container for %s on port %s", engine, db_id, host_port)
             except Exception as e:
-                logger.warning(f"RDS: Docker failed for {db_id}: {e}")
+                logger.warning("RDS: Docker failed for %s: %s", db_id, e)
 
     cluster_id = _p(p, "DBClusterIdentifier")
     param_group_name = _p(p, "DBParameterGroupName") or f"default.{engine}{engine_version.split('.')[0]}"
@@ -327,9 +327,9 @@ def _delete_db_instance(p):
             c = docker_client.containers.get(instance["_docker_container_id"])
             c.stop(timeout=5)
             c.remove(v=True)
-            logger.info(f"RDS: removed container for {db_id}")
+            logger.info("RDS: removed container for %s", db_id)
         except Exception as e:
-            logger.warning(f"RDS: failed to remove container for {db_id}: {e}")
+            logger.warning("RDS: failed to remove container for %s: %s", db_id, e)
 
     skip_snapshot = _p(p, "SkipFinalSnapshot") == "true"
     final_snap_id = _p(p, "FinalDBSnapshotIdentifier")
@@ -2041,8 +2041,8 @@ def reset():
                     c = docker_client.containers.get(cid)
                     c.stop(timeout=2)
                     c.remove(v=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("reset: failed to stop/remove container %s: %s", cid, e)
     _instances.clear()
     _clusters.clear()
     _subnet_groups.clear()

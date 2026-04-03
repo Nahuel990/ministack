@@ -16646,6 +16646,130 @@ def test_cfn_explicit_name_not_overridden(cfn, s3):
     _wait_stack(cfn, "cfn-explicit-name")
 
 
+def test_cfn_s3_bucket_policy(cfn, s3):
+    """AWS::S3::BucketPolicy provisions and deletes bucket policies."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Bucket": {
+                "Type": "AWS::S3::Bucket",
+                "Properties": {"BucketName": "cfn-policy-test"},
+            },
+            "Policy": {
+                "Type": "AWS::S3::BucketPolicy",
+                "Properties": {
+                    "Bucket": "cfn-policy-test",
+                    "PolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [{"Effect": "Allow", "Principal": "*", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::cfn-policy-test/*"}],
+                    },
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-s3-policy", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-s3-policy")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+    policy = s3.get_bucket_policy(Bucket="cfn-policy-test")
+    assert "s3:GetObject" in policy["Policy"]
+    cfn.delete_stack(StackName="cfn-s3-policy")
+    _wait_stack(cfn, "cfn-s3-policy")
+
+
+def test_cfn_lambda_permission(cfn, lam):
+    """AWS::Lambda::Permission provisions invoke permissions."""
+    code = "def handler(e,c): return {}"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("index.py", code)
+    lam.create_function(
+        FunctionName="cfn-perm-fn", Runtime="python3.11",
+        Role="arn:aws:iam::000000000000:role/r", Handler="index.handler",
+        Code={"ZipFile": buf.getvalue()},
+    )
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Perm": {
+                "Type": "AWS::Lambda::Permission",
+                "Properties": {
+                    "FunctionName": "cfn-perm-fn",
+                    "Action": "lambda:InvokeFunction",
+                    "Principal": "s3.amazonaws.com",
+                    "SourceArn": "arn:aws:s3:::my-bucket",
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-lambda-perm", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-lambda-perm")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+    cfn.delete_stack(StackName="cfn-lambda-perm")
+    _wait_stack(cfn, "cfn-lambda-perm")
+    lam.delete_function(FunctionName="cfn-perm-fn")
+
+
+def test_cfn_lambda_version(cfn, lam):
+    """AWS::Lambda::Version creates a published version."""
+    code = "def handler(e,c): return {'v': 1}"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("index.py", code)
+    lam.create_function(
+        FunctionName="cfn-ver-fn", Runtime="python3.11",
+        Role="arn:aws:iam::000000000000:role/r", Handler="index.handler",
+        Code={"ZipFile": buf.getvalue()},
+    )
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Ver": {
+                "Type": "AWS::Lambda::Version",
+                "Properties": {
+                    "FunctionName": "cfn-ver-fn",
+                },
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-lambda-ver", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-lambda-ver")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+    versions = lam.list_versions_by_function(FunctionName="cfn-ver-fn")["Versions"]
+    assert len([v for v in versions if v["Version"] != "$LATEST"]) >= 1
+    cfn.delete_stack(StackName="cfn-lambda-ver")
+    _wait_stack(cfn, "cfn-lambda-ver")
+    lam.delete_function(FunctionName="cfn-ver-fn")
+
+
+def test_cfn_wait_condition(cfn):
+    """AWS::CloudFormation::WaitCondition and WaitConditionHandle are no-ops."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Handle": {"Type": "AWS::CloudFormation::WaitConditionHandle"},
+            "Wait": {
+                "Type": "AWS::CloudFormation::WaitCondition",
+                "Properties": {"Handle": {"Ref": "Handle"}, "Timeout": "10"},
+            },
+        },
+    }
+    cfn.create_stack(StackName="cfn-wait", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-wait")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+    cfn.delete_stack(StackName="cfn-wait")
+    _wait_stack(cfn, "cfn-wait")
+
+
+def test_elasticache_reset_clears_param_groups():
+    """ElastiCache reset clears _param_group_params and resets port counter."""
+    from ministack.services import elasticache as _ec
+    _ec._param_group_params["test-group"] = {"param1": "val1"}
+    _ec._port_counter[0] = 99999
+    _ec.reset()
+    assert not _ec._param_group_params
+    assert _ec._port_counter[0] == _ec.BASE_PORT
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # KMS
 # ═══════════════════════════════════════════════════════════════════════════════

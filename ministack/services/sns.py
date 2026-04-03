@@ -419,7 +419,7 @@ def _publish(params):
 
     if phone_number and not topic_arn:
         msg_id = new_uuid()
-        logger.info(f"SNS SMS stub to {phone_number}: {message[:80]}")
+        logger.info("SNS SMS stub to %s: %s", phone_number, message[:80])
         return _xml(200, "PublishResponse",
                     f"<PublishResult><MessageId>{msg_id}</MessageId></PublishResult>")
 
@@ -443,7 +443,7 @@ def _publish(params):
     })
 
     _fanout(topic_arn, msg_id, message, subject, message_structure, msg_attrs)
-    logger.info(f"SNS publish to {topic_arn}: {message[:100]}")
+    logger.info("SNS publish to %s: %s", topic_arn, message[:100])
 
     return _xml(200, "PublishResponse",
                 f"<PublishResult><MessageId>{msg_id}</MessageId></PublishResult>")
@@ -545,11 +545,11 @@ def _fanout(topic_arn: str, msg_id: str, message: str, subject: str,
         elif protocol == "lambda":
             _deliver_to_lambda(endpoint, envelope, topic_arn, sub["arn"], msg_id, effective_message, message_attributes or {})
         elif protocol == "email" or protocol == "email-json":
-            logger.info(f"SNS fanout → email {endpoint} (stub)")
+            logger.info("SNS fanout → email %s (stub)", endpoint)
         elif protocol == "sms":
-            logger.info(f"SNS fanout → SMS {endpoint} (stub)")
+            logger.info("SNS fanout → SMS %s (stub)", endpoint)
         elif protocol == "application":
-            logger.info(f"SNS fanout → application {endpoint} (stub)")
+            logger.info("SNS fanout → application %s (stub)", endpoint)
 
 
 def _deliver_to_sqs(endpoint: str, envelope: str, raw: bool, raw_message: str):
@@ -557,7 +557,7 @@ def _deliver_to_sqs(endpoint: str, envelope: str, raw: bool, raw_message: str):
     queue_url = _sqs._queue_url(queue_name)
     queue = _sqs._queues.get(queue_url)
     if not queue:
-        logger.warning(f"SNS fanout: SQS queue {queue_name} not found")
+        logger.warning("SNS fanout: SQS queue %s not found", queue_name)
         return
 
     body = raw_message if raw else envelope
@@ -573,7 +573,7 @@ def _deliver_to_sqs(endpoint: str, envelope: str, raw: bool, raw_message: str):
     }
     _sqs._ensure_msg_fields(msg)
     queue["messages"].append(msg)
-    logger.info(f"SNS fanout → SQS {queue_name}")
+    logger.info("SNS fanout → SQS %s", queue_name)
 
 
 def _deliver_to_lambda(endpoint: str, envelope: str, topic_arn: str, sub_arn: str,
@@ -583,7 +583,7 @@ def _deliver_to_lambda(endpoint: str, envelope: str, topic_arn: str, sub_arn: st
     func_name = endpoint.split(":")[-1]
     func = _lambda_svc._functions.get(func_name)
     if not func:
-        logger.warning(f"SNS fanout: Lambda function {func_name} not found")
+        logger.warning("SNS fanout: Lambda function %s not found", func_name)
         return
     event = {
         "Records": [
@@ -597,9 +597,9 @@ def _deliver_to_lambda(endpoint: str, envelope: str, topic_arn: str, sub_arn: st
     }
     try:
         _lambda_svc._execute_function(func, event)
-        logger.info(f"SNS fanout → Lambda {func_name}")
+        logger.info("SNS fanout → Lambda %s", func_name)
     except Exception as exc:
-        logger.error(f"SNS fanout → Lambda {func_name} failed: {exc}")
+        logger.error("SNS fanout → Lambda %s failed: %s", func_name, exc)
 
 
 async def _deliver_to_http(endpoint: str, payload: str):
@@ -615,11 +615,11 @@ async def _deliver_to_http(endpoint: str, payload: str):
                     "x-amz-sns-message-type": "Notification",
                 },
             ) as resp:
-                logger.info(f"SNS HTTP delivery to {endpoint}: {resp.status}")
+                logger.info("SNS HTTP delivery to %s: %s", endpoint, resp.status)
     except ImportError:
         logger.warning("aiohttp not installed — HTTP delivery skipped")
     except Exception as exc:
-        logger.warning(f"SNS HTTP delivery to {endpoint} failed: {exc}")
+        logger.warning("SNS HTTP delivery to %s failed: %s", endpoint, exc)
 
 
 async def _send_subscription_confirmation(topic_arn: str, sub: dict):
@@ -650,11 +650,11 @@ async def _send_subscription_confirmation(topic_arn: str, sub: dict):
                     "x-amz-sns-message-type": "SubscriptionConfirmation",
                 },
             ) as resp:
-                logger.info(f"SNS SubscriptionConfirmation sent to {endpoint}: {resp.status}")
+                logger.info("SNS SubscriptionConfirmation sent to %s: %s", endpoint, resp.status)
     except ImportError:
-        logger.info(f"aiohttp not installed — subscription confirmation for {endpoint} skipped")
+        logger.info("aiohttp not installed — subscription confirmation for %s skipped", endpoint)
     except Exception as exc:
-        logger.warning(f"SNS SubscriptionConfirmation to {endpoint} failed: {exc}")
+        logger.warning("SNS SubscriptionConfirmation to %s failed: %s", endpoint, exc)
 
 
 # ---------------------------------------------------------------------------

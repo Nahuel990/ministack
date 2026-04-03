@@ -401,7 +401,7 @@ def _put_events(data):
         }
         _events_log.append(event_record)
         results.append({"EventId": event_id})
-        logger.debug(f"EventBridge event: {entry.get('Source')} / {entry.get('DetailType')}")
+        logger.debug("EventBridge event: %s / %s", entry.get('Source'), entry.get('DetailType'))
 
         _dispatch_event(event_record)
 
@@ -577,9 +577,9 @@ def _invoke_target(target, event, rule):
         elif ":sns:" in arn:
             _dispatch_to_sns(arn, event_payload)
         else:
-            logger.warning(f"EventBridge: unsupported target type for ARN {arn}")
+            logger.warning("EventBridge: unsupported target type for ARN %s", arn)
     except Exception as e:
-        logger.error(f"EventBridge target dispatch error for {arn}: {e}")
+        logger.error("EventBridge target dispatch error for %s: %s", arn, e)
 
 
 def _apply_input_transformer(transformer, event):
@@ -636,12 +636,12 @@ def _dispatch_to_lambda(arn, payload):
 
     func = lambda_svc._functions.get(func_name)
     if not func:
-        logger.warning(f"EventBridge → Lambda: function {func_name} not found")
+        logger.warning("EventBridge → Lambda: function %s not found", func_name)
         return
     threading.Thread(
         target=lambda_svc._execute_function, args=(func, event), daemon=True
     ).start()
-    logger.info(f"EventBridge → Lambda {func_name}: dispatched")
+    logger.info("EventBridge → Lambda %s: dispatched", func_name)
 
 
 def _dispatch_to_sqs(arn, payload):
@@ -651,7 +651,7 @@ def _dispatch_to_sqs(arn, payload):
     queue_url = _sqs._queue_url(queue_name)
     queue = _sqs._queues.get(queue_url)
     if not queue:
-        logger.warning(f"EventBridge → SQS: queue {queue_name} not found")
+        logger.warning("EventBridge → SQS: queue %s not found", queue_name)
         return
 
     msg_id = new_uuid()
@@ -672,7 +672,7 @@ def _dispatch_to_sqs(arn, payload):
             "SentTimestamp": str(int(now * 1000)),
         },
     })
-    logger.info(f"EventBridge → SQS {queue_name}")
+    logger.info("EventBridge → SQS %s", queue_name)
 
 
 def _dispatch_to_sns(arn, payload):
@@ -680,7 +680,7 @@ def _dispatch_to_sns(arn, payload):
 
     topic = _sns._topics.get(arn)
     if not topic:
-        logger.warning(f"EventBridge → SNS: topic {arn} not found")
+        logger.warning("EventBridge → SNS: topic %s not found", arn)
         return
 
     msg_id = new_uuid()
@@ -691,7 +691,7 @@ def _dispatch_to_sns(arn, payload):
         "timestamp": time.time(),
     })
     _sns._fanout(arn, msg_id, payload, "EventBridge Notification")
-    logger.info(f"EventBridge → SNS {arn}")
+    logger.info("EventBridge → SNS %s", arn)
 
 
 # ---------------------------------------------------------------------------

@@ -751,7 +751,7 @@ def _run_task(data):
                 nets = list(self_container.attrs["NetworkSettings"]["Networks"].keys())
                 if nets:
                     ecs_network = nets[0]
-                    logger.debug(f"ECS: detected Ministack network: {ecs_network}")
+                    logger.debug("ECS: detected Ministack network: %s", ecs_network)
             except Exception:
                 logger.debug("ECS: could not detect Ministack network, using default")
 
@@ -782,9 +782,9 @@ def _run_task(data):
                     task["_docker_ids"].append(container.id)
                     if i < len(task["containers"]):
                         task["containers"][i]["runtimeId"] = container.id[:12]
-                    logger.info(f"ECS: started container {cdef['image']} for task {task_id[:8]}")
+                    logger.info("ECS: started container %s for task %s", cdef['image'], task_id[:8])
                 except Exception as e:
-                    logger.warning(f"ECS: Docker run failed for {cdef.get('image')}: {e}")
+                    logger.warning("ECS: Docker run failed for %s: %s", cdef.get('image'), e)
 
         _tasks[task_arn] = task
         if req_tags:
@@ -816,7 +816,7 @@ def _stop_task(data):
                 c.stop(timeout=5)
                 c.remove(v=True)
             except Exception as e:
-                logger.warning(f"ECS: failed to stop container {docker_id}: {e}")
+                logger.warning("ECS: failed to stop container %s: %s", docker_id, e)
 
     now = _iso()
     task["lastStatus"] = "STOPPED"
@@ -1283,8 +1283,8 @@ def reset():
                     c = docker_client.containers.get(cid)
                     c.stop(timeout=2)
                     c.remove(v=True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("reset: failed to stop/remove container %s: %s", cid, e)
     _clusters.clear()
     _task_defs.clear()
     _task_def_latest.clear()

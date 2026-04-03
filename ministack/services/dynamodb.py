@@ -143,14 +143,14 @@ def _ttl_reaper():
                             try:
                                 if float(ttl_val) <= now:
                                     del sk_map[sk_val]
-                                    logger.debug(f"TTL expired item {pk_val}/{sk_val} from {table_name}")
+                                    logger.debug("TTL expired item %s/%s from %s", pk_val, sk_val, table_name)
                             except (ValueError, TypeError):
                                 pass
                         if not sk_map:
                             del table["items"][pk_val]
                     _update_counts(table)
         except Exception as exc:
-            logger.error(f"TTL reaper error: {exc}")
+            logger.error("TTL reaper error: %s", exc)
 
 
 threading.Thread(target=_ttl_reaper, daemon=True, name="dynamodb-ttl-reaper").start()

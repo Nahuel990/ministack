@@ -720,11 +720,16 @@ def main():
 
     if args.detach:
         log_file = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"ministack-{port}.log")
+        # Keep a reference to the log file handle — Popen inherits the fd so
+        # closing it here would break child process logging.  The handle is
+        # intentionally kept open for the lifetime of this (short-lived) parent
+        # process; the OS reclaims it when the parent exits.
+        log_fh = open(log_file, "w")
         proc = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "ministack.app:app",
              "--host", "0.0.0.0", "--port", str(port),
              "--log-level", LOG_LEVEL.lower()],
-            stdout=open(log_file, "w"),
+            stdout=log_fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
