@@ -5316,7 +5316,11 @@ def test_iam_service_linked_role(iam):
     assert role["Path"].startswith("/aws-service-role/")
 
     del_resp = iam.delete_service_linked_role(RoleName=role["RoleName"])
-    assert "DeletionTaskId" in del_resp
+    task_id = del_resp["DeletionTaskId"]
+    assert task_id
+
+    status = iam.get_service_linked_role_deletion_status(DeletionTaskId=task_id)
+    assert status["Status"] == "SUCCEEDED"
 
     with pytest.raises(ClientError) as exc:
         iam.get_role(RoleName=role["RoleName"])

@@ -17,7 +17,7 @@ IAM actions:
   UpdateAssumeRolePolicy,
   CreateGroup, GetGroup, DeleteGroup, ListGroups,
   AddUserToGroup, RemoveUserFromGroup, ListGroupsForUser,
-    CreateServiceLinkedRole, DeleteServiceLinkedRole,
+    CreateServiceLinkedRole, DeleteServiceLinkedRole, GetServiceLinkedRoleDeletionStatus,
   CreateOpenIDConnectProvider, GetOpenIDConnectProvider, DeleteOpenIDConnectProvider,
   TagRole, UntagRole, ListRoleTags,
   TagUser, UntagUser, ListUserTags,
@@ -56,6 +56,7 @@ _instance_profiles: dict = {}
 _groups: dict = {}
 _user_inline_policies: dict = {}
 _oidc_providers: dict = {}
+_service_linked_role_deletion_tasks: dict = {}
 
 
 # ── Persistence ────────────────────────────────────────────
@@ -69,6 +70,7 @@ def get_state():
         "instance_profiles": copy.deepcopy(_instance_profiles),
         "access_keys": copy.deepcopy(_access_keys),
         "oidc_providers": copy.deepcopy(_oidc_providers),
+        "service_linked_role_deletion_tasks": copy.deepcopy(_service_linked_role_deletion_tasks),
     }
 
 
@@ -81,6 +83,7 @@ def restore_state(data):
         _instance_profiles.update(data.get("instance_profiles", {}))
         _access_keys.update(data.get("access_keys", {}))
         _oidc_providers.update(data.get("oidc_providers", {}))
+        _service_linked_role_deletion_tasks.update(data.get("service_linked_role_deletion_tasks", {}))
 
 
 _restored = load_state("iam")
@@ -1131,9 +1134,33 @@ def _delete_service_linked_role(p):
         return _error(400, "InvalidInput",
                       f"Role {role_name} is not a service-linked role.", ns="iam")
 
+    task_id = new_uuid()
+    _service_linked_role_deletion_tasks[task_id] = {
+        "Status": "SUCCEEDED",
+        "RoleName": role_name,
+    }
     _roles.pop(role_name, None)
     return _xml(200, "DeleteServiceLinkedRoleResponse",
-                f"<DeleteServiceLinkedRoleResult><DeletionTaskId>{new_uuid()}</DeletionTaskId></DeleteServiceLinkedRoleResult>",
+                f"<DeleteServiceLinkedRoleResult><DeletionTaskId>{task_id}</DeletionTaskId></DeleteServiceLinkedRoleResult>",
+                ns="iam")
+
+
+def _get_service_linked_role_deletion_status(p):
+    task_id = _p(p, "DeletionTaskId")
+    task = _service_linked_role_deletion_tasks.get(task_id)
+    if not task:
+        return _error(404, "NoSuchEntity",
+                      f"Deletion task {task_id} not found.", ns="iam")
+
+    reason = ""
+    if task["Status"] == "FAILED":
+        reason = f"<Reason>{task.get('Reason', '')}</Reason>"
+
+    return _xml(200, "GetServiceLinkedRoleDeletionStatusResponse",
+                f"<GetServiceLinkedRoleDeletionStatusResult>"
+                f"<Status>{task['Status']}</Status>"
+                f"{reason}"
+                f"</GetServiceLinkedRoleDeletionStatusResult>",
                 ns="iam")
 
 
@@ -1574,6 +1601,7 @@ _IAM_HANDLERS = {
     "ListUserPolicies": _list_user_policies,
     "CreateServiceLinkedRole": _create_service_linked_role,
     "DeleteServiceLinkedRole": _delete_service_linked_role,
+    "GetServiceLinkedRoleDeletionStatus": _get_service_linked_role_deletion_status,
     "CreateOpenIDConnectProvider": _create_oidc_provider,
     "GetOpenIDConnectProvider": _get_oidc_provider,
     "DeleteOpenIDConnectProvider": _delete_oidc_provider,
@@ -1592,3 +1620,4 @@ def reset():
     _groups.clear()
     _user_inline_policies.clear()
     _oidc_providers.clear()
+    _service_linked_role_deletion_tasks.clear()
