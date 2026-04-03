@@ -126,6 +126,11 @@ SERVICE_PATTERNS = {
         "path_prefixes": ["/2015-02-01/"],
         "credential_scope": "elasticfilesystem",
     },
+    "ecr": {
+        "target_prefixes": ["AmazonEC2ContainerRegistry_V20150921"],
+        "host_patterns": [r"api\.ecr\.", r"ecr\."],
+        "credential_scope": "ecr",
+    },
     "ec2": {
         "host_patterns": [r"ec2\."],
         "path_patterns": [r"Action=.*Instance", r"Action=.*Security", r"Action=.*KeyPair",
@@ -197,6 +202,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "wafv2": "wafv2",
                 "cognito-idp": "cognito-idp",
                 "cognito-identity": "cognito-identity",
+                "ecr": "ecr",
                 "elasticmapreduce": "elasticmapreduce",
                 "elasticloadbalancing": "elasticloadbalancing",
                 "elasticfilesystem": "elasticfilesystem",

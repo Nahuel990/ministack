@@ -107,6 +107,10 @@ def rds():
     return make_client("rds")
 
 @pytest.fixture(scope="session")
+def ecr():
+    return make_client("ecr")
+
+@pytest.fixture(scope="session")
 def ec():
     return make_client("elasticache")
 

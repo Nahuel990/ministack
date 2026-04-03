@@ -44,6 +44,7 @@ from ministack.services import (
     cognito,
     dynamodb,
     ec2,
+    ecr,
     ecs,
     efs,
     elasticache,
@@ -95,6 +96,7 @@ SERVICE_HANDLERS = {
     "acm": acm.handle_request,
     "wafv2": waf.handle_request,
     "states": stepfunctions.handle_request,
+    "ecr": ecr.handle_request,
     "ecs": ecs.handle_request,
     "rds": rds.handle_request,
     "elasticache": elasticache.handle_request,
@@ -126,6 +128,7 @@ SERVICE_NAME_ALIASES = {
     "cognito-identity": "cognito-identity",
     "elbv2": "elasticloadbalancing",
     "elb": "elasticloadbalancing",
+    "ecr": "ecr",
 }
 
 
@@ -162,7 +165,7 @@ BANNER = r"""
  Services: S3, SQS, SNS, DynamoDB, Lambda, IAM, STS, SecretsManager, CloudWatch Logs,
           SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
-          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation, KMS
+          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation, KMS, ECR
 """
 
 
