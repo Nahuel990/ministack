@@ -2244,7 +2244,7 @@ def _poll_loop():
             _poll_dynamodb_streams()
         except Exception as e:
             logger.error("ESM DynamoDB streams poller error: %s", e)
-        time.sleep(1)
+        time.sleep(1 if _esms else 5)
 
 
 def _poll_sqs():

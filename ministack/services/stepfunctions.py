@@ -191,6 +191,10 @@ def _delete_state_machine(data):
             f"State machine {arn} not found", 400)
     del _state_machines[arn]
     _tags.pop(arn, None)
+    # Clean up executions for this state machine
+    stale = [k for k, v in _executions.items() if v.get("stateMachineArn") == arn]
+    for k in stale:
+        _executions.pop(k, None)
     return json_response({})
 
 

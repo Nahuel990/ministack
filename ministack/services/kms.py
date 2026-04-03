@@ -32,7 +32,7 @@ except ImportError:
     )
 
 ACCOUNT_ID = "000000000000"
-REGION = "us-east-1"
+REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 _keys: dict = {}
 # key_id -> {

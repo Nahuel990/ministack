@@ -7,10 +7,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.1.24] — 2026-04-03
+
+### Fixed
+- **KMS `REGION` hardcoded** — now reads `MINISTACK_REGION` env var like all other services
+- **S3 hardcoded `us-east-1`** — bucket region header, location constraint, and event notifications now use `MINISTACK_REGION`
+- **Router `extract_region` fallback** — now uses `MINISTACK_REGION` instead of hardcoded `us-east-1`
+- **EC2/RDS XML escaping** — user-controlled values (tags, descriptions) now escaped with `xml.sax.saxutils.escape()`
+- **SQS thread safety** — added `_queues_lock` for ESM poller access
+- **EC2 terminated instances cleaned up** — removed from memory after 60s
+- **Step Functions execution cleanup** — cleaned up when parent state machine is deleted
+- **Lambda ESM poller idle optimization** — polls every 5s when no ESMs configured
+- **DynamoDB `REGION` variable ordering** — moved before `_emit_stream_event`
+- **README: 55+ undocumented operations** — updated all service tables
+- **README: `SFN_MOCK_CONFIG`** — added to Configuration table
+- **README: KMS in Terraform endpoints**
+
+### Tests
+- 851 tests total, all passing
+
+---
+
+## [1.1.23] — 2026-04-03
 
 ### Added
-- **KMS service** — CreateKey (RSA_2048, RSA_4096, SYMMETRIC_DEFAULT), ListKeys, DescribeKey, GetPublicKey, Sign, Verify, Encrypt, Decrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext. In-memory key storage with RSA signing via the `cryptography` package (optional dependency, guarded import). Supports JWT signing flows and S3 SSE-KMS encryption patterns.
+- **KMS service** — CreateKey (RSA_2048, RSA_4096, SYMMETRIC_DEFAULT), ListKeys, DescribeKey, GetPublicKey, Sign, Verify, Encrypt, Decrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext. In-memory key storage with RSA signing via the `cryptography` package (optional dependency, guarded import). Supports JWT signing flows and S3 SSE-KMS encryption patterns. Contributed by @Jolley71717
 
 ---
 

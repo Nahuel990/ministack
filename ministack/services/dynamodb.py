@@ -28,6 +28,9 @@ from ministack.core.responses import (
 
 logger = logging.getLogger("dynamodb")
 
+ACCOUNT_ID = "000000000000"
+REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
+
 _tables: dict = {}
 _tags: dict = {}
 _ttl_settings: dict = {}
@@ -131,9 +134,6 @@ def _ttl_reaper():
 
 
 threading.Thread(target=_ttl_reaper, daemon=True, name="dynamodb-ttl-reaper").start()
-
-REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
-ACCOUNT_ID = "000000000000"
 
 
 async def handle_request(method: str, path: str, headers: dict, body: bytes, query_params: dict) -> tuple:

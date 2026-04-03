@@ -234,6 +234,13 @@ def _describe_instances(p):
     filter_ids = _parse_member_list(p, "InstanceId")
     filters = _parse_filters(p)
 
+    # Clean up instances terminated more than 60s ago (AWS removes after ~1 hour)
+    stale = [k for k, v in _instances.items()
+             if v["State"]["Name"] == "terminated"
+             and time.time() - v.get("_terminated_at", 0) > 60]
+    for k in stale:
+        _instances.pop(k, None)
+
     results = []
     for inst in _instances.values():
         if filter_ids and inst["InstanceId"] not in filter_ids:
@@ -262,6 +269,7 @@ def _terminate_instances(p):
         if inst:
             prev = inst["State"].copy()
             inst["State"] = {"Code": 48, "Name": "terminated"}
+            inst["_terminated_at"] = time.time()
             items += f"""<item>
                 <instanceId>{iid}</instanceId>
                 <previousState><code>{prev['Code']}</code><name>{prev['Name']}</name></previousState>

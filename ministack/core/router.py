@@ -8,6 +8,7 @@ Routes incoming requests to the correct service handler based on:
 """
 
 import logging
+import os
 import re
 
 logger = logging.getLogger("ministack")
@@ -429,7 +430,7 @@ def extract_region(headers: dict) -> str:
     match = re.search(r"Credential=[^/]+/[^/]+/([^/]+)/", auth)
     if match:
         return match.group(1)
-    return "us-east-1"
+    return os.environ.get("MINISTACK_REGION", "us-east-1")
 
 
 def extract_account_id(headers: dict) -> str:
