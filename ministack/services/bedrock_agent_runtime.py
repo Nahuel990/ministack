@@ -302,7 +302,7 @@ async def _retrieve_and_generate(kb_id: str, body: bytes):
             async with session.post(
                 f"{LITELLM_BASE_URL}/v1/chat/completions",
                 json=litellm_payload,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=300),
             ) as resp:
                 if resp.status != 200:
                     error_body = await resp.text()

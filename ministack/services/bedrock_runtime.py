@@ -137,7 +137,7 @@ async def _converse(model_id: str, body: bytes):
             async with session.post(
                 f"{LITELLM_BASE_URL}/v1/chat/completions",
                 json=litellm_payload,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=300),
             ) as resp:
                 if resp.status != 200:
                     error_body = await resp.text()
@@ -250,7 +250,7 @@ async def _invoke_model(model_id: str, body: bytes, headers: dict):
             async with session.post(
                 f"{LITELLM_BASE_URL}/v1/chat/completions",
                 json=litellm_payload,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=300),
             ) as resp:
                 if resp.status != 200:
                     error_body = await resp.text()
