@@ -225,6 +225,8 @@ subnet = ec2.create_subnet(
 | **API Gateway v1** | CreateRestApi, GetRestApi, GetRestApis, UpdateRestApi, DeleteRestApi, CreateResource, GetResource, GetResources, UpdateResource, DeleteResource, PutMethod, GetMethod, DeleteMethod, UpdateMethod, PutMethodResponse, GetMethodResponse, DeleteMethodResponse, PutIntegration, GetIntegration, DeleteIntegration, UpdateIntegration, PutIntegrationResponse, GetIntegrationResponse, DeleteIntegrationResponse, CreateDeployment, GetDeployment, GetDeployments, UpdateDeployment, DeleteDeployment, CreateStage, GetStage, GetStages, UpdateStage, DeleteStage, CreateAuthorizer, GetAuthorizer, GetAuthorizers, UpdateAuthorizer, DeleteAuthorizer, CreateModel, GetModel, GetModels, DeleteModel, CreateApiKey, GetApiKey, GetApiKeys, UpdateApiKey, DeleteApiKey, CreateUsagePlan, GetUsagePlan, GetUsagePlans, UpdateUsagePlan, DeleteUsagePlan, CreateUsagePlanKey, GetUsagePlanKeys, DeleteUsagePlanKey, CreateDomainName, GetDomainName, GetDomainNames, DeleteDomainName, CreateBasePathMapping, GetBasePathMapping, GetBasePathMappings, DeleteBasePathMapping, TagResource, UntagResource, GetTags | REST API (v1) protocol; Lambda proxy format 1.0 (AWS_PROXY), HTTP proxy (HTTP_PROXY), MOCK integration; data plane via `{apiId}.execute-api.localhost`; resource tree with `{param}` and `{proxy+}` path matching; JSON Patch for all PATCH operations; state persistence |
 | **ELBv2 / ALB** | CreateLoadBalancer, DescribeLoadBalancers, DeleteLoadBalancer, DescribeLoadBalancerAttributes, ModifyLoadBalancerAttributes, CreateTargetGroup, DescribeTargetGroups, ModifyTargetGroup, DeleteTargetGroup, DescribeTargetGroupAttributes, ModifyTargetGroupAttributes, CreateListener, DescribeListeners, ModifyListener, DeleteListener, CreateRule, DescribeRules, ModifyRule, DeleteRule, SetRulePriorities, RegisterTargets, DeregisterTargets, DescribeTargetHealth, AddTags, RemoveTags, DescribeTags | Control plane + data plane; ALB→Lambda live traffic routing; `path-pattern`, `host-header`, `http-method`, `query-string`, `http-header` rule conditions; `forward`, `redirect`, `fixed-response` actions; data plane via `{lb-name}.alb.localhost` Host header or `/_alb/{lb-name}/` path prefix |
 
+| **KMS** | CreateKey, ListKeys, DescribeKey, GetPublicKey, Sign, Verify, Encrypt, Decrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext | RSA (2048/4096) and symmetric keys; PKCS1v15 and PSS signing; envelope encryption; requires `cryptography` package (optional) |
+
 ### CloudFormation
 
 | Feature | Details |
@@ -513,7 +515,7 @@ Layers that ship npm packages work too — MiniStack resolves the `nodejs/node_m
                     │  │  Athena   Firehose   Route53       │  │
                     │  │  Cognito  EC2   EMR   EBS   EFS    │  │
                     │  │  ALB/ELBv2   ACM   WAF v2          │  │
-                    │  │  CloudFormation                    │  │
+                    │  │  CloudFormation   KMS              │  │
                     │  └────────────────────────────────────┘  │
                     │                                          │
                     │  In-Memory Storage + Optional Docker     │
@@ -667,6 +669,7 @@ See [`examples/java-testcontainers`](examples/java-testcontainers) and [`example
 | **SES v2** | ✅ | ✅ | ✅ |
 | **WAF v2** | ✅ | Paid | ✅ |
 | **CloudFormation** | **partial** | partial | ✅ Free |
+| **KMS** | ✅ | Paid | ✅ Free |
 | Cost | **Free** | Was free, now paid | $35+/mo |
 | Docker image size | ~150MB | ~1GB | ~1GB |
 | Memory at idle | ~30MB | ~500MB | ~500MB |

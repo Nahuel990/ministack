@@ -192,6 +192,10 @@ def cfn():
     return make_client("cloudformation")
 
 @pytest.fixture(scope="session")
+def kms_client():
+    return make_client("kms")
+
+@pytest.fixture(scope="session")
 def sfn_sync():
     """SFN client for StartSyncExecution — forces same endpoint (boto3 normally prefixes sync-)."""
     from botocore.config import Config as BotoConfig
