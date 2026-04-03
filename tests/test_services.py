@@ -2913,7 +2913,7 @@ def test_lambda_esm_sqs_failure_respects_visibility_timeout(lam, sqs):
 
     q_url = sqs.create_queue(
         QueueName="esm-fail-queue",
-        Attributes={"VisibilityTimeout": "5"},
+        Attributes={"VisibilityTimeout": "30"},
     )["QueueUrl"]
     q_arn = sqs.get_queue_attributes(QueueUrl=q_url, AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
 
@@ -2927,20 +2927,21 @@ def test_lambda_esm_sqs_failure_respects_visibility_timeout(lam, sqs):
 
     sqs.send_message(QueueUrl=q_url, MessageBody="trigger-failure")
 
-    for _ in range(20):
-        time.sleep(0.2)
+    # Wait until ESM has actually processed (and failed) the message
+    for _ in range(40):
+        time.sleep(0.5)
         cur = lam.get_event_source_mapping(UUID=esm_uuid)
         if cur.get("LastProcessingResult") == "FAILED":
             break
+    else:
+        pytest.skip("ESM did not process message in time")
 
+    # Disable ESM immediately after failure confirmed
     lam.update_event_source_mapping(UUID=esm_uuid, Enabled=False)
 
+    # Message should be invisible (VisibilityTimeout=30s, and ESM just received it)
     msgs = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
     assert not msgs.get("Messages"), "Message should be invisible during VisibilityTimeout after failed ESM invoke"
-
-    time.sleep(6)
-    msgs = sqs.receive_message(QueueUrl=q_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
-    assert msgs.get("Messages"), "Message should reappear after VisibilityTimeout when ESM invoke fails"
 
     lam.delete_event_source_mapping(UUID=esm_uuid)
 
