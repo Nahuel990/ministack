@@ -587,7 +587,7 @@ def _head_bucket(name: str):
         200,
         {
             "Content-Type": "application/xml",
-            "x-amz-bucket-region": _buckets[name].get("region") or "us-east-1",
+            "x-amz-bucket-region": _buckets[name].get("region") or os.environ.get("MINISTACK_REGION", "us-east-1"),
         },
         b"",
     )
@@ -599,7 +599,7 @@ def _get_bucket_location(name: str):
     root = Element("LocationConstraint", xmlns=S3_NS)
     region = _buckets[name].get("region")
     # AWS returns empty LocationConstraint for us-east-1.
-    if region and region != "us-east-1":
+    if region and region != os.environ.get("MINISTACK_REGION", "us-east-1"):
         root.text = region
     return 200, {"Content-Type": "application/xml"}, _xml_body(root)
 
@@ -1122,7 +1122,7 @@ def _fire_s3_event(
                 {
                     "eventVersion": "2.1",
                     "eventSource": "aws:s3",
-                    "awsRegion": "us-east-1",
+                    "awsRegion": os.environ.get("MINISTACK_REGION", "us-east-1"),
                     "eventTime": event_time,
                     "eventName": short_event,
                     "userIdentity": {"principalId": "EXAMPLE"},

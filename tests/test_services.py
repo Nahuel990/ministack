@@ -16748,3 +16748,48 @@ def test_kms_decrypt_wrong_context_fails(kms_client):
             EncryptionContext={"env": "dev"},
         )
     assert "InvalidCiphertextException" in str(exc_info.value)
+
+
+def test_kms_create_and_list_alias(kms_client):
+    key = kms_client.create_key(KeySpec="SYMMETRIC_DEFAULT")
+    key_id = key["KeyMetadata"]["KeyId"]
+    kms_client.create_alias(AliasName="alias/test-alias", TargetKeyId=key_id)
+    resp = kms_client.list_aliases()
+    alias_names = [a["AliasName"] for a in resp["Aliases"]]
+    assert "alias/test-alias" in alias_names
+
+
+def test_kms_use_alias_for_encrypt(kms_client):
+    """Encrypt/Decrypt using alias instead of key ID."""
+    key = kms_client.create_key(KeySpec="SYMMETRIC_DEFAULT", KeyUsage="ENCRYPT_DECRYPT")
+    key_id = key["KeyMetadata"]["KeyId"]
+    kms_client.create_alias(AliasName="alias/enc-alias", TargetKeyId=key_id)
+    enc = kms_client.encrypt(KeyId="alias/enc-alias", Plaintext=b"via alias")
+    dec = kms_client.decrypt(CiphertextBlob=enc["CiphertextBlob"])
+    assert dec["Plaintext"] == b"via alias"
+
+
+def test_kms_describe_key_by_alias(kms_client):
+    key = kms_client.create_key(KeySpec="SYMMETRIC_DEFAULT")
+    key_id = key["KeyMetadata"]["KeyId"]
+    kms_client.create_alias(AliasName="alias/desc-alias", TargetKeyId=key_id)
+    resp = kms_client.describe_key(KeyId="alias/desc-alias")
+    assert resp["KeyMetadata"]["KeyId"] == key_id
+
+
+def test_kms_update_alias(kms_client):
+    key1 = kms_client.create_key(KeySpec="SYMMETRIC_DEFAULT")
+    key2 = kms_client.create_key(KeySpec="SYMMETRIC_DEFAULT")
+    kms_client.create_alias(AliasName="alias/upd-alias", TargetKeyId=key1["KeyMetadata"]["KeyId"])
+    kms_client.update_alias(AliasName="alias/upd-alias", TargetKeyId=key2["KeyMetadata"]["KeyId"])
+    resp = kms_client.describe_key(KeyId="alias/upd-alias")
+    assert resp["KeyMetadata"]["KeyId"] == key2["KeyMetadata"]["KeyId"]
+
+
+def test_kms_delete_alias(kms_client):
+    key = kms_client.create_key(KeySpec="SYMMETRIC_DEFAULT")
+    kms_client.create_alias(AliasName="alias/del-alias", TargetKeyId=key["KeyMetadata"]["KeyId"])
+    kms_client.delete_alias(AliasName="alias/del-alias")
+    with pytest.raises(ClientError) as exc:
+        kms_client.describe_key(KeyId="alias/del-alias")
+    assert "NotFoundException" in str(exc.value)

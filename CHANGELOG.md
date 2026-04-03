@@ -10,6 +10,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [1.1.24] — 2026-04-03
 
 ### Fixed
+- **KMS aliases** — CreateAlias, DeleteAlias, ListAliases, UpdateAlias; `alias/my-key` resolves in Encrypt, Decrypt, Sign, Verify, DescribeKey and all other KMS operations
 - **KMS `REGION` hardcoded** — now reads `MINISTACK_REGION` env var like all other services
 - **S3 hardcoded `us-east-1`** — bucket region header, location constraint, and event notifications now use `MINISTACK_REGION`
 - **Router `extract_region` fallback** — now uses `MINISTACK_REGION` instead of hardcoded `us-east-1`
@@ -24,7 +25,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **README: KMS in Terraform endpoints**
 
 ### Tests
-- 851 tests total, all passing
+- 876 tests total, all passing
 
 ---
 

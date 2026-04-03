@@ -26,6 +26,7 @@ import logging
 import os
 import time
 from urllib.parse import parse_qs
+from xml.sax.saxutils import escape as _esc
 
 from ministack.core.responses import new_uuid
 
@@ -854,7 +855,7 @@ def _create_param_group(p):
         f"""<CreateDBParameterGroupResult><DBParameterGroup>
             <DBParameterGroupName>{name}</DBParameterGroupName>
             <DBParameterGroupFamily>{family}</DBParameterGroupFamily>
-            <Description>{desc}</Description>
+            <Description>{_esc(desc)}</Description>
             <DBParameterGroupArn>{arn}</DBParameterGroupArn>
         </DBParameterGroup></CreateDBParameterGroupResult>""")
 
@@ -881,7 +882,7 @@ def _describe_param_groups(p):
     members = "".join(f"""<DBParameterGroup>
         <DBParameterGroupName>{g['DBParameterGroupName']}</DBParameterGroupName>
         <DBParameterGroupFamily>{g['DBParameterGroupFamily']}</DBParameterGroupFamily>
-        <Description>{g['Description']}</Description>
+        <Description>{_esc(g['Description'])}</Description>
         <DBParameterGroupArn>{g.get('DBParameterGroupArn','')}</DBParameterGroupArn>
     </DBParameterGroup>""" for g in groups)
     return _xml(200, "DescribeDBParameterGroupsResponse",
@@ -906,7 +907,7 @@ def _describe_db_parameters(p):
         params_xml += f"""<Parameter>
             <ParameterName>{pname}</ParameterName>
             <ParameterValue>{value}</ParameterValue>
-            <Description>{param.get('description', '')}</Description>
+            <Description>{_esc(param.get('description', ''))}</Description>
             <Source>{source}</Source>
             <ApplyType>{param.get('apply_type', 'dynamic')}</ApplyType>
             <DataType>{param.get('data_type', 'string')}</DataType>
@@ -968,7 +969,7 @@ def _create_db_cluster_param_group(p):
         f"""<CreateDBClusterParameterGroupResult><DBClusterParameterGroup>
             <DBClusterParameterGroupName>{name}</DBClusterParameterGroupName>
             <DBParameterGroupFamily>{family}</DBParameterGroupFamily>
-            <Description>{desc}</Description>
+            <Description>{_esc(desc)}</Description>
             <DBClusterParameterGroupArn>{arn}</DBClusterParameterGroupArn>
         </DBClusterParameterGroup></CreateDBClusterParameterGroupResult>""")
 
@@ -987,7 +988,7 @@ def _describe_db_cluster_param_groups(p):
     members = "".join(f"""<DBClusterParameterGroup>
         <DBClusterParameterGroupName>{g['DBClusterParameterGroupName']}</DBClusterParameterGroupName>
         <DBParameterGroupFamily>{g['DBParameterGroupFamily']}</DBParameterGroupFamily>
-        <Description>{g['Description']}</Description>
+        <Description>{_esc(g['Description'])}</Description>
         <DBClusterParameterGroupArn>{g.get('DBClusterParameterGroupArn','')}</DBClusterParameterGroupArn>
     </DBClusterParameterGroup>""" for g in groups)
     return _xml(200, "DescribeDBClusterParameterGroupsResponse",
@@ -1291,7 +1292,7 @@ def _list_tags(p):
             "<ListTagsForResourceResult><TagList/></ListTagsForResourceResult>")
 
     tag_list = _tags.get(arn, [])
-    members = "".join(f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>" for t in tag_list)
+    members = "".join(f"<Tag><Key>{_esc(t['Key'])}</Key><Value>{_esc(t['Value'])}</Value></Tag>" for t in tag_list)
     return _xml(200, "ListTagsForResourceResponse",
         f"<ListTagsForResourceResult><TagList>{members}</TagList></ListTagsForResourceResult>")
 
@@ -1450,7 +1451,7 @@ def _instance_xml(i):
 
     tag_xml = ""
     for t in i.get("TagList", []):
-        tag_xml += f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>"
+        tag_xml += f"<Tag><Key>{_esc(t['Key'])}</Key><Value>{_esc(t['Value'])}</Value></Tag>"
 
     read_replica_xml = ""
     for rr in i.get("ReadReplicaDBInstanceIdentifiers", []):
@@ -1578,7 +1579,7 @@ def _cluster_xml(c):
 
     tag_xml = ""
     for t in c.get("TagList", []):
-        tag_xml += f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>"
+        tag_xml += f"<Tag><Key>{_esc(t['Key'])}</Key><Value>{_esc(t['Value'])}</Value></Tag>"
 
     return f"""<DBClusterIdentifier>{c['DBClusterIdentifier']}</DBClusterIdentifier>
         <DBClusterArn>{c['DBClusterArn']}</DBClusterArn>
@@ -1621,7 +1622,7 @@ def _cluster_xml(c):
 def _snapshot_xml(s):
     tag_xml = ""
     for t in s.get("TagList", []):
-        tag_xml += f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>"
+        tag_xml += f"<Tag><Key>{_esc(t['Key'])}</Key><Value>{_esc(t['Value'])}</Value></Tag>"
     return f"""<DBSnapshotIdentifier>{s['DBSnapshotIdentifier']}</DBSnapshotIdentifier>
         <DBInstanceIdentifier>{s['DBInstanceIdentifier']}</DBInstanceIdentifier>
         <DBSnapshotArn>{s.get('DBSnapshotArn','')}</DBSnapshotArn>
@@ -1674,7 +1675,7 @@ def _subnet_group_xml(sg):
 def _cluster_snapshot_xml(s):
     tag_xml = ""
     for t in s.get("TagList", []):
-        tag_xml += f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>"
+        tag_xml += f"<Tag><Key>{_esc(t['Key'])}</Key><Value>{_esc(t['Value'])}</Value></Tag>"
     az_xml = ""
     for az in s.get("AvailabilityZones", []):
         az_xml += f"<AvailabilityZone>{az}</AvailabilityZone>"

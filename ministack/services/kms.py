@@ -42,6 +42,7 @@ _keys: dict = {}
 #     _public_key_der (bytes, RSA only),
 #     _symmetric_key (bytes, SYMMETRIC_DEFAULT only),
 # }
+_aliases: dict = {}  # alias_name -> key_id (e.g. "alias/my-key" -> "uuid")
 
 
 def _arn(key_id):
@@ -69,11 +70,19 @@ def _key_metadata(rec):
 def _resolve_key(key_id_or_arn):
     if not key_id_or_arn:
         return None
+    # Direct key ID lookup
     if key_id_or_arn in _keys:
         return _keys[key_id_or_arn]
+    # ARN lookup
     for rec in _keys.values():
         if rec["Arn"] == key_id_or_arn:
             return rec
+    # Alias lookup: "alias/my-key" or "arn:aws:kms:...:alias/my-key"
+    alias_name = key_id_or_arn
+    if ":alias/" in alias_name:
+        alias_name = "alias/" + alias_name.split(":alias/")[-1]
+    if alias_name in _aliases:
+        return _keys.get(_aliases[alias_name])
     return None
 
 
@@ -540,6 +549,62 @@ def _expand_key(key_bytes, length):
     return result[:length]
 
 
+# ---- Alias operations ----
+
+
+def _create_alias(data):
+    alias_name = data.get("AliasName", "")
+    target_key_id = data.get("TargetKeyId", "")
+    if not alias_name or not alias_name.startswith("alias/"):
+        return error_response_json("ValidationException", "AliasName must start with alias/", 400)
+    if not target_key_id:
+        return error_response_json("ValidationException", "TargetKeyId is required", 400)
+    rec = _resolve_key(target_key_id)
+    if not rec:
+        return error_response_json("NotFoundException", f"Key {target_key_id} not found", 400)
+    if alias_name in _aliases:
+        return error_response_json("AlreadyExistsException", f"Alias {alias_name} already exists", 400)
+    _aliases[alias_name] = rec["KeyId"]
+    logger.info("Created alias %s -> %s", alias_name, rec["KeyId"])
+    return json_response({})
+
+
+def _delete_alias(data):
+    alias_name = data.get("AliasName", "")
+    if alias_name not in _aliases:
+        return error_response_json("NotFoundException", f"Alias {alias_name} not found", 400)
+    del _aliases[alias_name]
+    return json_response({})
+
+
+def _list_aliases(data):
+    key_id = data.get("KeyId")
+    items = []
+    for alias_name, target_id in _aliases.items():
+        if key_id and target_id != key_id:
+            rec = _resolve_key(key_id)
+            if not rec or rec["KeyId"] != target_id:
+                continue
+        items.append({
+            "AliasName": alias_name,
+            "AliasArn": f"arn:aws:kms:{REGION}:{ACCOUNT_ID}:{alias_name}",
+            "TargetKeyId": target_id,
+        })
+    return json_response({"Aliases": items, "Truncated": False})
+
+
+def _update_alias(data):
+    alias_name = data.get("AliasName", "")
+    target_key_id = data.get("TargetKeyId", "")
+    if alias_name not in _aliases:
+        return error_response_json("NotFoundException", f"Alias {alias_name} not found", 400)
+    rec = _resolve_key(target_key_id)
+    if not rec:
+        return error_response_json("NotFoundException", f"Key {target_key_id} not found", 400)
+    _aliases[alias_name] = rec["KeyId"]
+    return json_response({})
+
+
 # ---- Request handler ----
 
 async def handle_request(method, path, headers, body, query_params):
@@ -562,6 +627,10 @@ async def handle_request(method, path, headers, body, query_params):
         "Decrypt": _decrypt,
         "GenerateDataKey": _generate_data_key,
         "GenerateDataKeyWithoutPlaintext": _generate_data_key_without_plaintext,
+        "CreateAlias": _create_alias,
+        "DeleteAlias": _delete_alias,
+        "ListAliases": _list_aliases,
+        "UpdateAlias": _update_alias,
     }
 
     handler = handlers.get(action)
@@ -575,3 +644,4 @@ async def handle_request(method, path, headers, body, query_params):
 
 def reset():
     _keys.clear()
+    _aliases.clear()

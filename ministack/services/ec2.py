@@ -48,6 +48,7 @@ import random
 import string
 import time
 from urllib.parse import parse_qs
+from xml.sax.saxutils import escape as _esc
 
 from ministack.core.responses import new_uuid
 
@@ -1042,8 +1043,8 @@ def _describe_tags(p):
             items += f"""<item>
                 <resourceId>{rid}</resourceId>
                 <resourceType>{resource_type}</resourceType>
-                <key>{tag['Key']}</key>
-                <value>{tag['Value']}</value>
+                <key>{_esc(tag['Key'])}</key>
+                <value>{_esc(tag['Value'])}</value>
             </item>"""
     return _xml(200, "DescribeTagsResponse", f"<tagSet>{items}</tagSet>")
 
@@ -1338,7 +1339,7 @@ def _snapshot_inner_xml(snap):
         <progress>{snap['Progress']}</progress>
         <ownerId>{snap['OwnerId']}</ownerId>
         <volumeSize>{snap['VolumeSize']}</volumeSize>
-        <description>{snap['Description']}</description>
+        <description>{_esc(snap['Description'])}</description>
         <encrypted>{'true' if snap['Encrypted'] else 'false'}</encrypted>
         <storageTier>{snap['StorageTier']}</storageTier>
         <tagSet/>"""
@@ -1354,7 +1355,7 @@ def _instance_xml(inst):
         for sg in inst.get("SecurityGroups", [])
     )
     tags = "".join(
-        f"<item><key>{t['Key']}</key><value>{t['Value']}</value></item>"
+        f"<item><key>{_esc(t['Key'])}</key><value>{_esc(t['Value'])}</value></item>"
         for t in _tags.get(inst["InstanceId"], [])
     )
     return f"""<item>
