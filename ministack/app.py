@@ -212,7 +212,8 @@ async def app(scope, receive, send):
     # Decode the AWS chunked format: each chunk is "<hex>;chunk-signature=...\r\n<data>\r\n"
     # terminated by "0;chunk-signature=...\r\n".
     sha256_header = headers.get("x-amz-content-sha256", "")
-    if sha256_header.startswith("STREAMING-"):
+    content_encoding = headers.get("content-encoding", "")
+    if sha256_header.startswith("STREAMING-") or "aws-chunked" in content_encoding or headers.get("x-amz-decoded-content-length"):
         decoded = b""
         remaining = body
         while remaining:
@@ -230,7 +231,14 @@ async def app(scope, receive, send):
             data_start = crlf + 2
             decoded += remaining[data_start:data_start + chunk_size]
             remaining = remaining[data_start + chunk_size + 2:]  # skip trailing \r\n
-        body = decoded
+        if decoded or not body:
+            body = decoded
+        if "aws-chunked" in content_encoding:
+            ce = [p.strip() for p in content_encoding.split(",") if p.strip() != "aws-chunked"]
+            if ce:
+                headers["content-encoding"] = ", ".join(ce)
+            else:
+                headers.pop("content-encoding", None)
 
     request_id = str(uuid.uuid4())
 
