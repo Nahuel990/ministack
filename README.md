@@ -21,10 +21,10 @@
 
 LocalStack recently moved its core services behind a paid plan. If you relied on LocalStack Community for local development and CI/CD pipelines, MiniStack is your free alternative.
 
-- **38 AWS services** emulated on a single port (4566)
+- **39 AWS services** emulated on a single port (4566)
 - **Drop-in compatible** — works with `boto3`, AWS CLI, Terraform, CDK, Pulumi, any SDK
-- **Real infrastructure** — RDS spins up actual Postgres/MySQL containers, ElastiCache spins up real Redis, Athena runs real SQL via DuckDB, ECS runs real Docker containers
-- **Tiny footprint** — ~150MB image, ~30MB RAM at idle vs LocalStack's ~1GB image and ~500MB RAM
+- **Real infrastructure** — RDS spins up actual Postgres/MySQL containers, ElastiCache spins up real Redis, Athena runs real SQL via DuckDB, ECS runs real Docker containers, Bedrock runs local LLMs via Ollama
+- **Tiny footprint** — ~180MB image, ~46MB RAM at idle vs LocalStack's ~1GB image and ~500MB RAM
 - **Fast startup** — under 2 seconds
 - **MIT licensed** — use it, fork it, contribute to it
 
@@ -539,17 +539,18 @@ Layers that ship npm packages work too — MiniStack resolves the `nodejs/node_m
                     │  │  ECS   RDS   ElastiCache   Glue    │  │
                     │  │  Athena   Firehose   Route53       │  │
                     │  │  Cognito  EC2   EMR   EBS   EFS    │  │
-                    │  │  ALB/ELBv2   ACM   WAF v2          │  │
-                    │  │  CloudFormation   KMS              │  │
+                    │  │  ALB/ELBv2   ACM   WAF v2   KMS    │  │
+                    │  │  CloudFormation                    │  │
+                    │  │  Bedrock · Runtime · Agent · KB    │  │
                     │  └────────────────────────────────────┘  │
                     │                                          │
                     │  In-Memory Storage + Optional Docker     │
                     └──────────────────────────────────────────┘
                                         │
-                         ┌──────────────┼──────────────┐
-                         ▼              ▼              ▼
-                    Redis:6379    Postgres:15432+  MySQL:15433+
-                    (ElastiCache)    (RDS)           (RDS)
+                    ┌───────────┬────────┼────────┬─────────────┐
+                    ▼           ▼        ▼        ▼             ▼
+               Redis:6379  Postgres  MySQL   Ollama:11434  pgvector
+               (ElastiCache) :15432+  :15433+  (Bedrock)   (Bedrock KB)
 ```
 
 ---
@@ -563,20 +564,20 @@ pip install boto3 pytest duckdb docker cbor2
 # Start MiniStack
 docker compose up -d
 
-# Run the full test suite (851 tests across all 34 services)
+# Run the full test suite (914 tests across all 39 services)
 pytest tests/ -v
 ```
 
 Expected output:
 
 ```
-collected 851 items
+collected 914 items
 
 tests/test_services.py::test_s3_create_bucket PASSED
 ...
-tests/test_services.py::test_app_asgi_callable PASSED
+tests/test_bedrock.py::test_retrieve PASSED
 
-851 passed in ~100s
+914 passed in ~216s
 ```
 
 ---
