@@ -1,7 +1,8 @@
 """
 AWS Bedrock Runtime Service Emulator.
-REST-based API for model inference and guardrails.
-Supports: Converse, ApplyGuardrail.
+REST-based API for model inference, guardrails, token counting, and async invocations.
+Supports: Converse, InvokeModel, ApplyGuardrail, CountTokens,
+          StartAsyncInvoke, GetAsyncInvoke, ListAsyncInvokes.
 
 Proxies inference requests to LiteLLM (which routes to Ollama or GitHub Copilot).
 Requires LiteLLM to be running — returns ServiceUnavailableException if unavailable.
@@ -11,6 +12,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 
 from ministack.core.responses import error_response_json, json_response, new_uuid, now_iso
@@ -21,41 +23,56 @@ LITELLM_BASE_URL = os.environ.get("LITELLM_BASE_URL", "http://litellm:4000")
 ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-# In-memory guardrail storage
-_guardrails: dict = {}  # guardrail_id -> config
+# In-memory state
+_guardrails: dict = {}
+_async_invocations: dict = {}  # invocation_arn -> metadata
+_async_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Path routing patterns
 # ---------------------------------------------------------------------------
 
-# POST /model/{modelId}/converse
 _RE_CONVERSE = re.compile(r"^/model/([^/]+)/converse$")
-# POST /model/{modelId}/invoke
 _RE_INVOKE = re.compile(r"^/model/([^/]+)/invoke$")
-# POST /guardrail/{guardrailId}/version/{version}/apply
+_RE_COUNT_TOKENS = re.compile(r"^/model/([^/]+)/count-tokens$")
 _RE_GUARDRAIL = re.compile(r"^/guardrail/([^/]+)/version/([^/]+)/apply$")
+_RE_ASYNC_INVOKE_ID = re.compile(r"^/async-invoke/(.+)$")
+_RE_ASYNC_INVOKE = re.compile(r"^/async-invoke/?$")
 
 
 async def handle_request(method, path, headers, body, query_params):
     """Main entry point for Bedrock Runtime requests."""
-    # Converse API
+    # Converse
     m = _RE_CONVERSE.match(path)
     if m and method == "POST":
-        model_id = m.group(1)
-        return await _converse(model_id, body)
+        return await _converse(m.group(1), body)
 
-    # InvokeModel API
+    # InvokeModel
     m = _RE_INVOKE.match(path)
     if m and method == "POST":
-        model_id = m.group(1)
-        return await _invoke_model(model_id, body, headers)
+        return await _invoke_model(m.group(1), body, headers)
 
-    # ApplyGuardrail API
+    # CountTokens
+    m = _RE_COUNT_TOKENS.match(path)
+    if m and method == "POST":
+        return await _count_tokens(m.group(1), body)
+
+    # ApplyGuardrail
     m = _RE_GUARDRAIL.match(path)
     if m and method == "POST":
-        guardrail_id = m.group(1)
-        version = m.group(2)
-        return await _apply_guardrail(guardrail_id, version, body)
+        return await _apply_guardrail(m.group(1), m.group(2), body)
+
+    # GetAsyncInvoke (must match before ASYNC_INVOKE base path)
+    m = _RE_ASYNC_INVOKE_ID.match(path)
+    if m and method == "GET":
+        return _get_async_invoke(m.group(1))
+
+    # StartAsyncInvoke / ListAsyncInvokes
+    if _RE_ASYNC_INVOKE.match(path):
+        if method == "POST":
+            return await _start_async_invoke(body)
+        elif method == "GET":
+            return _list_async_invokes(query_params)
 
     return error_response_json("UnrecognizedClientException",
                                f"Unrecognized operation: {method} {path}", 400)
@@ -378,6 +395,180 @@ async def _apply_guardrail(guardrail_id: str, version: str, body: bytes):
     return json_response(response)
 
 
+# ---------------------------------------------------------------------------
+# CountTokens
+# ---------------------------------------------------------------------------
+
+async def _count_tokens(model_id: str, body: bytes):
+    """CountTokens — estimate token count for input without running inference."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    # Extract text from input — supports converse format or invokeModel format
+    text = ""
+    input_data = data.get("input", {})
+    if "converse" in input_data:
+        messages = input_data["converse"].get("messages", [])
+        for msg in messages:
+            for block in msg.get("content", []):
+                if isinstance(block, dict) and "text" in block:
+                    text += block["text"] + " "
+        system = input_data["converse"].get("system", [])
+        for s in system:
+            if isinstance(s, dict) and "text" in s:
+                text += s["text"] + " "
+    elif "invokeModel" in input_data:
+        text = json.dumps(input_data["invokeModel"])
+    else:
+        text = json.dumps(data)
+
+    # Rough token estimate: ~4 chars per token (good approximation for most models)
+    input_tokens = max(1, len(text) // 4)
+
+    return json_response({"inputTokens": input_tokens})
+
+
+# ---------------------------------------------------------------------------
+# Async Invocations
+# ---------------------------------------------------------------------------
+
+async def _start_async_invoke(body: bytes):
+    """StartAsyncInvoke — queue an async model invocation."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    model_id = data.get("modelId", "")
+    if not model_id:
+        return error_response_json("ValidationException", "modelId is required", 400)
+
+    invocation_id = new_uuid()
+    invocation_arn = f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:async-invoke/{invocation_id}"
+    now = now_iso()
+
+    invocation = {
+        "invocationArn": invocation_arn,
+        "modelArn": f"arn:aws:bedrock:{REGION}::foundation-model/{model_id}",
+        "status": "InProgress",
+        "submitTime": now,
+        "lastModifiedTime": now,
+        "clientRequestToken": data.get("clientRequestToken", invocation_id),
+        "outputDataConfig": data.get("outputDataConfig", {}),
+        "modelInput": data.get("modelInput", {}),
+    }
+
+    with _async_lock:
+        _async_invocations[invocation_arn] = invocation
+
+    # Run inference in background thread
+    thread = threading.Thread(
+        target=_run_async_invoke_sync,
+        args=(invocation_arn, model_id, data.get("modelInput", {})),
+        daemon=True,
+    )
+    thread.start()
+
+    return json_response({"invocationArn": invocation_arn}, 202)
+
+
+def _run_async_invoke_sync(invocation_arn: str, model_id: str, model_input: dict):
+    """Background thread for async invocation."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(_run_async_invoke(invocation_arn, model_id, model_input))
+    except Exception as e:
+        logger.error("Async invocation %s failed: %s", invocation_arn, e)
+        with _async_lock:
+            inv = _async_invocations.get(invocation_arn, {})
+            inv["status"] = "Failed"
+            inv["failureMessage"] = str(e)
+            inv["lastModifiedTime"] = now_iso()
+            inv["endTime"] = now_iso()
+    finally:
+        loop.close()
+
+
+async def _run_async_invoke(invocation_arn: str, model_id: str, model_input: dict):
+    """Async inference execution."""
+    import aiohttp
+    from ministack.services.bedrock import resolve_model
+
+    local_model = resolve_model(model_id)
+    messages = [{"role": "user", "content": json.dumps(model_input) if model_input else "Hello"}]
+
+    # Try to extract messages from model input
+    if "messages" in model_input:
+        messages = []
+        for msg in model_input["messages"]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+            messages.append({"role": role, "content": content})
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{LITELLM_BASE_URL}/v1/chat/completions",
+            json={"model": local_model, "messages": messages, "max_tokens": 1024},
+            timeout=aiohttp.ClientTimeout(total=300),
+        ) as resp:
+            result = await resp.json()
+
+    response_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+    with _async_lock:
+        inv = _async_invocations.get(invocation_arn, {})
+        inv["status"] = "Completed"
+        inv["endTime"] = now_iso()
+        inv["lastModifiedTime"] = now_iso()
+        inv["_result"] = response_text
+
+
+def _get_async_invoke(invocation_arn: str):
+    """GetAsyncInvoke — return status of an async invocation."""
+    with _async_lock:
+        inv = _async_invocations.get(invocation_arn)
+    if not inv:
+        # Try matching by ID suffix
+        for arn, data in _async_invocations.items():
+            if arn.endswith(invocation_arn) or invocation_arn in arn:
+                inv = data
+                break
+    if not inv:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Async invocation {invocation_arn} not found", 404)
+    result = {k: v for k, v in inv.items() if not k.startswith("_")}
+    return json_response(result)
+
+
+def _list_async_invokes(query_params):
+    """ListAsyncInvokes — list all async invocations."""
+    max_results = int(query_params.get("maxResults", [10])[0]) if isinstance(
+        query_params.get("maxResults"), list) else int(query_params.get("maxResults", 10))
+    status_filter = query_params.get("statusEquals", [None])[0] if isinstance(
+        query_params.get("statusEquals"), list) else query_params.get("statusEquals")
+
+    with _async_lock:
+        items = list(_async_invocations.values())
+
+    if status_filter:
+        items = [i for i in items if i.get("status") == status_filter]
+
+    summaries = [{k: v for k, v in i.items() if not k.startswith("_")}
+                 for i in items[:max_results]]
+
+    result = {"asyncInvokeSummaries": summaries}
+    if len(items) > max_results:
+        result["nextToken"] = str(max_results)
+    return json_response(result)
+
+
 def reset():
     """Clear all in-memory state."""
     _guardrails.clear()
+    with _async_lock:
+        _async_invocations.clear()

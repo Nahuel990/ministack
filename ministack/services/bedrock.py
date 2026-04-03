@@ -99,6 +99,12 @@ _RE_GET_FOUNDATION = re.compile(r"^/foundation-models/(.+)$")
 _RE_GUARDRAIL_VERSIONS = re.compile(r"^/guardrails/([^/]+)/versions/?$")
 _RE_GUARDRAIL_ID = re.compile(r"^/guardrails/([^/]+)$")
 _RE_GUARDRAILS = re.compile(r"^/guardrails/?$")
+_RE_LOGGING = re.compile(r"^/logging/modelinvocations/?$")
+_RE_CUSTOM_MODELS = re.compile(r"^/custom-models/?$")
+_RE_CUSTOM_MODEL_ID = re.compile(r"^/custom-models/(.+)$")
+_RE_MODEL_INVOCATION_JOBS = re.compile(r"^/model-invocation-jobs/?$")
+_RE_MODEL_INVOCATION_JOB_ID = re.compile(r"^/model-invocation-job/(.+)$")
+_RE_MODEL_INVOCATION_JOB_CREATE = re.compile(r"^/model-invocation-job/?$")
 
 
 async def handle_request(method, path, headers, body, query_params):
@@ -142,6 +148,29 @@ async def handle_request(method, path, headers, body, query_params):
             return _create_guardrail(body)
         elif method == "GET":
             return _list_guardrails(query_params)
+
+    # Logging configuration
+    if _RE_LOGGING.match(path):
+        if method == "PUT":
+            return _put_logging_config(body)
+        elif method == "GET":
+            return _get_logging_config()
+
+    # Custom models
+    m = _RE_CUSTOM_MODEL_ID.match(path)
+    if m and method == "GET":
+        return _get_custom_model(unquote(m.group(1)))
+    if _RE_CUSTOM_MODELS.match(path) and method == "GET":
+        return _list_custom_models(query_params)
+
+    # Model invocation jobs (batch)
+    m = _RE_MODEL_INVOCATION_JOB_ID.match(path)
+    if m and method == "GET":
+        return _get_model_invocation_job(m.group(1))
+    if _RE_MODEL_INVOCATION_JOB_CREATE.match(path) and method == "POST":
+        return _create_model_invocation_job(body)
+    if _RE_MODEL_INVOCATION_JOBS.match(path) and method == "GET":
+        return _list_model_invocation_jobs(query_params)
 
     # Tags operations — boto3 sends POST /listTagsForResource, /tagResource, /untagResource
     if method == "POST":
@@ -467,14 +496,140 @@ def get_guardrail_config(guardrail_id: str):
         return _guardrails.get(guardrail_id)
 
 
+# ---------------------------------------------------------------------------
+# Logging Configuration
+# ---------------------------------------------------------------------------
+
+_logging_config: dict = {}
+
+
+def _put_logging_config(body: bytes):
+    """PutModelInvocationLoggingConfiguration."""
+    global _logging_config
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+    _logging_config = data.get("loggingConfig", {})
+    return json_response({})
+
+
+def _get_logging_config():
+    """GetModelInvocationLoggingConfiguration."""
+    return json_response({"loggingConfig": _logging_config})
+
+
+# ---------------------------------------------------------------------------
+# Custom Models (stubs — no actual fine-tuning)
+# ---------------------------------------------------------------------------
+
+_custom_models: dict = {}
+_custom_models_lock = threading.Lock()
+
+
+def _list_custom_models(query_params):
+    """ListCustomModels."""
+    with _custom_models_lock:
+        items = list(_custom_models.values())
+    return json_response({"modelSummaries": items})
+
+
+def _get_custom_model(model_id: str):
+    """GetCustomModel."""
+    with _custom_models_lock:
+        model = _custom_models.get(model_id)
+    if not model:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Custom model {model_id} not found", 404)
+    return json_response({"modelDetails": model})
+
+
+# ---------------------------------------------------------------------------
+# Model Invocation Jobs (batch inference)
+# ---------------------------------------------------------------------------
+
+_invocation_jobs: dict = {}
+_invocation_jobs_lock = threading.Lock()
+
+
+def _create_model_invocation_job(body: bytes):
+    """CreateModelInvocationJob — create a batch inference job."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    job_name = data.get("jobName", "")
+    model_id = data.get("modelId", "")
+    if not job_name or not model_id:
+        return error_response_json("ValidationException", "jobName and modelId required", 400)
+
+    job_id = new_uuid()[:12]
+    job_arn = f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:model-invocation-job/{job_id}"
+    now = now_iso()
+
+    job = {
+        "jobArn": job_arn,
+        "jobName": job_name,
+        "modelId": model_id,
+        "status": "Completed",
+        "inputDataConfig": data.get("inputDataConfig", {}),
+        "outputDataConfig": data.get("outputDataConfig", {}),
+        "roleArn": data.get("roleArn", f"arn:aws:iam::{ACCOUNT_ID}:role/bedrock-batch"),
+        "submitTime": now,
+        "endTime": now,
+        "lastModifiedTime": now,
+    }
+
+    with _invocation_jobs_lock:
+        _invocation_jobs[job_arn] = job
+
+    return json_response({"jobArn": job_arn}, 200)
+
+
+def _get_model_invocation_job(job_id: str):
+    """GetModelInvocationJob."""
+    with _invocation_jobs_lock:
+        job = _invocation_jobs.get(job_id)
+        if not job:
+            for arn, j in _invocation_jobs.items():
+                if job_id in arn:
+                    job = j
+                    break
+    if not job:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Model invocation job {job_id} not found", 404)
+    return json_response(job)
+
+
+def _list_model_invocation_jobs(query_params):
+    """ListModelInvocationJobs."""
+    max_results = int(query_params.get("maxResults", [10])[0]) if isinstance(
+        query_params.get("maxResults"), list) else int(query_params.get("maxResults", 10))
+
+    with _invocation_jobs_lock:
+        items = list(_invocation_jobs.values())
+
+    summaries = items[:max_results]
+    result = {"invocationJobSummaries": summaries}
+    if len(items) > max_results:
+        result["nextToken"] = str(max_results)
+    return json_response(result)
+
+
 def reset():
     """Clear all in-memory state."""
-    global _models_config
+    global _models_config, _logging_config
     with _tags_lock:
         _tags.clear()
     with _guardrails_lock:
         _guardrails.clear()
+    with _custom_models_lock:
+        _custom_models.clear()
+    with _invocation_jobs_lock:
+        _invocation_jobs.clear()
     _models_config = {}
+    _logging_config = {}
 
 
 def get_state():

@@ -31,8 +31,8 @@ PGVECTOR_PASSWORD = os.environ.get("PGVECTOR_PASSWORD", "bedrock")
 
 # POST /knowledgebases/{kbId}/retrieve
 _RE_RETRIEVE = re.compile(r"^/knowledgebases/([^/]+)/retrieve$")
-# POST /knowledgebases/{kbId}/retrieve-and-generate
 _RE_RETRIEVE_AND_GENERATE = re.compile(r"^/knowledgebases/([^/]+)/retrieve-and-generate$")
+_RE_RERANK = re.compile(r"^/rerank/?$")
 
 
 async def handle_request(method, path, headers, body, query_params):
@@ -46,6 +46,10 @@ async def handle_request(method, path, headers, body, query_params):
     m = _RE_RETRIEVE_AND_GENERATE.match(path)
     if m and method == "POST":
         return await _retrieve_and_generate(m.group(1), body)
+
+    # Rerank
+    if _RE_RERANK.match(path) and method == "POST":
+        return await _rerank(body)
 
     return error_response_json("UnrecognizedClientException",
                                f"Unrecognized operation: {method} {path}", 400)
@@ -309,6 +313,68 @@ async def _retrieve_and_generate(kb_id: str, body: bytes):
             "HTTPStatusCode": 200,
         },
     })
+
+
+async def _rerank(body: bytes):
+    """Rerank — reorder documents by relevance to a query using embeddings."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    queries = data.get("queries", [])
+    sources = data.get("sources", [])
+    reranking_config = data.get("rerankingConfiguration", {})
+    bedrock_config = reranking_config.get("bedrockRerankingConfiguration", {})
+    num_results = bedrock_config.get("numberOfResults", len(sources))
+
+    if not queries:
+        return error_response_json("ValidationException", "queries is required", 400)
+    if not sources:
+        return error_response_json("ValidationException", "sources is required", 400)
+
+    # Extract query text
+    query_text = ""
+    for q in queries:
+        if q.get("type") == "TEXT":
+            query_text = q.get("textQuery", {}).get("text", "")
+            break
+        elif isinstance(q, str):
+            query_text = q
+            break
+
+    # Extract source texts
+    source_texts = []
+    for s in sources:
+        text = ""
+        if s.get("type") == "INLINE":
+            inline = s.get("inlineDocumentSource", {})
+            text = inline.get("textDocument", {}).get("text", "")
+            if not text:
+                text = json.dumps(inline.get("jsonDocument", {}))
+        source_texts.append(text)
+
+    # Generate embeddings for query and all sources, compute cosine similarity
+    try:
+        query_emb = await _generate_embedding(query_text)
+        scored = []
+        for i, src_text in enumerate(source_texts):
+            src_emb = await _generate_embedding(src_text[:8000])
+            # Cosine similarity
+            dot = sum(a * b for a, b in zip(query_emb, src_emb))
+            mag_q = sum(a * a for a in query_emb) ** 0.5
+            mag_s = sum(a * a for a in src_emb) ** 0.5
+            score = dot / (mag_q * mag_s) if mag_q > 0 and mag_s > 0 else 0.0
+            scored.append({"index": i, "relevanceScore": round(score, 6)})
+
+        scored.sort(key=lambda x: x["relevanceScore"], reverse=True)
+        scored = scored[:num_results]
+    except RuntimeError as e:
+        # Fallback: return sources in order with decreasing scores
+        scored = [{"index": i, "relevanceScore": round(1.0 - i * 0.1, 2)}
+                  for i in range(min(num_results, len(sources)))]
+
+    return json_response({"results": scored})
 
 
 def reset():

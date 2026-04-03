@@ -29,9 +29,11 @@ PGVECTOR_USER = os.environ.get("PGVECTOR_USER", "bedrock")
 PGVECTOR_PASSWORD = os.environ.get("PGVECTOR_PASSWORD", "bedrock")
 
 # In-memory state
-_knowledge_bases: dict = {}  # kb_id -> kb metadata
-_data_sources: dict = {}  # ds_id -> data source metadata
-_ingestion_jobs: dict = {}  # job_id -> job metadata
+_knowledge_bases: dict = {}
+_data_sources: dict = {}
+_ingestion_jobs: dict = {}
+_agents: dict = {}  # agent_id -> agent metadata
+_agent_aliases: dict = {}  # f"{agent_id}:{alias_id}" -> alias metadata
 _lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -49,6 +51,13 @@ _RE_DSS = re.compile(r"^/knowledgebases/([^/]+)/datasources/?$")
 # Ingestion jobs
 _RE_START_INGESTION = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/ingestionjobs/?$")
 _RE_GET_INGESTION = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/ingestionjobs/([^/]+)$")
+_RE_STOP_INGESTION = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/ingestionjobs/([^/]+)/stop$")
+
+# Agent CRUD
+_RE_AGENT_ID = re.compile(r"^/agents/([^/]+?)/?$")
+_RE_AGENTS = re.compile(r"^/agents/?$")
+_RE_AGENT_ALIAS_ID = re.compile(r"^/agents/([^/]+)/agentaliases/([^/]+?)/?$")
+_RE_AGENT_ALIASES = re.compile(r"^/agents/([^/]+)/agentaliases/?$")
 
 # Document operations
 _RE_GET_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)/documents/getDocuments$")
@@ -58,6 +67,11 @@ _RE_DELETE_DOCUMENTS = re.compile(r"^/knowledgebases/([^/]+)/datasources/([^/]+)
 
 async def handle_request(method, path, headers, body, query_params):
     """Main entry point for Bedrock Agent requests."""
+
+    # --- Stop ingestion (must match before GET ingestion) ---
+    m = _RE_STOP_INGESTION.match(path)
+    if m and method == "POST":
+        return _stop_ingestion_job(m.group(1), m.group(2), m.group(3))
 
     # --- Ingestion jobs (most specific paths first) ---
     m = _RE_GET_INGESTION.match(path)
@@ -89,6 +103,8 @@ async def handle_request(method, path, headers, body, query_params):
         kb_id, ds_id = m.group(1), m.group(2)
         if method == "GET":
             return _get_data_source(kb_id, ds_id)
+        elif method == "PUT":
+            return _update_data_source(kb_id, ds_id, body)
         elif method == "DELETE":
             return _delete_data_source(kb_id, ds_id)
 
@@ -100,12 +116,52 @@ async def handle_request(method, path, headers, body, query_params):
         elif method == "POST":
             return _list_data_sources(kb_id, body)
 
+    # --- Agent Aliases ---
+    m = _RE_AGENT_ALIAS_ID.match(path)
+    if m:
+        agent_id, alias_id = m.group(1), m.group(2)
+        if method == "GET":
+            return _get_agent_alias(agent_id, alias_id)
+        elif method == "PUT":
+            return _update_agent_alias(agent_id, alias_id, body)
+        elif method == "DELETE":
+            return _delete_agent_alias(agent_id, alias_id)
+
+    m = _RE_AGENT_ALIASES.match(path)
+    if m:
+        agent_id = m.group(1)
+        if method == "PUT":
+            return _create_agent_alias(agent_id, body)
+        elif method == "POST":
+            return _list_agent_aliases(agent_id, body)
+
+    # --- Agent CRUD ---
+    m = _RE_AGENT_ID.match(path)
+    if m:
+        agent_id = m.group(1)
+        if method == "GET":
+            return _get_agent(agent_id)
+        elif method == "PUT":
+            return _update_agent(agent_id, body)
+        elif method == "POST":
+            return _prepare_agent(agent_id)
+        elif method == "DELETE":
+            return _delete_agent(agent_id)
+
+    if _RE_AGENTS.match(path):
+        if method == "PUT":
+            return _create_agent(body)
+        elif method == "POST":
+            return _list_agents(body)
+
     # --- Knowledge Base CRUD ---
     m = _RE_KB_ID.match(path)
     if m:
         kb_id = m.group(1)
         if method == "GET":
             return _get_knowledge_base(kb_id)
+        elif method == "PUT":
+            return _update_knowledge_base(kb_id, body)
         elif method == "DELETE":
             return _delete_knowledge_base(kb_id)
 
@@ -323,6 +379,22 @@ def _get_ingestion_job(kb_id: str, ds_id: str, job_id: str):
                                    f"Ingestion job {job_id} not found for KB {kb_id} / DS {ds_id}", 404)
 
     return json_response({"ingestionJob": job})
+
+
+def _stop_ingestion_job(kb_id: str, ds_id: str, job_id: str):
+    """StopIngestionJob — stop a running ingestion job."""
+    with _lock:
+        job = _ingestion_jobs.get(job_id)
+        if not job or job["knowledgeBaseId"] != kb_id or job["dataSourceId"] != ds_id:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Ingestion job {job_id} not found", 404)
+        if job["status"] in ("COMPLETE", "FAILED", "STOPPED"):
+            return error_response_json("ConflictException",
+                                       f"Job {job_id} is already {job['status']}", 409)
+        job["status"] = "STOPPED"
+        job["updatedAt"] = now_iso()
+
+    return json_response({"ingestionJob": job}, 202)
 
 
 def _list_ingestion_jobs(kb_id: str, ds_id: str, body: bytes):
@@ -680,6 +752,54 @@ def _list_data_sources(kb_id: str, body: bytes):
     return json_response(result)
 
 
+def _update_knowledge_base(kb_id: str, body: bytes):
+    """UpdateKnowledgeBase — update a knowledge base."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    with _lock:
+        kb = _knowledge_bases.get(kb_id)
+        if not kb:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Knowledge base {kb_id} not found", 404)
+        for field in ("name", "description", "roleArn"):
+            if field in data:
+                kb[field] = data[field]
+        if "knowledgeBaseConfiguration" in data:
+            kb["knowledgeBaseConfiguration"] = data["knowledgeBaseConfiguration"]
+        if "storageConfiguration" in data:
+            kb["storageConfiguration"] = data["storageConfiguration"]
+        kb["updatedAt"] = now_iso()
+
+    return json_response({"knowledgeBase": kb}, 202)
+
+
+def _update_data_source(kb_id: str, ds_id: str, body: bytes):
+    """UpdateDataSource — update a data source."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    with _lock:
+        ds = _data_sources.get(ds_id)
+        if not ds or ds.get("knowledgeBaseId") != kb_id:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Data source {ds_id} not found in KB {kb_id}", 404)
+        for field in ("name", "description", "dataDeletionPolicy"):
+            if field in data:
+                ds[field] = data[field]
+        if "dataSourceConfiguration" in data:
+            ds["dataSourceConfiguration"] = data["dataSourceConfiguration"]
+        if "vectorIngestionConfiguration" in data:
+            ds["vectorIngestionConfiguration"] = data["vectorIngestionConfiguration"]
+        ds["updatedAt"] = now_iso()
+
+    return json_response({"dataSource": ds})
+
+
 def _delete_data_source(kb_id: str, ds_id: str):
     """DeleteDataSource — delete a data source."""
     with _lock:
@@ -696,12 +816,250 @@ def _delete_data_source(kb_id: str, ds_id: str):
     }, 202)
 
 
+# ---------------------------------------------------------------------------
+# Agent CRUD
+# ---------------------------------------------------------------------------
+
+def _create_agent(body: bytes):
+    """CreateAgent."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    name = data.get("agentName", "")
+    if not name:
+        return error_response_json("ValidationException", "agentName is required", 400)
+
+    agent_id = new_uuid()[:10].upper()
+    now = now_iso()
+    agent = {
+        "agentId": agent_id,
+        "agentArn": f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:agent/{agent_id}",
+        "agentName": name,
+        "description": data.get("description", ""),
+        "agentStatus": "NOT_PREPARED",
+        "agentVersion": "DRAFT",
+        "foundationModel": data.get("foundationModel", ""),
+        "instruction": data.get("instruction", ""),
+        "agentResourceRoleArn": data.get("agentResourceRoleArn", f"arn:aws:iam::{ACCOUNT_ID}:role/bedrock-agent"),
+        "idleSessionTTLInSeconds": data.get("idleSessionTTLInSeconds", 600),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    with _lock:
+        _agents[agent_id] = agent
+
+    return json_response({"agent": agent}, 202)
+
+
+def _get_agent(agent_id: str):
+    """GetAgent."""
+    with _lock:
+        agent = _agents.get(agent_id)
+    if not agent:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Agent {agent_id} not found", 404)
+    return json_response({"agent": agent})
+
+
+def _list_agents(body: bytes):
+    """ListAgents."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        data = {}
+    max_results = data.get("maxResults", 100)
+
+    with _lock:
+        items = list(_agents.values())
+
+    summaries = [{
+        "agentId": a["agentId"],
+        "agentName": a["agentName"],
+        "agentStatus": a["agentStatus"],
+        "description": a.get("description", ""),
+        "updatedAt": a.get("updatedAt", a.get("createdAt", "")),
+    } for a in items[:max_results]]
+
+    result = {"agentSummaries": summaries}
+    if len(items) > max_results:
+        result["nextToken"] = str(max_results)
+    return json_response(result)
+
+
+def _update_agent(agent_id: str, body: bytes):
+    """UpdateAgent."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    with _lock:
+        agent = _agents.get(agent_id)
+        if not agent:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Agent {agent_id} not found", 404)
+        for field in ("agentName", "description", "foundationModel", "instruction",
+                      "agentResourceRoleArn", "idleSessionTTLInSeconds"):
+            if field in data:
+                agent[field] = data[field]
+        agent["updatedAt"] = now_iso()
+        agent["agentStatus"] = "NOT_PREPARED"
+
+    return json_response({"agent": agent}, 202)
+
+
+def _prepare_agent(agent_id: str):
+    """PrepareAgent — mark agent as PREPARED."""
+    with _lock:
+        agent = _agents.get(agent_id)
+        if not agent:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Agent {agent_id} not found", 404)
+        agent["agentStatus"] = "PREPARED"
+        agent["preparedAt"] = now_iso()
+        agent["updatedAt"] = now_iso()
+
+    return json_response({
+        "agentId": agent_id,
+        "agentStatus": "PREPARED",
+        "agentVersion": "DRAFT",
+        "preparedAt": agent["preparedAt"],
+    }, 202)
+
+
+def _delete_agent(agent_id: str):
+    """DeleteAgent."""
+    with _lock:
+        if agent_id not in _agents:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Agent {agent_id} not found", 404)
+        del _agents[agent_id]
+        # Remove aliases
+        to_del = [k for k in _agent_aliases if k.startswith(f"{agent_id}:")]
+        for k in to_del:
+            del _agent_aliases[k]
+
+    return json_response({"agentId": agent_id, "agentStatus": "DELETING"}, 202)
+
+
+# ---------------------------------------------------------------------------
+# Agent Alias CRUD
+# ---------------------------------------------------------------------------
+
+def _create_agent_alias(agent_id: str, body: bytes):
+    """CreateAgentAlias."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    with _lock:
+        if agent_id not in _agents:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Agent {agent_id} not found", 404)
+
+    name = data.get("agentAliasName", "")
+    if not name:
+        return error_response_json("ValidationException", "agentAliasName required", 400)
+
+    alias_id = new_uuid()[:10].upper()
+    now = now_iso()
+    alias = {
+        "agentAliasId": alias_id,
+        "agentAliasArn": f"arn:aws:bedrock:{REGION}:{ACCOUNT_ID}:agent-alias/{agent_id}/{alias_id}",
+        "agentAliasName": name,
+        "agentId": agent_id,
+        "agentAliasStatus": "PREPARED",
+        "description": data.get("description", ""),
+        "routingConfiguration": data.get("routingConfiguration", [{"agentVersion": "DRAFT"}]),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+    with _lock:
+        _agent_aliases[f"{agent_id}:{alias_id}"] = alias
+
+    return json_response({"agentAlias": alias}, 202)
+
+
+def _get_agent_alias(agent_id: str, alias_id: str):
+    """GetAgentAlias."""
+    with _lock:
+        alias = _agent_aliases.get(f"{agent_id}:{alias_id}")
+    if not alias:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Alias {alias_id} not found for agent {agent_id}", 404)
+    return json_response({"agentAlias": alias})
+
+
+def _list_agent_aliases(agent_id: str, body: bytes):
+    """ListAgentAliases."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        data = {}
+    max_results = data.get("maxResults", 100)
+
+    with _lock:
+        items = [a for k, a in _agent_aliases.items() if k.startswith(f"{agent_id}:")]
+
+    summaries = [{
+        "agentAliasId": a["agentAliasId"],
+        "agentAliasName": a["agentAliasName"],
+        "agentAliasStatus": a["agentAliasStatus"],
+        "description": a.get("description", ""),
+        "createdAt": a["createdAt"],
+        "updatedAt": a["updatedAt"],
+    } for a in items[:max_results]]
+
+    result = {"agentAliasSummaries": summaries}
+    if len(items) > max_results:
+        result["nextToken"] = str(max_results)
+    return json_response(result)
+
+
+def _update_agent_alias(agent_id: str, alias_id: str, body: bytes):
+    """UpdateAgentAlias."""
+    try:
+        data = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return error_response_json("ValidationException", "Invalid JSON body", 400)
+
+    with _lock:
+        alias = _agent_aliases.get(f"{agent_id}:{alias_id}")
+        if not alias:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Alias {alias_id} not found", 404)
+        for field in ("agentAliasName", "description", "routingConfiguration"):
+            if field in data:
+                alias[field] = data[field]
+        alias["updatedAt"] = now_iso()
+
+    return json_response({"agentAlias": alias}, 202)
+
+
+def _delete_agent_alias(agent_id: str, alias_id: str):
+    """DeleteAgentAlias."""
+    key = f"{agent_id}:{alias_id}"
+    with _lock:
+        if key not in _agent_aliases:
+            return error_response_json("ResourceNotFoundException",
+                                       f"Alias {alias_id} not found", 404)
+        del _agent_aliases[key]
+    return json_response({"agentAliasId": alias_id, "agentAliasStatus": "DELETING", "agentId": agent_id}, 202)
+
+
 def reset():
     """Clear all in-memory state."""
     with _lock:
         _knowledge_bases.clear()
         _data_sources.clear()
         _ingestion_jobs.clear()
+        _agents.clear()
+        _agent_aliases.clear()
 
 
 def get_state():
