@@ -16,7 +16,7 @@ _kwargs = dict(
     aws_access_key_id="test",
     aws_secret_access_key="test",
     region_name=REGION,
-    config=Config(region_name=REGION, retries={"max_attempts": 0}),
+    config=Config(region_name=REGION, retries={"max_attempts": 0}, read_timeout=300),
 )
 
 
@@ -194,6 +194,22 @@ def sesv2():
 @pytest.fixture(scope="session")
 def cfn():
     return make_client("cloudformation")
+
+@pytest.fixture(scope="session")
+def bedrock_client():
+    return make_client("bedrock")
+
+@pytest.fixture(scope="session")
+def bedrock_runtime():
+    return make_client("bedrock-runtime")
+
+@pytest.fixture(scope="session")
+def bedrock_agent():
+    return make_client("bedrock-agent")
+
+@pytest.fixture(scope="session")
+def bedrock_agent_runtime():
+    return make_client("bedrock-agent-runtime")
 
 @pytest.fixture(scope="session")
 def kms_client():

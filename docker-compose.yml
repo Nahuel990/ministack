@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   ministack:
     build: .
@@ -15,11 +13,24 @@ services:
       - REDIS_PORT=6379
       - RDS_BASE_PORT=15432
       - ELASTICACHE_BASE_PORT=16379
+      # Bedrock configuration
+      - LITELLM_BASE_URL=http://litellm:4000
+      - PGVECTOR_HOST=pgvector
+      - PGVECTOR_PORT=5432
+      - PGVECTOR_DB=bedrock_kb
+      - PGVECTOR_USER=bedrock
+      - PGVECTOR_PASSWORD=bedrock
+      - BEDROCK_MODELS_CONFIG=config/bedrock_models.yaml
     volumes:
       - ./data/s3:/tmp/ministack-data/s3
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/bedrock_models.yaml:/opt/ministack/config/bedrock_models.yaml
     depends_on:
       redis:
+        condition: service_healthy
+      pgvector:
+        condition: service_healthy
+      litellm:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4566/_ministack/health')"]
@@ -41,6 +52,66 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # PostgreSQL + pgvector for Bedrock Knowledge Base vector storage
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: ministack-pgvector
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: bedrock
+      POSTGRES_PASSWORD: bedrock
+      POSTGRES_DB: bedrock_kb
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+      - ./config/pgvector_init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bedrock"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Ollama for local LLM inference (Bedrock models)
+  # Auto-pulls models listed in bedrock_models.yaml on startup
+  ollama:
+    image: ollama/ollama:0.20.0
+    container_name: ministack-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./config/bedrock_models.yaml:/config/bedrock_models.yaml:ro
+      - ./config/ollama_entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # LiteLLM proxy — routes inference requests to Ollama (or GitHub Copilot)
+  litellm:
+    image: ghcr.io/berriai/litellm:main-v1.82.3
+    container_name: ministack-litellm
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./config/litellm_config.yaml:/app/config.yaml
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
   # Optional: Postgres for RDS (always-on, no Docker-in-Docker needed)
   # Uncomment to have a persistent Postgres available at localhost:5432
   # postgres:
@@ -58,3 +129,7 @@ services:
   #     timeout: 3s
   #     retries: 5
   #   restart: unless-stopped
+
+volumes:
+  pgvector_data:
+  ollama_data:

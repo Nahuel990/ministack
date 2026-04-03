@@ -154,6 +154,26 @@ SERVICE_PATTERNS = {
     "cloudformation": {
         "host_patterns": [r"cloudformation\."],
     },
+    "bedrock": {
+        "host_patterns": [r"bedrock\."],
+        "path_patterns": [r"^/inference-profiles", r"^/foundation-models", r"^/guardrails",
+                          r"^/logging/", r"^/custom-models", r"^/model-invocation-job",
+                          r"^/listTagsForResource", r"^/tagResource", r"^/untagResource"],
+        "credential_scope": "bedrock",
+    },
+    "bedrock-runtime": {
+        "host_patterns": [r"bedrock-runtime\."],
+        "path_patterns": [r"^/model/.*/converse", r"^/model/.*/invoke", r"^/model/.*/count-tokens",
+                          r"^/guardrail/", r"^/async-invoke"],
+    },
+    "bedrock-agent": {
+        "host_patterns": [r"bedrock-agent\."],
+        "path_patterns": [r"^/knowledgebases/", r"^/agents/"],
+    },
+    "bedrock-agent-runtime": {
+        "host_patterns": [r"bedrock-agent-runtime\."],
+        "path_patterns": [r"^/knowledgebases/.*/retrieve", r"^/rerank", r"^/retrieveAndGenerate"],
+    },
     "kms": {
         "target_prefixes": ["TrentService"],
         "host_patterns": [r"kms\."],
@@ -180,6 +200,18 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
         match = re.search(r"Credential=[^/]+/[^/]+/[^/]+/([^/]+)/", auth)
         if match:
             svc_name = match.group(1)
+            # Bedrock sub-services all share credential scope "bedrock" —
+            # disambiguate by path before returning.
+            if svc_name == "bedrock":
+                if re.match(r"^/model/|^/guardrail/|^/async-invoke", path):
+                    return "bedrock-runtime"
+                if re.match(r"^/rerank|^/retrieveAndGenerate", path):
+                    return "bedrock-agent-runtime"
+                if re.match(r"^/knowledgebases/[^/]+/retrieve", path):
+                    return "bedrock-agent-runtime"
+                if re.match(r"^/knowledgebases/|^/agents/", path):
+                    return "bedrock-agent"
+                return "bedrock"
             if svc_name in SERVICE_PATTERNS:
                 return svc_name
             # Map common credential scope names
@@ -207,6 +239,10 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "elasticloadbalancing": "elasticloadbalancing",
                 "elasticfilesystem": "elasticfilesystem",
                 "cloudformation": "cloudformation",
+                "bedrock": "bedrock",
+                "bedrock-runtime": "bedrock-runtime",
+                "bedrock-agent": "bedrock-agent",
+                "bedrock-agent-runtime": "bedrock-agent-runtime",
                 "kms": "kms",
             }
             if svc_name in scope_map:

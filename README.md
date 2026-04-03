@@ -21,10 +21,10 @@
 
 LocalStack recently moved its core services behind a paid plan. If you relied on LocalStack Community for local development and CI/CD pipelines, MiniStack is your free alternative.
 
-- **34 AWS services** emulated on a single port (4566)
+- **39 AWS services** emulated on a single port (4566)
 - **Drop-in compatible** — works with `boto3`, AWS CLI, Terraform, CDK, Pulumi, any SDK
-- **Real infrastructure** — RDS spins up actual Postgres/MySQL containers, ElastiCache spins up real Redis, Athena runs real SQL via DuckDB, ECS runs real Docker containers
-- **Tiny footprint** — ~150MB image, ~30MB RAM at idle vs LocalStack's ~1GB image and ~500MB RAM
+- **Real infrastructure** — RDS spins up actual Postgres/MySQL containers, ElastiCache spins up real Redis, Athena runs real SQL via DuckDB, ECS runs real Docker containers, Bedrock runs local LLMs via Ollama
+- **Tiny footprint** — ~180MB image, ~46MB RAM at idle vs LocalStack's ~1GB image and ~500MB RAM
 - **Fast startup** — under 2 seconds
 - **MIT licensed** — use it, fork it, contribute to it
 
@@ -226,6 +226,32 @@ subnet = ec2.create_subnet(
 | **ELBv2 / ALB** | CreateLoadBalancer, DescribeLoadBalancers, DeleteLoadBalancer, DescribeLoadBalancerAttributes, ModifyLoadBalancerAttributes, CreateTargetGroup, DescribeTargetGroups, ModifyTargetGroup, DeleteTargetGroup, DescribeTargetGroupAttributes, ModifyTargetGroupAttributes, CreateListener, DescribeListeners, ModifyListener, DeleteListener, CreateRule, DescribeRules, ModifyRule, DeleteRule, SetRulePriorities, RegisterTargets, DeregisterTargets, DescribeTargetHealth, AddTags, RemoveTags, DescribeTags | Control plane + data plane; ALB→Lambda live traffic routing; `path-pattern`, `host-header`, `http-method`, `query-string`, `http-header` rule conditions; `forward`, `redirect`, `fixed-response` actions; data plane via `{lb-name}.alb.localhost` Host header or `/_alb/{lb-name}/` path prefix |
 
 | **KMS** | CreateKey, ListKeys, DescribeKey, GetPublicKey, Sign, Verify, Encrypt, Decrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext, CreateAlias, DeleteAlias, ListAliases, UpdateAlias | RSA (2048/4096) and symmetric keys; PKCS1v15 and PSS signing; envelope encryption; alias resolution (`alias/my-key`); requires `cryptography` package (optional) |
+### AI/ML Services (Bedrock)
+
+| Service | Operations | Notes |
+|---------|-----------|-------|
+| **Bedrock** (Control Plane) | ListFoundationModels, GetFoundationModel, ListInferenceProfiles, GetInferenceProfile, CreateGuardrail, GetGuardrail, ListGuardrails, UpdateGuardrail, DeleteGuardrail, CreateGuardrailVersion, ListCustomModels, GetCustomModel, CreateModelInvocationJob, GetModelInvocationJob, ListModelInvocationJobs, PutModelInvocationLoggingConfiguration, GetModelInvocationLoggingConfiguration, TagResource, UntagResource, ListTagsForResource | Model catalog from `bedrock_models.yaml`; guardrails CRUD with versioning; batch invocation jobs; logging config |
+| **Bedrock Runtime** | Converse, InvokeModel, ApplyGuardrail, CountTokens, StartAsyncInvoke, GetAsyncInvoke, ListAsyncInvokes | Inference via **LiteLLM** → **Ollama**; Anthropic/Titan/Llama formats; async batch inference; token counting; dynamic guardrails |
+| **Bedrock Agent** | CreateAgent, GetAgent, ListAgents, UpdateAgent, DeleteAgent, PrepareAgent, CreateAgentAlias, GetAgentAlias, ListAgentAliases, UpdateAgentAlias, DeleteAgentAlias, CreateKnowledgeBase, GetKnowledgeBase, ListKnowledgeBases, UpdateKnowledgeBase, DeleteKnowledgeBase, CreateDataSource, GetDataSource, ListDataSources, UpdateDataSource, DeleteDataSource, StartIngestionJob, GetIngestionJob, ListIngestionJobs, StopIngestionJob, GetKnowledgeBaseDocuments, ListKnowledgeBaseDocuments, DeleteKnowledgeBaseDocuments | Full Agent lifecycle with aliases; KB + data source CRUD; S3 → **pgvector** ingestion |
+| **Bedrock Agent Runtime** | Retrieve, RetrieveAndGenerate, Rerank | Semantic vector search via **pgvector**; RAG with citations; document reranking via embeddings |
+
+> **Bedrock stack**: requires `docker compose up` to start Ollama (local LLMs), LiteLLM (proxy), and pgvector (vector DB). See `config/bedrock_models.yaml` for model mappings. Three Claude tiers map to different local model sizes:
+>
+> | Claude Model | Local Model | Size | Use Case |
+> |---|---|---|---|
+> | Opus (`claude-opus-4-6`) | `qwen3.5:4b` | 2.6 GB | Best quality |
+> | Sonnet (`claude-3-sonnet`, `claude-sonnet-4-6`) | `qwen3.5:2b` | 1.5 GB | Balanced |
+> | Haiku (`claude-3-haiku`) | `gemma3:1b` | 815 MB | Fast prototyping |
+>
+> ```bash
+> # Models are auto-pulled on startup from bedrock_models.yaml.
+> # To pull manually:
+> docker exec ministack-ollama ollama pull qwen3.5:2b         # default / Sonnet (1.5 GB)
+> docker exec ministack-ollama ollama pull nomic-embed-text   # embeddings (274 MB)
+> docker exec ministack-ollama ollama pull qwen3.5:4b         # Opus tier (2.6 GB)
+> docker exec ministack-ollama ollama pull gemma3:1b           # Haiku tier (815 MB)
+> ```
+| **KMS** | CreateKey, ListKeys, DescribeKey, GetPublicKey, Sign, Verify, Encrypt, Decrypt, GenerateDataKey, GenerateDataKeyWithoutPlaintext | RSA (2048/4096) and symmetric keys; PKCS1v15 and PSS signing; envelope encryption; requires `cryptography` package (optional) |
 
 ### CloudFormation
 
@@ -515,17 +541,18 @@ Layers that ship npm packages work too — MiniStack resolves the `nodejs/node_m
                     │  │  ECS   RDS   ElastiCache   Glue    │  │
                     │  │  Athena   Firehose   Route53       │  │
                     │  │  Cognito  EC2   EMR   EBS   EFS    │  │
-                    │  │  ALB/ELBv2   ACM   WAF v2          │  │
-                    │  │  CloudFormation   KMS              │  │
+                    │  │  ALB/ELBv2   ACM   WAF v2   KMS    │  │
+                    │  │  CloudFormation                    │  │
+                    │  │  Bedrock · Runtime · Agent · KB    │  │
                     │  └────────────────────────────────────┘  │
                     │                                          │
                     │  In-Memory Storage + Optional Docker     │
                     └──────────────────────────────────────────┘
                                         │
-                         ┌──────────────┼──────────────┐
-                         ▼              ▼              ▼
-                    Redis:6379    Postgres:15432+  MySQL:15433+
-                    (ElastiCache)    (RDS)           (RDS)
+                    ┌───────────┬────────┼────────┬─────────────┐
+                    ▼           ▼        ▼        ▼             ▼
+               Redis:6379  Postgres  MySQL   Ollama:11434  pgvector
+               (ElastiCache) :15432+  :15433+  (Bedrock)   (Bedrock KB)
 ```
 
 ---
@@ -539,20 +566,20 @@ pip install boto3 pytest duckdb docker cbor2
 # Start MiniStack
 docker compose up -d
 
-# Run the full test suite (887 tests across all 35 services)
+# Run the full test suite (914 tests across all 39 services)
 pytest tests/ -v
 ```
 
 Expected output:
 
 ```
-collected 879 items
+collected 914 items
 
 tests/test_services.py::test_s3_create_bucket PASSED
 ...
-tests/test_services.py::test_app_asgi_callable PASSED
+tests/test_bedrock.py::test_retrieve PASSED
 
-879 passed in ~100s
+914 passed in ~216s
 ```
 
 ---
