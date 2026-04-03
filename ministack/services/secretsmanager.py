@@ -137,6 +137,7 @@ async def handle_request(method, path, headers, body, query_params):
     handlers = {
         "CreateSecret": _create_secret,
         "GetSecretValue": _get_secret_value,
+        "BatchGetSecretValue": _batch_get_secret_value,
         "ListSecrets": _list_secrets,
         "DeleteSecret": _delete_secret,
         "RestoreSecret": _restore_secret,
@@ -252,6 +253,30 @@ def _get_secret_value(data):
     if ver.get("SecretBinary") is not None:
         result["SecretBinary"] = ver["SecretBinary"]
     return json_response(result)
+
+
+def _batch_get_secret_value(data):
+    secret_ids = data.get("SecretIdList", [])
+    results = []
+    errors = []
+
+    targets = secret_ids if secret_ids else sorted(
+        n for n, s in _secrets.items() if not s.get("DeletedDate"))
+
+    for sid in targets:
+        resp = _get_secret_value({"SecretId": sid})
+        status, _, body = resp
+        parsed = json.loads(body) if isinstance(body, bytes) else json.loads(body)
+        if status >= 400:
+            errors.append({
+                "SecretId": sid,
+                "ErrorCode": parsed.get("__type", "UnknownError"),
+                "Message": parsed.get("message", ""),
+            })
+        else:
+            results.append(parsed)
+
+    return json_response({"SecretValues": results, "Errors": errors})
 
 
 def _list_secrets(data):

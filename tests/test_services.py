@@ -11814,6 +11814,24 @@ def test_sm_get_random_password(sm):
     assert not any(c.isdigit() for c in pwd)
 
 
+def test_sm_batch_get_secret_value(sm):
+    sm.create_secret(Name="batch-s1", SecretString="val1")
+    sm.create_secret(Name="batch-s2", SecretString="val2")
+    resp = sm.batch_get_secret_value(SecretIdList=["batch-s1", "batch-s2"])
+    assert len(resp["SecretValues"]) == 2
+    names = {s["Name"] for s in resp["SecretValues"]}
+    assert "batch-s1" in names
+    assert "batch-s2" in names
+    assert len(resp.get("Errors", [])) == 0
+
+
+def test_sm_batch_get_secret_value_with_missing(sm):
+    resp = sm.batch_get_secret_value(SecretIdList=["batch-s1", "nonexistent-secret"])
+    assert len(resp["SecretValues"]) == 1
+    assert len(resp["Errors"]) == 1
+    assert resp["Errors"][0]["SecretId"] == "nonexistent-secret"
+
+
 def test_sm_kms_key_id_on_create_and_describe(sm):
     sm.create_secret(Name="kms-test-secret", SecretString="val", KmsKeyId="alias/my-key")
     resp = sm.describe_secret(SecretId="kms-test-secret")

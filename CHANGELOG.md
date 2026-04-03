@@ -18,13 +18,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **defusedxml** — S3 and Route53 XML parsing now uses `defusedxml` to protect against billion-laughs DoS
 
 ### Fixed
+- **SecretsManager `BatchGetSecretValue`** — retrieve multiple secrets in one call; returns `SecretValues` and `Errors` arrays
 - **DynamoDB `WarmThroughput`** — DescribeTable now returns `WarmThroughput` field; fixes latest Terraform AWS provider compatibility. Reported by @chad-bekmezian-snap
 - **Firehose deadlock** — `_next_dest_id` no longer acquires lock (always called within `_lock` context)
 - **Redis bound to localhost** — docker-compose.yml Redis port now `127.0.0.1:6379:6379`
 - **EDGE_PORT documented** — added to README Configuration table as LocalStack alias
 
 ### Tests
-- 926 tests total, all passing
+- 928 tests total, all passing
 
 ---
 
