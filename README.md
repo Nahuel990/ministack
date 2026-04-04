@@ -639,6 +639,22 @@ config:
       # ... etc
 ```
 
+### Amplify / CDK
+
+MiniStack supports Amplify Gen 2 and CDK deployments. The underlying services are fully emulated:
+
+- **Auth** — Cognito User Pools with JWKS/OIDC endpoints (`/.well-known/jwks.json`) for real JWT validation
+- **Data** — AppSync GraphQL queries/mutations execute against DynamoDB resolvers (create/get/list/update/delete)
+- **Storage** — S3
+- **Functions** — Lambda (Python + Node.js)
+
+```bash
+export AWS_ENDPOINT_URL=http://localhost:4566
+npx ampx sandbox
+```
+
+> **Note:** AppSync supports Amplify-style CRUD operations. Advanced GraphQL features (fragments, unions, subscriptions) are not supported.
+
 ### Testcontainers (Java / Go / Python)
 
 See [`Testcontainers/java-testcontainers`](Testcontainers/java-testcontainers), [`Testcontainers/go-testcontainers`](Testcontainers/go-testcontainers), and [`Testcontainers/python-testcontainers`](Testcontainers/python-testcontainers) for ready-to-run integration tests using Testcontainers with the AWS SDK v2.

@@ -794,11 +794,29 @@ def _delete_route_table(p):
 
 def _describe_route_tables(p):
     filter_ids = _parse_member_list(p, "RouteTableId")
-    items = "".join(
-        _rtb_fields_xml(rtb)
-        for rtb in _route_tables.values()
-        if not filter_ids or rtb["RouteTableId"] in filter_ids
-    )
+    filters = _parse_filters(p)
+    results = []
+    for rtb in _route_tables.values():
+        if filter_ids and rtb["RouteTableId"] not in filter_ids:
+            continue
+        # Filter by association.route-table-association-id
+        assoc_filter = filters.get("association.route-table-association-id", [])
+        if assoc_filter:
+            assoc_ids = [a["RouteTableAssociationId"] for a in rtb.get("Associations", [])]
+            if not any(af in assoc_ids for af in assoc_filter):
+                continue
+        # Filter by association.subnet-id
+        subnet_filter = filters.get("association.subnet-id", [])
+        if subnet_filter:
+            subnet_ids = [a.get("SubnetId", "") for a in rtb.get("Associations", [])]
+            if not any(sf in subnet_ids for sf in subnet_filter):
+                continue
+        # Filter by vpc-id
+        vpc_filter = filters.get("vpc-id", [])
+        if vpc_filter and rtb.get("VpcId", "") not in vpc_filter:
+            continue
+        results.append(rtb)
+    items = "".join(_rtb_fields_xml(rtb) for rtb in results)
     return _xml(200, "DescribeRouteTablesResponse",
                 f"<routeTableSet>{items}</routeTableSet>")
 
