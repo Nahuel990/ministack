@@ -23,6 +23,7 @@ import ministack.services.ssm as _ssm
 import ministack.services.cloudwatch_logs as _cw_logs
 import ministack.services.eventbridge as _eb
 import ministack.services.iam_sts as _iam_sts
+import ministack.services.apigateway_v1 as _apigw_v1
 
 
 logger = logging.getLogger("cloudformation")
@@ -714,6 +715,263 @@ def _cfn_wait_condition_handle_create(logical_id, props, stack_name):
     return pid, {"Ref": url}
 
 
+# --- API Gateway REST API ---
+
+def _apigw_rest_api_create(logical_id, props, stack_name):
+    name = props.get("Name") or _physical_name(stack_name, logical_id, max_len=64)
+    data = {
+        "name": name,
+        "description": props.get("Description", ""),
+        "endpointConfiguration": props.get("EndpointConfiguration", {"types": ["REGIONAL"]}),
+        "binaryMediaTypes": props.get("BinaryMediaTypes", []),
+        "minimumCompressionSize": props.get("MinimumCompressionSize"),
+        "policy": props.get("Policy"),
+        "tags": {t["Key"]: t["Value"] for t in props.get("Tags", [])},
+    }
+    status, headers, body = _apigw_v1._create_rest_api(data)
+    api = json.loads(body) if isinstance(body, bytes) else json.loads(body)
+    api_id = api.get("id", "")
+    # Find root resource id
+    root_id = ""
+    for rid, res in _apigw_v1._resources.get(api_id, {}).items():
+        if res.get("path") == "/":
+            root_id = rid
+            break
+    return api_id, {
+        "RootResourceId": root_id,
+        "Arn": f"arn:aws:apigateway:{REGION}::/restapis/{api_id}",
+    }
+
+
+def _apigw_rest_api_delete(physical_id, props):
+    _apigw_v1._delete_rest_api(physical_id)
+
+
+# --- API Gateway Resource ---
+
+def _apigw_resource_create(logical_id, props, stack_name):
+    api_id = props.get("RestApiId", "")
+    parent_id = props.get("ParentId", "")
+    path_part = props.get("PathPart", "")
+    data = {"pathPart": path_part}
+    status, headers, body = _apigw_v1._create_resource(api_id, parent_id, data)
+    resource = json.loads(body) if isinstance(body, bytes) else json.loads(body)
+    resource_id = resource.get("id", "")
+    return resource_id, {"ResourceId": resource_id}
+
+
+def _apigw_resource_delete(physical_id, props):
+    api_id = props.get("RestApiId", "")
+    _apigw_v1._delete_resource(api_id, physical_id)
+
+
+# --- API Gateway Method ---
+
+def _apigw_method_create(logical_id, props, stack_name):
+    api_id = props.get("RestApiId", "")
+    resource_id = props.get("ResourceId", "")
+    http_method = props.get("HttpMethod", "ANY")
+    data = {
+        "authorizationType": props.get("AuthorizationType", "NONE"),
+        "authorizerId": props.get("AuthorizerId"),
+        "apiKeyRequired": props.get("ApiKeyRequired", False),
+        "operationName": props.get("OperationName", ""),
+        "requestParameters": props.get("RequestParameters", {}),
+        "requestModels": props.get("RequestModels", {}),
+    }
+    _apigw_v1._put_method(api_id, resource_id, http_method, data)
+
+    # Also set Integration if provided
+    integration = props.get("Integration")
+    if integration:
+        int_data = {
+            "type": integration.get("Type", "AWS_PROXY"),
+            "httpMethod": integration.get("IntegrationHttpMethod", "POST"),
+            "uri": integration.get("Uri", ""),
+            "connectionType": integration.get("ConnectionType", "INTERNET"),
+            "credentials": integration.get("Credentials"),
+            "requestParameters": integration.get("RequestParameters", {}),
+            "requestTemplates": integration.get("RequestTemplates", {}),
+            "passthroughBehavior": integration.get("PassthroughBehavior", "WHEN_NO_MATCH"),
+            "timeoutInMillis": integration.get("TimeoutInMillis", 29000),
+            "cacheKeyParameters": integration.get("CacheKeyParameters", []),
+        }
+        _apigw_v1._put_integration(api_id, resource_id, http_method, int_data)
+
+    pid = f"{api_id}-{resource_id}-{http_method}"
+    return pid, {}
+
+
+def _apigw_method_delete(physical_id, props):
+    api_id = props.get("RestApiId", "")
+    resource_id = props.get("ResourceId", "")
+    http_method = props.get("HttpMethod", "ANY")
+    _apigw_v1._delete_method(api_id, resource_id, http_method)
+
+
+# --- API Gateway Deployment ---
+
+def _apigw_deployment_create(logical_id, props, stack_name):
+    api_id = props.get("RestApiId", "")
+    data = {
+        "description": props.get("Description", ""),
+        "stageName": props.get("StageName"),
+        "stageDescription": props.get("StageDescription", ""),
+    }
+    status, headers, body = _apigw_v1._create_deployment(api_id, data)
+    deployment = json.loads(body) if isinstance(body, bytes) else json.loads(body)
+    deployment_id = deployment.get("id", "")
+    return deployment_id, {"DeploymentId": deployment_id}
+
+
+def _apigw_deployment_delete(physical_id, props):
+    api_id = props.get("RestApiId", "")
+    _apigw_v1._delete_deployment(api_id, physical_id)
+
+
+# --- API Gateway Stage ---
+
+def _apigw_stage_create(logical_id, props, stack_name):
+    api_id = props.get("RestApiId", "")
+    stage_name = props.get("StageName", "")
+    data = {
+        "stageName": stage_name,
+        "deploymentId": props.get("DeploymentId", ""),
+        "description": props.get("Description", ""),
+        "variables": props.get("Variables", {}),
+        "methodSettings": props.get("MethodSettings", {}),
+        "tracingEnabled": props.get("TracingEnabled", False),
+        "tags": {t["Key"]: t["Value"] for t in props.get("Tags", [])},
+    }
+    _apigw_v1._create_stage(api_id, data)
+    pid = f"{api_id}-{stage_name}"
+    return pid, {"StageName": stage_name}
+
+
+def _apigw_stage_delete(physical_id, props):
+    api_id = props.get("RestApiId", "")
+    stage_name = props.get("StageName", "")
+    _apigw_v1._delete_stage(api_id, stage_name)
+
+
+# --- Lambda EventSourceMapping ---
+
+def _lambda_esm_create(logical_id, props, stack_name):
+    func_name = props.get("FunctionName", "")
+    if func_name.startswith("arn:"):
+        func_name = func_name.rsplit(":", 1)[-1]
+    esm_id = new_uuid()
+    func = _lambda_svc._functions.get(func_name)
+    func_arn = func["config"]["FunctionArn"] if func else f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:{func_name}"
+
+    esm = {
+        "UUID": esm_id,
+        "EventSourceArn": props.get("EventSourceArn", ""),
+        "FunctionArn": func_arn,
+        "FunctionName": func_name,
+        "State": "Enabled",
+        "StateTransitionReason": "USER_INITIATED",
+        "BatchSize": int(props.get("BatchSize", 10)),
+        "MaximumBatchingWindowInSeconds": int(props.get("MaximumBatchingWindowInSeconds", 0)),
+        "LastModified": time.time(),
+        "LastProcessingResult": "No records processed",
+        "StartingPosition": props.get("StartingPosition", "LATEST"),
+        "Enabled": props.get("Enabled", True),
+        "FunctionResponseTypes": props.get("FunctionResponseTypes", []),
+    }
+    _lambda_svc._esms[esm_id] = esm
+    return esm_id, {"UUID": esm_id}
+
+
+def _lambda_esm_delete(physical_id, props):
+    _lambda_svc._esms.pop(physical_id, None)
+
+
+# --- Lambda Alias ---
+
+def _lambda_alias_create(logical_id, props, stack_name):
+    func_name = props.get("FunctionName", "")
+    if func_name.startswith("arn:"):
+        func_name = func_name.rsplit(":", 1)[-1]
+    alias_name = props.get("Name", "")
+    func_version = props.get("FunctionVersion", "$LATEST")
+
+    func = _lambda_svc._functions.get(func_name)
+    if func:
+        alias = {
+            "AliasArn": f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:{func_name}:{alias_name}",
+            "Name": alias_name,
+            "FunctionVersion": func_version,
+            "Description": props.get("Description", ""),
+            "RevisionId": new_uuid(),
+        }
+        rc = props.get("RoutingConfig")
+        if rc:
+            alias["RoutingConfig"] = rc
+        func["aliases"][alias_name] = alias
+        return alias["AliasArn"], {"AliasArn": alias["AliasArn"]}
+
+    alias_arn = f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:{func_name}:{alias_name}"
+    return alias_arn, {"AliasArn": alias_arn}
+
+
+def _lambda_alias_delete(physical_id, props):
+    func_name = props.get("FunctionName", "")
+    if func_name.startswith("arn:"):
+        func_name = func_name.rsplit(":", 1)[-1]
+    alias_name = props.get("Name", "")
+    func = _lambda_svc._functions.get(func_name)
+    if func:
+        func["aliases"].pop(alias_name, None)
+
+
+# --- SQS QueuePolicy ---
+
+def _sqs_queue_policy_create(logical_id, props, stack_name):
+    policy_doc = props.get("PolicyDocument", {})
+    if isinstance(policy_doc, dict):
+        policy_doc = json.dumps(policy_doc)
+    queues = props.get("Queues", [])
+    for queue_url in queues:
+        queue = _sqs._queues.get(queue_url)
+        if queue:
+            queue["attributes"]["Policy"] = policy_doc
+    pid = f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
+    return pid, {}
+
+
+def _sqs_queue_policy_delete(physical_id, props):
+    queues = props.get("Queues", [])
+    for queue_url in queues:
+        queue = _sqs._queues.get(queue_url)
+        if queue:
+            queue["attributes"].pop("Policy", None)
+
+
+# --- SNS TopicPolicy ---
+
+def _sns_topic_policy_create(logical_id, props, stack_name):
+    policy_doc = props.get("PolicyDocument", {})
+    if isinstance(policy_doc, dict):
+        policy_doc = json.dumps(policy_doc)
+    topics = props.get("Topics", [])
+    for topic_arn in topics:
+        topic = _sns._topics.get(topic_arn)
+        if topic:
+            topic["attributes"]["Policy"] = policy_doc
+    pid = f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
+    return pid, {}
+
+
+def _sns_topic_policy_delete(physical_id, props):
+    topics = props.get("Topics", [])
+    for topic_arn in topics:
+        topic = _sns._topics.get(topic_arn)
+        if topic:
+            # Restore default policy
+            topic["attributes"].pop("Policy", None)
+
+
 # ===========================================================================
 # Resource Handler Registry
 # ===========================================================================
@@ -736,4 +994,13 @@ _RESOURCE_HANDLERS = {
     "AWS::Lambda::Version": {"create": _lambda_version_create},
     "AWS::CloudFormation::WaitCondition": {"create": _cfn_wait_condition_create},
     "AWS::CloudFormation::WaitConditionHandle": {"create": _cfn_wait_condition_handle_create},
+    "AWS::ApiGateway::RestApi": {"create": _apigw_rest_api_create, "delete": _apigw_rest_api_delete},
+    "AWS::ApiGateway::Resource": {"create": _apigw_resource_create, "delete": _apigw_resource_delete},
+    "AWS::ApiGateway::Method": {"create": _apigw_method_create, "delete": _apigw_method_delete},
+    "AWS::ApiGateway::Deployment": {"create": _apigw_deployment_create, "delete": _apigw_deployment_delete},
+    "AWS::ApiGateway::Stage": {"create": _apigw_stage_create, "delete": _apigw_stage_delete},
+    "AWS::Lambda::EventSourceMapping": {"create": _lambda_esm_create, "delete": _lambda_esm_delete},
+    "AWS::Lambda::Alias": {"create": _lambda_alias_create, "delete": _lambda_alias_delete},
+    "AWS::SQS::QueuePolicy": {"create": _sqs_queue_policy_create, "delete": _sqs_queue_policy_delete},
+    "AWS::SNS::TopicPolicy": {"create": _sns_topic_policy_create, "delete": _sns_topic_policy_delete},
 }

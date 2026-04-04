@@ -59,6 +59,72 @@ from ministack.core.responses import error_response_json, json_response, new_uui
 
 logger = logging.getLogger("cognito")
 
+# ---------------------------------------------------------------------------
+# RSA key pair for JWKS / token signing
+# ---------------------------------------------------------------------------
+
+_RSA_PRIVATE_KEY = None
+_JWKS_KEY: dict = {}
+
+try:
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives import serialization
+
+    _rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    _RSA_PRIVATE_KEY = _rsa_key
+
+    _pub = _rsa_key.public_key()
+    _pub_numbers = _pub.public_numbers()
+
+    def _int_to_base64url(n: int, length: int) -> str:
+        data = n.to_bytes(length, byteorder="big")
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    _JWKS_KEY = {
+        "kty": "RSA",
+        "alg": "RS256",
+        "use": "sig",
+        "kid": "ministack-key-1",
+        "n": _int_to_base64url(_pub_numbers.n, 256),
+        "e": _int_to_base64url(_pub_numbers.e, 3),
+    }
+except ImportError:
+    # Fallback: static dummy key when cryptography is not installed
+    _JWKS_KEY = {
+        "kty": "RSA",
+        "alg": "RS256",
+        "use": "sig",
+        "kid": "ministack-key-1",
+        "n": (
+            "wJUEhGbAmcKEHp7EaNBYYEmign_bbWUBnfQGTCZ0h4ViqHC_KQQ7A"
+            "3E9X3OJ1P1E5VWZqvMfVN3l_0ljPBiA0XG4D4GBJzFJBmXq48Sk-"
+            "G38q5LHxzH-ajLz7TrEMqSF3XTkmJ_7y3p3BdML2oFGm4F0DUUEU"
+            "P3xmILPH2uo9g-5xRjYMh8i7V0xXyTAQS5Tw"
+        ),
+        "e": "AQAB",
+    }
+
+
+def well_known_jwks(pool_id: str):
+    """Return JWKS JSON for /{poolId}/.well-known/jwks.json."""
+    return 200, {"Content-Type": "application/json"}, json.dumps({"keys": [_JWKS_KEY]}).encode()
+
+
+def well_known_openid_configuration(pool_id: str, region: str | None = None):
+    """Return OpenID Connect discovery document."""
+    r = region or REGION
+    issuer = f"https://cognito-idp.{r}.amazonaws.com/{pool_id}"
+    doc = {
+        "issuer": issuer,
+        "jwks_uri": f"{issuer}/.well-known/jwks.json",
+        "authorization_endpoint": f"{issuer}/oauth2/authorize",
+        "token_endpoint": f"{issuer}/oauth2/token",
+        "response_types_supported": ["code", "token"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["RS256"],
+    }
+    return 200, {"Content-Type": "application/json"}, json.dumps(doc).encode()
+
 ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 

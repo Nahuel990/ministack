@@ -44,6 +44,7 @@ from ministack.services import (
     alb,
     apigateway,
     apigateway_v1,
+    appsync,
     athena,
     cloudformation,
     cloudwatch,
@@ -122,6 +123,7 @@ SERVICE_HANDLERS = {
     "elasticfilesystem": efs.handle_request,
     "kms": kms.handle_request,
     "cloudfront": cloudfront.handle_request,
+    "appsync": appsync.handle_request,
 }
 
 SERVICE_NAME_ALIASES = {
@@ -175,7 +177,8 @@ BANNER = r"""
  Services: S3, SQS, SNS, DynamoDB, Lambda, IAM, STS, SecretsManager, CloudWatch Logs,
           SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
-          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation, KMS, ECR, CloudFront
+          Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation, KMS, ECR, CloudFront,
+          AppSync
 """
 
 
@@ -250,6 +253,24 @@ async def app(scope, receive, send):
             status, resp_headers, resp_body = lambda_svc.serve_layer_content(lp[3], int(lp[4]))
             await _send_response(send, status, resp_headers, resp_body)
             return
+
+    # Cognito JWKS / OpenID Configuration well-known endpoints
+    # Path: /{poolId}/.well-known/jwks.json  or  /{poolId}/.well-known/openid-configuration
+    if "/.well-known/" in path and method == "GET":
+        if path.endswith("/.well-known/jwks.json"):
+            _pool_id = path.rsplit("/.well-known/jwks.json", 1)[0].lstrip("/")
+            if _pool_id:
+                _region = extract_region(headers) or "us-east-1"
+                status, resp_headers, resp_body = cognito.well_known_jwks(_pool_id)
+                await _send_response(send, status, resp_headers, resp_body)
+                return
+        elif path.endswith("/.well-known/openid-configuration"):
+            _pool_id = path.rsplit("/.well-known/openid-configuration", 1)[0].lstrip("/")
+            if _pool_id:
+                _region = extract_region(headers) or "us-east-1"
+                status, resp_headers, resp_body = cognito.well_known_openid_configuration(_pool_id, _region)
+                await _send_response(send, status, resp_headers, resp_body)
+                return
 
     # Admin endpoints — no wildcard CORS headers (return early, before CORS block)
     if path == "/_ministack/reset" and method == "POST":
@@ -568,6 +589,7 @@ async def _handle_lifespan(scope, receive, send):
                     "rds": rds.get_state,
                     "ecs": ecs.get_state,
                     "elasticache": elasticache.get_state,
+                    "appsync": appsync.get_state,
                 })
             await send({"type": "lifespan.shutdown.complete"})
             return
@@ -647,6 +669,7 @@ def _reset_all_state():
         (kms, kms.reset),
         (cloudfront, cloudfront.reset),
         (ecr, ecr.reset),
+        (appsync, appsync.reset),
     ]:
         try:
             fn()

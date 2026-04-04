@@ -18098,3 +18098,109 @@ def test_lambda_provisioned_concurrency_crud(lam):
         lam.get_provisioned_concurrency_config(FunctionName="pc-fn", Qualifier=ver)
 
     lam.delete_function(FunctionName="pc-fn")
+
+
+# ========== AppSync ==========
+
+
+def test_appsync_create_and_list_api():
+    """Create a GraphQL API and list it."""
+    from conftest import make_client
+    appsync = make_client("appsync")
+    resp = appsync.create_graphql_api(name="test-api", authenticationType="API_KEY")
+    api = resp["graphqlApi"]
+    assert api["name"] == "test-api"
+    assert api["apiId"]
+    assert api["authenticationType"] == "API_KEY"
+
+    apis = appsync.list_graphql_apis()["graphqlApis"]
+    assert any(a["apiId"] == api["apiId"] for a in apis)
+
+
+def test_appsync_get_and_delete_api():
+    from conftest import make_client
+    appsync = make_client("appsync")
+    resp = appsync.create_graphql_api(name="del-api", authenticationType="API_KEY")
+    api_id = resp["graphqlApi"]["apiId"]
+    got = appsync.get_graphql_api(apiId=api_id)
+    assert got["graphqlApi"]["name"] == "del-api"
+    appsync.delete_graphql_api(apiId=api_id)
+    from botocore.exceptions import ClientError
+    with pytest.raises(ClientError):
+        appsync.get_graphql_api(apiId=api_id)
+
+
+def test_appsync_api_key_crud():
+    from conftest import make_client
+    appsync = make_client("appsync")
+    api = appsync.create_graphql_api(name="key-api", authenticationType="API_KEY")["graphqlApi"]
+    key = appsync.create_api_key(apiId=api["apiId"])["apiKey"]
+    assert key["id"]
+    keys = appsync.list_api_keys(apiId=api["apiId"])["apiKeys"]
+    assert len(keys) >= 1
+    appsync.delete_api_key(apiId=api["apiId"], id=key["id"])
+
+
+def test_appsync_data_source_crud():
+    from conftest import make_client
+    appsync = make_client("appsync")
+    api = appsync.create_graphql_api(name="ds-api", authenticationType="API_KEY")["graphqlApi"]
+    ds = appsync.create_data_source(
+        apiId=api["apiId"], name="myds", type="AMAZON_DYNAMODB",
+        dynamodbConfig={"tableName": "test-table", "awsRegion": "us-east-1"},
+    )["dataSource"]
+    assert ds["name"] == "myds"
+    got = appsync.get_data_source(apiId=api["apiId"], name="myds")
+    assert got["dataSource"]["name"] == "myds"
+    appsync.delete_data_source(apiId=api["apiId"], name="myds")
+
+
+# ========== Cognito JWKS ==========
+
+
+def test_cognito_jwks_endpoint():
+    """/.well-known/jwks.json returns valid JWK set."""
+    import urllib.request, json as _json
+    from conftest import make_client
+    cognito = make_client("cognito-idp")
+    pool = cognito.create_user_pool(PoolName="jwks-pool")["UserPool"]
+    pool_id = pool["Id"]
+    req = urllib.request.Request(
+        f"http://localhost:4566/{pool_id}/.well-known/jwks.json",
+    )
+    with urllib.request.urlopen(req) as r:
+        data = _json.loads(r.read())
+    assert "keys" in data
+    assert len(data["keys"]) >= 1
+    assert data["keys"][0]["kty"] == "RSA"
+    assert data["keys"][0]["alg"] == "RS256"
+
+
+def test_cognito_openid_configuration():
+    """/.well-known/openid-configuration returns valid discovery document."""
+    import urllib.request, json as _json
+    from conftest import make_client
+    cognito = make_client("cognito-idp")
+    pool = cognito.create_user_pool(PoolName="oidc-pool")["UserPool"]
+    pool_id = pool["Id"]
+    req = urllib.request.Request(
+        f"http://localhost:4566/{pool_id}/.well-known/openid-configuration",
+    )
+    with urllib.request.urlopen(req) as r:
+        data = _json.loads(r.read())
+    assert "issuer" in data
+    assert pool_id in data["issuer"]
+    assert "jwks_uri" in data
+    assert "token_endpoint" in data
+
+
+# ========== EC2 DescribeVpcAttribute ==========
+
+
+def test_ec2_describe_vpc_attribute(ec2):
+    vpc = ec2.create_vpc(CidrBlock="10.99.0.0/16")
+    vpc_id = vpc["Vpc"]["VpcId"]
+    resp = ec2.describe_vpc_attribute(VpcId=vpc_id, Attribute="enableDnsSupport")
+    assert resp["EnableDnsSupport"]["Value"] in (True, False)
+    resp2 = ec2.describe_vpc_attribute(VpcId=vpc_id, Attribute="enableDnsHostnames")
+    assert resp2["EnableDnsHostnames"]["Value"] in (True, False)

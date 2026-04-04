@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.32] — 2026-04-04
+
+### Added
+- **AppSync service** — CreateGraphQLApi, GetGraphQLApi, ListGraphQLApis, UpdateGraphQLApi, DeleteGraphQLApi, CreateApiKey, ListApiKeys, DeleteApiKey, CreateDataSource, GetDataSource, ListDataSources, DeleteDataSource, CreateResolver, GetResolver, ListResolvers, DeleteResolver, CreateType, ListTypes, GetType, TagResource, UntagResource, ListTagsForResource; REST/JSON API under `/v1/apis`; in-memory state with persistence
+- **Cognito JWKS/OIDC endpoints** — `/.well-known/jwks.json` returns real RSA public key; `/.well-known/openid-configuration` returns OpenID Connect discovery document; enables real JWT validation in Amplify/CDK auth flows
+- **9 new CloudFormation resource types** — `AWS::ApiGateway::RestApi`, `AWS::ApiGateway::Resource`, `AWS::ApiGateway::Method`, `AWS::ApiGateway::Deployment`, `AWS::ApiGateway::Stage`, `AWS::Lambda::EventSourceMapping`, `AWS::Lambda::Alias`, `AWS::SQS::QueuePolicy`, `AWS::SNS::TopicPolicy`; unblocks Serverless Framework and CDK deployments
+- **EC2 `DescribeVpcAttribute`** — returns EnableDnsSupport, EnableDnsHostnames, EnableNetworkAddressUsageMetrics; fixes Terraform VPC module failing after ModifyVpcAttribute. Reported by @betorvs
+
+### Tests
+- 955 tests total, all passing
+
+---
+
 ## [1.1.31] — 2026-04-04
 
 ### Fixed
@@ -16,6 +29,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **EventBridge SQS dispatch missing message fields** — now calls `_ensure_msg_fields` after appending, preventing KeyError on ReceiveMessage
 - **README: stale test count and service count** — updated to 948 tests, 37 services
 - **README: CloudFront in Terraform endpoints, architecture diagram, comparison table**
+
+### Tests
+- 948 tests total, all passing
 
 ---
 

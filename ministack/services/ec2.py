@@ -722,6 +722,26 @@ def _modify_vpc_attribute(p):
     return _xml(200, "ModifyVpcAttributeResponse", "<return>true</return>")
 
 
+def _describe_vpc_attribute(p):
+    vpc_id = _p(p, "VpcId")
+    attribute = _p(p, "Attribute")
+    if vpc_id not in _vpcs:
+        return _error("InvalidVpcID.NotFound", f"The vpc ID '{vpc_id}' does not exist", 400)
+    vpc = _vpcs[vpc_id]
+    if attribute == "enableDnsSupport":
+        val = vpc.get("EnableDnsSupport", True)
+        return _xml(200, "DescribeVpcAttributeResponse",
+                    f"<vpcId>{vpc_id}</vpcId><enableDnsSupport><value>{'true' if val else 'false'}</value></enableDnsSupport>")
+    elif attribute == "enableDnsHostnames":
+        val = vpc.get("EnableDnsHostnames", False)
+        return _xml(200, "DescribeVpcAttributeResponse",
+                    f"<vpcId>{vpc_id}</vpcId><enableDnsHostnames><value>{'true' if val else 'false'}</value></enableDnsHostnames>")
+    elif attribute == "enableNetworkAddressUsageMetrics":
+        return _xml(200, "DescribeVpcAttributeResponse",
+                    f"<vpcId>{vpc_id}</vpcId><enableNetworkAddressUsageMetrics><value>false</value></enableNetworkAddressUsageMetrics>")
+    return _xml(200, "DescribeVpcAttributeResponse", f"<vpcId>{vpc_id}</vpcId>")
+
+
 def _modify_subnet_attribute(p):
     subnet_id = _p(p, "SubnetId")
     if subnet_id not in _subnets:
@@ -2537,6 +2557,7 @@ _ACTION_MAP = {
     "DeleteTags": _delete_tags,
     "DescribeTags": _describe_tags,
     "ModifyVpcAttribute": _modify_vpc_attribute,
+    "DescribeVpcAttribute": _describe_vpc_attribute,
     "ModifySubnetAttribute": _modify_subnet_attribute,
     "CreateRouteTable": _create_route_table,
     "DeleteRouteTable": _delete_route_table,

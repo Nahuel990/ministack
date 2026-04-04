@@ -162,6 +162,11 @@ SERVICE_PATTERNS = {
         "host_patterns": [r"cloudfront\."],
         "credential_scope": "cloudfront",
     },
+    "appsync": {
+        "host_patterns": [r"appsync\."],
+        "path_prefixes": ["/v1/apis", "/v1/tags"],
+        "credential_scope": "appsync",
+    },
 }
 
 
@@ -213,6 +218,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "cloudformation": "cloudformation",
                 "kms": "kms",
                 "cloudfront": "cloudfront",
+                "appsync": "appsync",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
@@ -412,6 +418,8 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
 
     # 4. Check URL path patterns
     path_lower = path.lower()
+    if path_lower.startswith("/v1/apis") or path_lower.startswith("/v1/tags/arn:aws:appsync"):
+        return "appsync"
     if path_lower.startswith("/2020-05-31/"):
         return "cloudfront"
     if path_lower.startswith("/2013-04-01/"):
