@@ -11,6 +11,7 @@ import { Separator } from '@/components/ui/separator'
 import { EmptyState } from '@/components/EmptyState'
 import { JsonViewer } from '@/components/JsonViewer'
 import { useFetch } from '@/hooks/useFetch'
+import { Input } from '@/components/ui/input'
 import {
   HardDrive,
   Folder,
@@ -27,6 +28,7 @@ import {
   Tag,
   Shield,
   Download,
+  Search,
 } from 'lucide-react'
 
 interface S3Bucket {
@@ -107,6 +109,8 @@ export function S3Browser() {
   const [objectsData, setObjectsData] = useState<S3ObjectsResponse | null>(null)
   const [loadingObjects, setLoadingObjects] = useState(false)
   const [objectDetail, setObjectDetail] = useState<S3ObjectDetail | null>(null)
+  const [bucketSearch, setBucketSearch] = useState('')
+  const [fileSearch, setFileSearch] = useState('')
 
   useEffect(() => {
     if (!selectedBucket) {
@@ -131,17 +135,29 @@ export function S3Browser() {
 
   const navigateToFolder = (folderPrefix: string) => {
     setPrefix(folderPrefix)
+    setFileSearch('')
   }
 
   const navigateUp = () => {
     const parts = prefix.replace(/\/$/, '').split('/')
     parts.pop()
     setPrefix(parts.length > 0 ? parts.join('/') + '/' : '')
+    setFileSearch('')
   }
 
   const breadcrumbs = prefix ? prefix.replace(/\/$/, '').split('/') : []
 
   const buckets = bucketsData?.buckets ?? []
+  const filteredBuckets = bucketSearch
+    ? buckets.filter((b) => b.name.toLowerCase().includes(bucketSearch.toLowerCase()))
+    : buckets
+
+  const filteredFolders = fileSearch && objectsData
+    ? objectsData.folders.filter((f) => f.slice(prefix.length).toLowerCase().includes(fileSearch.toLowerCase()))
+    : objectsData?.folders ?? []
+  const filteredFiles = fileSearch && objectsData
+    ? objectsData.files.filter((f) => f.name.toLowerCase().includes(fileSearch.toLowerCase()))
+    : objectsData?.files ?? []
 
   // Bucket list view
   if (!selectedBucket) {
@@ -167,14 +183,35 @@ export function S3Browser() {
 
     return (
       <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <HardDrive className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-xl font-bold">S3 Buckets</h2>
-          <Badge variant="secondary">{buckets.length}</Badge>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <HardDrive className="h-5 w-5 text-muted-foreground" />
+            <h2 className="text-xl font-bold">S3 Buckets</h2>
+            <Badge variant="secondary">{buckets.length}</Badge>
+          </div>
+          {buckets.length > 0 && (
+            <div className="relative w-64">
+              <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Search buckets..."
+                value={bucketSearch}
+                onChange={(e) => setBucketSearch(e.target.value)}
+                className="pl-8 h-8 text-sm"
+                aria-label="Search buckets"
+              />
+            </div>
+          )}
         </div>
 
+        {filteredBuckets.length === 0 && bucketSearch ? (
+          <EmptyState
+            icon={Search}
+            title="No matching buckets"
+            description={`No buckets match "${bucketSearch}".`}
+          />
+        ) : (
         <div className="grid gap-3">
-          {buckets.map((bkt) => (
+          {filteredBuckets.map((bkt) => (
             <Card
               key={bkt.name}
               className="cursor-pointer hover:bg-accent/50 transition-colors"
@@ -234,6 +271,7 @@ export function S3Browser() {
             </Card>
           ))}
         </div>
+        )}
       </div>
     )
   }
@@ -270,14 +308,28 @@ export function S3Browser() {
       {/* Objects table */}
       <Card>
         <CardHeader className="p-4 pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium">
-              {prefix ? `${prefix}` : 'Root'}
-            </CardTitle>
-            {objectsData && (
-              <span className="text-xs text-muted-foreground">
-                {objectsData.folders.length} folders, {objectsData.files.length} files
-              </span>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <CardTitle className="text-sm font-medium">
+                {prefix ? `${prefix}` : 'Root'}
+              </CardTitle>
+              {objectsData && (
+                <span className="text-xs text-muted-foreground">
+                  {filteredFolders.length} folders, {filteredFiles.length} files
+                </span>
+              )}
+            </div>
+            {objectsData && (objectsData.folders.length > 0 || objectsData.files.length > 0) && (
+              <div className="relative w-56">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="Search files..."
+                  value={fileSearch}
+                  onChange={(e) => setFileSearch(e.target.value)}
+                  className="pl-8 h-8 text-sm"
+                  aria-label="Search files and folders"
+                />
+              </div>
             )}
           </div>
         </CardHeader>
@@ -289,6 +341,14 @@ export function S3Browser() {
               ))}
             </div>
           ) : objectsData && (objectsData.folders.length > 0 || objectsData.files.length > 0) ? (
+            <>
+            {filteredFolders.length === 0 && filteredFiles.length === 0 && fileSearch ? (
+              <EmptyState
+                icon={Search}
+                title="No matching files"
+                description={`No files or folders match "${fileSearch}".`}
+              />
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -301,7 +361,7 @@ export function S3Browser() {
               </TableHeader>
               <TableBody>
                 {/* Back navigation */}
-                {prefix && (
+                {prefix && !fileSearch && (
                   <TableRow className="cursor-pointer hover:bg-accent/50" onClick={navigateUp}>
                     <TableCell className="text-xs" colSpan={5}>
                       <div className="flex items-center gap-2 text-muted-foreground">
@@ -313,7 +373,7 @@ export function S3Browser() {
                 )}
 
                 {/* Folders */}
-                {objectsData.folders.map((folder) => {
+                {filteredFolders.map((folder) => {
                   const folderName = folder.slice(prefix.length).replace(/\/$/, '')
                   return (
                     <TableRow
@@ -336,7 +396,7 @@ export function S3Browser() {
                 })}
 
                 {/* Files */}
-                {objectsData.files.map((file) => {
+                {filteredFiles.map((file) => {
                   const Icon = getFileIcon(file.content_type, file.name)
                   return (
                     <TableRow
@@ -374,6 +434,8 @@ export function S3Browser() {
                 })}
               </TableBody>
             </Table>
+            )}
+            </>
           ) : (
             <EmptyState
               icon={Folder}
