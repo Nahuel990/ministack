@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.38] — 2026-04-05
+
+### Added
+- **ECS 19 new operations (47 total)** — `ListTaskDefinitionFamilies`, `DeleteTaskDefinitions`, `ListServicesByNamespace`, `PutAccountSettingDefault`, `DeleteAccountSetting`, `PutAttributes`, `DeleteAttributes`, `ListAttributes`, `UpdateCapacityProvider`, `DescribeServiceDeployments`, `ListServiceDeployments`, `DescribeServiceRevisions`, `SubmitTaskStateChange`, `SubmitContainerStateChange`, `SubmitAttachmentStateChanges`, `DiscoverPollEndpoint`, `UpdateTaskProtection`, `GetTaskProtection`. Full Terraform ECS coverage.
+
+---
+
 ## [1.1.37] — 2026-04-05
 
 ### Added

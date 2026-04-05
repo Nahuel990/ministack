@@ -1,15 +1,24 @@
 """
 ECS (Elastic Container Service) Emulator.
 REST JSON API — X-Amz-Target header routing with path-based fallback.
-Supports: CreateCluster, DeleteCluster, DescribeClusters, ListClusters,
-          UpdateCluster, UpdateClusterSettings,
-          RegisterTaskDefinition, DeregisterTaskDefinition, DescribeTaskDefinition, ListTaskDefinitions,
-          CreateService, DeleteService, DescribeServices, UpdateService, ListServices,
-          RunTask, StopTask, DescribeTasks, ListTasks,
-          TagResource, UntagResource, ListTagsForResource,
-          ExecuteCommand, ListAccountSettings, PutAccountSetting,
-          CreateCapacityProvider, DeleteCapacityProvider, DescribeCapacityProviders,
-          PutClusterCapacityProviders.
+Supports 47 operations:
+  Clusters:     CreateCluster, DeleteCluster, DescribeClusters, ListClusters,
+                UpdateCluster, UpdateClusterSettings, PutClusterCapacityProviders
+  Task Defs:    RegisterTaskDefinition, DeregisterTaskDefinition, DescribeTaskDefinition,
+                ListTaskDefinitions, ListTaskDefinitionFamilies, DeleteTaskDefinitions
+  Services:     CreateService, DeleteService, DescribeServices, UpdateService,
+                ListServices, ListServicesByNamespace
+  Tasks:        RunTask, StopTask, DescribeTasks, ListTasks, ExecuteCommand,
+                UpdateTaskProtection, GetTaskProtection
+  Capacity:     CreateCapacityProvider, UpdateCapacityProvider, DeleteCapacityProvider,
+                DescribeCapacityProviders
+  Tags:         TagResource, UntagResource, ListTagsForResource
+  Account:      ListAccountSettings, PutAccountSetting, PutAccountSettingDefault,
+                DeleteAccountSetting
+  Attributes:   PutAttributes, DeleteAttributes, ListAttributes
+  Deployments:  DescribeServiceDeployments, ListServiceDeployments, DescribeServiceRevisions
+  Agent:        SubmitTaskStateChange, SubmitContainerStateChange,
+                SubmitAttachmentStateChanges, DiscoverPollEndpoint
 
 Container execution: if Docker socket is available, RunTask actually runs containers.
 """
@@ -1238,6 +1247,168 @@ def _sanitize(obj):
 
 
 # ---------------------------------------------------------------------------
+# ListTaskDefinitionFamilies / DeleteTaskDefinitions
+# ---------------------------------------------------------------------------
+
+def _list_task_definition_families(data):
+    family_prefix = data.get("familyPrefix", "")
+    status_filter = data.get("status", "ACTIVE")
+    families = set()
+    for td in _task_defs.values():
+        if status_filter and td.get("status") != status_filter:
+            continue
+        fam = td.get("family", "")
+        if family_prefix and not fam.startswith(family_prefix):
+            continue
+        families.add(fam)
+    return json_response({"families": sorted(families)})
+
+
+def _delete_task_definitions(data):
+    arns = data.get("taskDefinitions", [])
+    failures = []
+    for arn in arns:
+        key = arn.split("/")[-1] if "/" in arn else arn
+        if key in _task_defs:
+            _task_defs[key]["status"] = "DELETE_IN_PROGRESS"
+        else:
+            failures.append({"arn": arn, "reason": "TASK_DEFINITION_NOT_FOUND"})
+    return json_response({"taskDefinitions": [_task_defs.get(a.split("/")[-1], {}) for a in arns if a.split("/")[-1] in _task_defs], "failures": failures})
+
+
+# ---------------------------------------------------------------------------
+# ListServicesByNamespace
+# ---------------------------------------------------------------------------
+
+def _list_services_by_namespace(data):
+    namespace = data.get("namespace", "")
+    items = []
+    for svc in _services.values():
+        if namespace and svc.get("_namespace", "") != namespace:
+            continue
+        items.append({"serviceArn": svc["serviceArn"], "clusterArn": svc.get("clusterArn", "")})
+    return json_response({"serviceArns": [s["serviceArn"] for s in items]})
+
+
+# ---------------------------------------------------------------------------
+# PutAccountSettingDefault / DeleteAccountSetting
+# ---------------------------------------------------------------------------
+
+def _put_account_setting_default(data):
+    name = data.get("name", "")
+    value = data.get("value", "")
+    _account_settings[name] = {"name": name, "value": value, "principalArn": f"arn:aws:iam::{os.environ.get('MINISTACK_ACCOUNT_ID', '000000000000')}:root"}
+    return json_response({"setting": _account_settings[name]})
+
+
+def _delete_account_setting(data):
+    name = data.get("name", "")
+    _account_settings.pop(name, None)
+    return json_response({"setting": {"name": name, "value": ""}})
+
+
+# ---------------------------------------------------------------------------
+# Attributes (PutAttributes / DeleteAttributes / ListAttributes)
+# ---------------------------------------------------------------------------
+
+_attributes: dict = {}
+
+def _put_attributes(data):
+    attrs = data.get("attributes", [])
+    for attr in attrs:
+        target_id = attr.get("targetId", "")
+        name = attr.get("name", "")
+        _attributes[f"{target_id}:{name}"] = attr
+    return json_response({"attributes": attrs})
+
+
+def _delete_attributes(data):
+    attrs = data.get("attributes", [])
+    for attr in attrs:
+        target_id = attr.get("targetId", "")
+        name = attr.get("name", "")
+        _attributes.pop(f"{target_id}:{name}", None)
+    return json_response({"attributes": attrs})
+
+
+def _list_attributes(data):
+    target_type = data.get("targetType", "")
+    attr_name = data.get("attributeName", "")
+    results = []
+    for attr in _attributes.values():
+        if target_type and attr.get("targetType", "") != target_type:
+            continue
+        if attr_name and attr.get("name", "") != attr_name:
+            continue
+        results.append(attr)
+    return json_response({"attributes": results})
+
+
+# ---------------------------------------------------------------------------
+# UpdateCapacityProvider
+# ---------------------------------------------------------------------------
+
+def _update_capacity_provider(data):
+    name = data.get("name", "")
+    cp = _capacity_providers.get(name)
+    if not cp:
+        return error_response_json("ClientException", f"Capacity provider {name} not found", 400)
+    auto_scaling = data.get("autoScalingGroupProvider")
+    if auto_scaling:
+        cp["autoScalingGroupProvider"].update(auto_scaling)
+    cp["updateStatus"] = "UPDATE_COMPLETE"
+    return json_response({"capacityProvider": cp})
+
+
+# ---------------------------------------------------------------------------
+# ServiceDeployments (stubs)
+# ---------------------------------------------------------------------------
+
+def _describe_service_deployments(data):
+    return json_response({"serviceDeployments": []})
+
+
+def _list_service_deployments(data):
+    return json_response({"serviceDeployments": []})
+
+
+def _describe_service_revisions(data):
+    return json_response({"serviceRevisions": []})
+
+
+# ---------------------------------------------------------------------------
+# Agent stubs
+# ---------------------------------------------------------------------------
+
+def _submit_task_state_change(data):
+    return json_response({"acknowledgment": "ACCEPT"})
+
+
+def _submit_container_state_change(data):
+    return json_response({"acknowledgment": "ACCEPT"})
+
+
+def _submit_attachment_state_changes(data):
+    return json_response({"acknowledgment": "ACCEPT"})
+
+
+def _discover_poll_endpoint(data):
+    return json_response({"endpoint": "http://localhost:4566", "telemetryEndpoint": "http://localhost:4566"})
+
+
+# ---------------------------------------------------------------------------
+# Task protection stubs
+# ---------------------------------------------------------------------------
+
+def _update_task_protection(data):
+    return json_response({"protectedTasks": [], "failures": []})
+
+
+def _get_task_protection(data):
+    return json_response({"protectedTasks": [], "failures": []})
+
+
+# ---------------------------------------------------------------------------
 # Action map (X-Amz-Target dispatch)
 # ---------------------------------------------------------------------------
 
@@ -1271,6 +1442,24 @@ _ACTION_MAP = {
     "DeleteCapacityProvider": _delete_capacity_provider,
     "DescribeCapacityProviders": _describe_capacity_providers,
     "PutClusterCapacityProviders": _put_cluster_capacity_providers,
+    "ListTaskDefinitionFamilies": _list_task_definition_families,
+    "DeleteTaskDefinitions": _delete_task_definitions,
+    "ListServicesByNamespace": _list_services_by_namespace,
+    "PutAccountSettingDefault": _put_account_setting_default,
+    "DeleteAccountSetting": _delete_account_setting,
+    "PutAttributes": _put_attributes,
+    "DeleteAttributes": _delete_attributes,
+    "ListAttributes": _list_attributes,
+    "UpdateCapacityProvider": _update_capacity_provider,
+    "DescribeServiceDeployments": _describe_service_deployments,
+    "ListServiceDeployments": _list_service_deployments,
+    "DescribeServiceRevisions": _describe_service_revisions,
+    "SubmitTaskStateChange": _submit_task_state_change,
+    "SubmitContainerStateChange": _submit_container_state_change,
+    "SubmitAttachmentStateChanges": _submit_attachment_state_changes,
+    "DiscoverPollEndpoint": _discover_poll_endpoint,
+    "UpdateTaskProtection": _update_task_protection,
+    "GetTaskProtection": _get_task_protection,
 }
 
 
@@ -1293,3 +1482,4 @@ def reset():
     _tags.clear()
     _account_settings.clear()
     _capacity_providers.clear()
+    _attributes.clear()
