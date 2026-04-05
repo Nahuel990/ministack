@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.37] — 2026-04-05
+
+### Added
+- **Lambda `PackageType: Image` support** — Lambda functions can now be deployed as Docker images via `Code: { ImageUri: "..." }`. The user-provided image is pulled and invoked via the Lambda Runtime Interface Emulator (port 8080). Supports Go, Rust, Java, or any language packaged as a Lambda container image. `CreateFunction`, `UpdateFunctionCode`, `GetFunction` all handle `ImageUri`. Requested by @petherin (#67)
+
+---
+
 ## [1.1.36] — 2026-04-04
 
 ### Added

@@ -52,6 +52,7 @@ ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
 LAMBDA_EXECUTOR = os.environ.get("LAMBDA_EXECUTOR", "local").lower()
 LAMBDA_DOCKER_VOLUME_MOUNT = os.environ.get("LAMBDA_REMOTE_DOCKER_VOLUME_MOUNT", "")
+LAMBDA_DOCKER_NETWORK = os.environ.get("LAMBDA_DOCKER_NETWORK", "")
 
 try:
     docker_lib: Any = importlib.import_module("docker")
@@ -651,13 +652,22 @@ def _create_function(data: dict):
         )
 
     code_zip = None
+    image_uri = None
     code_data = data.get("Code", {})
-    if "ZipFile" in code_data:
+    if "ImageUri" in code_data:
+        image_uri = code_data["ImageUri"]
+    elif "ZipFile" in code_data:
         code_zip = base64.b64decode(code_data["ZipFile"])
     elif "S3Bucket" in code_data and "S3Key" in code_data:
         code_zip = _fetch_code_from_s3(code_data["S3Bucket"], code_data["S3Key"])
 
+    if image_uri:
+        data.setdefault("PackageType", "Image")
+
     config = _build_config(name, data, code_zip)
+    if image_uri:
+        config["ImageUri"] = image_uri
+        config["PackageType"] = "Image"
 
     _functions[name] = {
         "config": config,
@@ -702,9 +712,13 @@ def _get_function(name: str, qualifier: str | None = None):
             404,
         )
 
+    if effective_config.get("PackageType") == "Image" and effective_config.get("ImageUri"):
+        code_info = {"RepositoryType": "ECR", "ImageUri": effective_config["ImageUri"]}
+    else:
+        code_info = {"RepositoryType": "S3", "Location": ""}
     result: dict = {
         "Configuration": effective_config,
-        "Code": {"RepositoryType": "S3", "Location": ""},
+        "Code": code_info,
         "Tags": func.get("tags", {}),
     }
     if func.get("concurrency") is not None:
@@ -777,7 +791,10 @@ def _update_code(name: str, data: dict):
         )
     func = _functions[name]
     code_zip = None
-    if "ZipFile" in data:
+    if "ImageUri" in data:
+        func["config"]["ImageUri"] = data["ImageUri"]
+        func["config"]["PackageType"] = "Image"
+    elif "ZipFile" in data:
         code_zip = base64.b64decode(data["ZipFile"])
     elif "S3Bucket" in data and "S3Key" in data:
         code_zip = _fetch_code_from_s3(data["S3Bucket"], data["S3Key"])
@@ -1217,6 +1234,11 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
 def _execute_function(func: dict, event: dict) -> dict:
     """Dispatch to warm worker pool (Python + Node.js) or Docker executor."""
     config = func.get("config") or func
+
+    # Image-based Lambda — always Docker
+    if config.get("PackageType") == "Image" and config.get("ImageUri"):
+        return _execute_function_image(func, event)
+
     runtime = config.get("Runtime", "python3.9")
 
     if runtime.startswith("python") or runtime.startswith("nodejs"):
@@ -1256,6 +1278,107 @@ def _execute_function_warm(func: dict, event: dict) -> dict:
             "error": True,
             "log": "",
         }
+
+
+# ---------------------------------------------------------------------------
+# Function execution – Docker Image mode (PackageType: Image)
+# ---------------------------------------------------------------------------
+
+
+def _execute_function_image(func: dict, event: dict) -> dict:
+    """Execute a Lambda function from a user-provided Docker image.
+
+    The image must contain the Lambda Runtime Interface Client (RIC) or
+    Runtime Interface Emulator (RIE) listening on port 8080.
+    """
+    if not _docker_available:
+        return {"body": {"errorMessage": "Docker is required for Image-based Lambda functions", "errorType": "Runtime.DockerUnavailable"}, "error": True}
+
+    config = func.get("config") or func
+    image_uri = config.get("ImageUri", "")
+    timeout = config.get("Timeout", 30)
+    env_vars = config.get("Environment", {}).get("Variables", {})
+
+    try:
+        client = docker_lib.from_env()
+    except Exception as exc:
+        return {"body": {"errorMessage": f"Cannot connect to Docker: {exc}", "errorType": "Runtime.DockerError"}, "error": True}
+
+    # Use image locally if available, otherwise pull
+    try:
+        client.images.get(image_uri)
+        logger.info("Using local Lambda image: %s", image_uri)
+    except docker_lib.errors.ImageNotFound:
+        try:
+            logger.info("Pulling Lambda image: %s", image_uri)
+            client.images.pull(image_uri)
+        except Exception as exc:
+            return {"body": {"errorMessage": f"Failed to pull image {image_uri}: {exc}", "errorType": "Runtime.ImagePullError"}, "error": True}
+
+    container_env = {
+        "AWS_DEFAULT_REGION": REGION,
+        "AWS_REGION": REGION,
+        "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+        "AWS_LAMBDA_FUNCTION_NAME": config["FunctionName"],
+        "AWS_LAMBDA_FUNCTION_MEMORY_SIZE": str(config.get("MemorySize", 128)),
+        "AWS_LAMBDA_FUNCTION_VERSION": config.get("Version", "$LATEST"),
+        "AWS_LAMBDA_LOG_STREAM_NAME": new_uuid(),
+    }
+    endpoint = _normalize_endpoint_url(os.environ.get("AWS_ENDPOINT_URL", ""))
+    if not endpoint:
+        endpoint = _normalize_endpoint_url(env_vars.get("AWS_ENDPOINT_URL", ""))
+    if endpoint:
+        container_env["AWS_ENDPOINT_URL"] = endpoint
+    container_env.update(env_vars)
+
+    run_kwargs = {
+        "image": image_uri,
+        "environment": container_env,
+        "ports": {"8080/tcp": None},
+        "detach": True,
+    }
+    if LAMBDA_DOCKER_NETWORK:
+        run_kwargs["network"] = LAMBDA_DOCKER_NETWORK
+
+    container = client.containers.run(**run_kwargs)
+    try:
+        import time as _time
+        import urllib.request
+        for _attempt in range(int(timeout * 2) + 10):
+            _time.sleep(0.5)
+            container.reload()
+            if container.status != "running":
+                break
+            try:
+                ports = container.ports.get("8080/tcp") or []
+                if not ports:
+                    continue
+                host_port = ports[0]["HostPort"]
+                rie_url = f"http://127.0.0.1:{host_port}/2015-03-31/functions/function/invocations"
+                req = urllib.request.Request(rie_url, data=json.dumps(event).encode(),
+                                            headers={"Content-Type": "application/json"})
+                resp = urllib.request.urlopen(req, timeout=timeout)
+                body = resp.read().decode("utf-8", errors="replace")
+                try:
+                    parsed = json.loads(body)
+                except json.JSONDecodeError:
+                    parsed = body
+                logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace").strip()
+                return {"body": parsed, "log": logs}
+            except (urllib.error.URLError, ConnectionRefusedError, OSError):
+                continue
+        stdout = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace").strip()
+        return {"body": {"errorMessage": f"Image Lambda failed: {stdout[:500]}", "errorType": "Runtime.ExitError"}, "error": True, "log": stdout}
+    finally:
+        try:
+            container.stop(timeout=2)
+        except Exception:
+            pass
+        try:
+            container.remove(force=True)
+        except Exception:
+            pass
 
 
 def _execute_function_local(func: dict, event: dict) -> dict:
