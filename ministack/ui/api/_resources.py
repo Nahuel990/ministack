@@ -1,25 +1,16 @@
-"""
-UI Dashboard API — REST endpoints and SSE streams for the MiniStack dashboard.
-
-Endpoints:
-  GET /_ministack/api/stats              — aggregated resource counts
-  GET /_ministack/api/requests           — recent request history
-  GET /_ministack/api/requests/stream    — SSE real-time request stream
-  GET /_ministack/api/logs/stream        — SSE real-time log stream
-  GET /_ministack/api/resources/{svc}    — list resources for a service
-  GET /_ministack/api/resources/{svc}/{type}/{id} — single resource detail
-"""
-
-import asyncio
-import json
-import logging
+"""Generic resource browsing — stats, resource listing, and resource detail."""
 
 from ministack.ui import interceptor
-from ministack.ui.log_handler import ui_log_handler
+from ministack.ui.api._common import get_query_param, json_response, safe_serialize
 
-logger = logging.getLogger("ministack.ui")
+_registry = None
 
-API_PREFIX = "/_ministack/api"
+
+def _get_registry():
+    global _registry
+    if _registry is None:
+        _registry = _build_resource_registry()
+    return _registry
 
 
 def _build_resource_registry():
@@ -28,7 +19,6 @@ def _build_resource_registry():
         acm,
         alb,
         apigateway,
-        apigateway_v1,
         appsync,
         athena,
         cloudfront,
@@ -54,7 +44,6 @@ def _build_resource_registry():
         s3,
         secretsmanager,
         ses,
-        ses_v2,
         sns,
         sqs,
         ssm,
@@ -107,40 +96,7 @@ def _build_resource_registry():
     }
 
 
-_registry = None
-
-
-def _get_registry():
-    global _registry
-    if _registry is None:
-        _registry = _build_resource_registry()
-    return _registry
-
-
-async def handle(method: str, path: str, query_params: dict, receive, send):
-    """Route /_ministack/api/* requests to the appropriate handler."""
-    rel = path[len(API_PREFIX):]
-
-    if rel == "/stats" and method == "GET":
-        await _handle_stats(send)
-    elif rel == "/requests/stream" and method == "GET":
-        await _handle_sse(receive, send, interceptor.subscribe)
-    elif rel == "/requests" and method == "GET":
-        limit = int(query_params.get("limit", ["50"])[0] if isinstance(query_params.get("limit"), list) else query_params.get("limit", "50"))
-        offset = int(query_params.get("offset", ["0"])[0] if isinstance(query_params.get("offset"), list) else query_params.get("offset", "0"))
-        await _json_response(send, interceptor.get_requests(limit, offset))
-    elif rel == "/logs/stream" and method == "GET":
-        await _handle_sse(receive, send, ui_log_handler.subscribe)
-    elif rel == "/logs" and method == "GET":
-        limit = int(query_params.get("limit", ["100"])[0] if isinstance(query_params.get("limit"), list) else query_params.get("limit", "100"))
-        await _json_response(send, {"logs": ui_log_handler.get_recent(limit)})
-    elif rel.startswith("/resources/") and method == "GET":
-        await _handle_resources(rel[len("/resources/"):], query_params, send)
-    else:
-        await _json_response(send, {"error": f"Unknown UI API endpoint: {path}"}, status=404)
-
-
-async def _handle_stats(send):
+async def handle_stats(send):
     """Return aggregated resource counts for all services."""
     registry = _get_registry()
     services = {}
@@ -161,32 +117,32 @@ async def _handle_stats(send):
             "resources": resources,
         }
 
-    await _json_response(send, {
+    await json_response(send, {
         "services": services,
         "total_resources": total,
         "uptime_seconds": interceptor.get_uptime(),
     })
 
 
-async def _handle_resources(rel_path: str, query_params: dict, send):
+async def handle_resources(rel_path: str, query_params: dict, send):
     """Handle /resources/{service} and /resources/{service}/{type}/{id}."""
     parts = [p for p in rel_path.split("/") if p]
     registry = _get_registry()
 
     if not parts:
-        await _json_response(send, {"error": "Service name required"}, status=400)
+        await json_response(send, {"error": "Service name required"}, status=400)
         return
 
     svc_name = parts[0]
     if svc_name not in registry:
-        await _json_response(send, {"error": f"Unknown service: {svc_name}"}, status=404)
+        await json_response(send, {"error": f"Unknown service: {svc_name}"}, status=404)
         return
 
     entries = registry[svc_name]
 
     # GET /resources/{service} — list all resource types and their items
     if len(parts) == 1:
-        type_filter = query_params.get("type", [""])[0] if isinstance(query_params.get("type"), list) else query_params.get("type", "")
+        type_filter = get_query_param(query_params, "type")
         resources = {}
         for label, module, attr_name in entries:
             if type_filter and label != type_filter:
@@ -195,7 +151,7 @@ async def _handle_resources(rel_path: str, query_params: dict, send):
                 obj = getattr(module, attr_name, {})
                 if isinstance(obj, dict):
                     resources[label] = [
-                        _summarize_resource(label, key, value)
+                        _summarize_resource(key, value)
                         for key, value in list(obj.items())[:200]
                     ]
                 else:
@@ -203,7 +159,7 @@ async def _handle_resources(rel_path: str, query_params: dict, send):
             except Exception as e:
                 resources[label] = {"error": str(e)}
 
-        await _json_response(send, {"service": svc_name, "resources": resources})
+        await json_response(send, {"service": svc_name, "resources": resources})
         return
 
     # GET /resources/{service}/{type}/{id} — single resource detail
@@ -217,29 +173,28 @@ async def _handle_resources(rel_path: str, query_params: dict, send):
                 obj = getattr(module, attr_name, {})
                 if isinstance(obj, dict) and res_id in obj:
                     detail = obj[res_id]
-                    await _json_response(send, {
+                    await json_response(send, {
                         "service": svc_name,
                         "type": res_type,
                         "id": res_id,
-                        "detail": _safe_serialize(detail),
+                        "detail": safe_serialize(detail),
                     })
                     return
             except Exception as e:
-                await _json_response(send, {"error": str(e)}, status=500)
+                await json_response(send, {"error": str(e)}, status=500)
                 return
 
-        await _json_response(send, {"error": f"Resource not found: {res_type}/{res_id}"}, status=404)
+        await json_response(send, {"error": f"Resource not found: {res_type}/{res_id}"}, status=404)
         return
 
-    await _json_response(send, {"error": "Invalid resource path"}, status=400)
+    await json_response(send, {"error": "Invalid resource path"}, status=400)
 
 
-def _summarize_resource(res_type: str, key, value) -> dict:
+def _summarize_resource(key, value) -> dict:
     """Extract a summary dict from a resource state entry."""
     summary = {"id": str(key)}
 
     if isinstance(value, dict):
-        # Common fields to surface in summaries
         for field in ("Name", "name", "Arn", "arn", "ARN", "Status", "status",
                       "State", "state", "CreatedAt", "created", "CreationDate",
                       "Engine", "Runtime", "runtime", "FunctionName", "TableName",
@@ -249,89 +204,8 @@ def _summarize_resource(res_type: str, key, value) -> dict:
                 if isinstance(val, (str, int, float, bool)):
                     summary[field] = val
 
-        # Count nested items if present (e.g., objects in a bucket)
         for count_field in ("objects", "items", "messages", "records"):
             if count_field in value and isinstance(value[count_field], (dict, list)):
                 summary[f"{count_field}_count"] = len(value[count_field])
 
     return summary
-
-
-def _safe_serialize(obj):
-    """Convert an object to JSON-serializable form, handling bytes and non-serializable types."""
-    if isinstance(obj, bytes):
-        try:
-            return obj.decode("utf-8")
-        except UnicodeDecodeError:
-            return f"<bytes: {len(obj)} bytes>"
-    if isinstance(obj, dict):
-        return {k: _safe_serialize(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_safe_serialize(v) for v in obj]
-    if isinstance(obj, (str, int, float, bool, type(None))):
-        return obj
-    return str(obj)
-
-
-async def _handle_sse(receive, send, subscribe_fn):
-    """Generic SSE handler — streams events from an async generator."""
-    await send({
-        "type": "http.response.start",
-        "status": 200,
-        "headers": [
-            (b"content-type", b"text/event-stream"),
-            (b"cache-control", b"no-cache"),
-            (b"connection", b"keep-alive"),
-            (b"access-control-allow-origin", b"*"),
-        ],
-    })
-
-    # Send initial keepalive
-    await send({
-        "type": "http.response.body",
-        "body": b": connected\n\n",
-        "more_body": True,
-    })
-
-    async def _watch_disconnect():
-        """Wait for client disconnect."""
-        while True:
-            msg = await receive()
-            if msg.get("type") == "http.disconnect":
-                return
-
-    disconnect_task = asyncio.create_task(_watch_disconnect())
-
-    try:
-        async for data in subscribe_fn():
-            if disconnect_task.done():
-                break
-            payload = f"data: {json.dumps(data)}\n\n".encode()
-            await send({
-                "type": "http.response.body",
-                "body": payload,
-                "more_body": True,
-            })
-    except (asyncio.CancelledError, Exception):
-        pass
-    finally:
-        disconnect_task.cancel()
-        try:
-            await send({"type": "http.response.body", "body": b"", "more_body": False})
-        except Exception:
-            pass
-
-
-async def _json_response(send, data: dict, status: int = 200):
-    """Send a JSON response."""
-    body = json.dumps(data).encode()
-    await send({
-        "type": "http.response.start",
-        "status": status,
-        "headers": [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(body)).encode()),
-            (b"access-control-allow-origin", b"*"),
-        ],
-    })
-    await send({"type": "http.response.body", "body": body})
