@@ -6,7 +6,7 @@ __pycache__/
 .Python
 *.egg
 *.egg-info/
-dist/
+/dist/
 build/
 eggs/
 parts/
@@ -51,6 +51,5 @@ data/
 # Logs
 *.log
 
-# UI Dashboard (built output)
-ministack/ui/dist/
+# UI Dashboard
 ui/node_modules/

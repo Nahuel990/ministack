@@ -15,6 +15,7 @@ services:
       - REDIS_PORT=6379
       - RDS_BASE_PORT=15432
       - ELASTICACHE_BASE_PORT=16379
+      - MINISTACK_UI=1
     volumes:
       - ./data/s3:/tmp/ministack-data/s3
       - /var/run/docker.sock:/var/run/docker.sock
