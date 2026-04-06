@@ -415,7 +415,7 @@ def _create_api(data):
         "name": data.get("name", "unnamed"),
         "protocolType": data.get("protocolType", "HTTP"),
         "apiEndpoint": f"http://{api_id}.execute-api.{_HOST}:{_PORT}",
-        "createdDate": int(time.time()),
+        "createdDate": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "routeSelectionExpression": data.get("routeSelectionExpression", "$request.method $request.path"),
         "tags": data.get("tags", {}),
         "corsConfiguration": data.get("corsConfiguration", {}),
@@ -570,7 +570,7 @@ def _create_stage(api_id, data):
     stage = {
         "stageName": stage_name,
         "autoDeploy": data.get("autoDeploy", False),
-        "createdDate": int(time.time()),
+        "createdDate": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "lastUpdatedDate": int(time.time()),
         "stageVariables": data.get("stageVariables", {}),
         "description": data.get("description", ""),
@@ -619,7 +619,7 @@ def _create_deployment(api_id, data):
     deployment = {
         "deploymentId": deployment_id,
         "deploymentStatus": "DEPLOYED",
-        "createdDate": int(time.time()),
+        "createdDate": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "description": data.get("description", ""),
     }
     _deployments.setdefault(api_id, {})[deployment_id] = deployment

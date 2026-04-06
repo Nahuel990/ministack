@@ -46,6 +46,9 @@ ministack
 # Option 2: Docker Hub
 docker run -p 4566:4566 nahuelnucera/ministack
 
+# Option 2b: Docker Hub with real infrastructure (RDS, ECS, Lambda containers)
+docker run -p 4566:4566 -v /var/run/docker.sock:/var/run/docker.sock nahuelnucera/ministack
+
 # Option 3: Clone and build
 git clone https://github.com/Nahuel990/ministack
 cd ministack

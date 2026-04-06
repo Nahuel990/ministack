@@ -12,6 +12,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 - **ECS 19 new operations (47 total)** — `ListTaskDefinitionFamilies`, `DeleteTaskDefinitions`, `ListServicesByNamespace`, `PutAccountSettingDefault`, `DeleteAccountSetting`, `PutAttributes`, `DeleteAttributes`, `ListAttributes`, `UpdateCapacityProvider`, `DescribeServiceDeployments`, `ListServiceDeployments`, `DescribeServiceRevisions`, `SubmitTaskStateChange`, `SubmitContainerStateChange`, `SubmitAttachmentStateChanges`, `DiscoverPollEndpoint`, `UpdateTaskProtection`, `GetTaskProtection`. Full Terraform ECS coverage.
 
+### Fixed
+- **API Gateway v2 `CreatedDate` returned as ISO8601 string** — was returning Unix timestamp (number), causing Terraform AWS Provider v5/v6 deserialization failure on `aws_apigatewayv2_api`. Reported by @hmarcuzzo (#132)
+
 ---
 
 ## [1.1.37] — 2026-04-05
