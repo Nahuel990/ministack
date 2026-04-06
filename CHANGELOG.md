@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.41] — 2026-04-06
+
+### Fixed
+- **ElastiCache persistence crash on restart** — `restore_state()` called `_get_docker()` before it was defined, causing `NameError` when `PERSIST_STATE=1`. Reported by @adamkirk (#145)
+
+---
+
 ## [1.1.40] — 2026-04-06
 
 ### Added

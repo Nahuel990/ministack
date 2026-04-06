@@ -87,20 +87,9 @@ def restore_state(data):
     _tags.update(data.get("tags", {}))
     if "port_counter" in data:
         _port_counter[0] = data["port_counter"]
-    # Restore instances and try to reconnect Docker containers
-    docker_client = _get_docker()
     for name, inst in data.get("instances", {}).items():
         inst["_docker_container_id"] = None
-        if docker_client:
-            try:
-                c = docker_client.containers.get(f"ministack-rds-{name}")
-                if c.status == "running":
-                    inst["_docker_container_id"] = c.id
-                    inst["DBInstanceStatus"] = "available"
-                else:
-                    inst["DBInstanceStatus"] = "stopped"
-            except Exception:
-                inst["DBInstanceStatus"] = "stopped"
+        inst["DBInstanceStatus"] = "available"
         _instances[name] = inst
 
 
