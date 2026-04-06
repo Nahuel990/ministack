@@ -11828,6 +11828,96 @@ def test_sm_list_secret_version_ids(sm):
     assert len(resp["Versions"]) >= 2
 
 
+def test_sm_update_secret_version_stage_moves_current(sm):
+    """UpdateSecretVersionStage can move AWSCURRENT and refresh AWSPREVIOUS."""
+    first = sm.create_secret(Name="qa-sm-stage-move-current", SecretString="v1")
+    first_vid = first["VersionId"]
+    second_vid = "22222222-2222-2222-2222-222222222222"
+    sm.put_secret_value(
+        SecretId="qa-sm-stage-move-current",
+        SecretString="v2",
+        ClientRequestToken=second_vid,
+    )
+
+    sm.update_secret_version_stage(
+        SecretId="qa-sm-stage-move-current",
+        VersionStage="AWSCURRENT",
+        RemoveFromVersionId=second_vid,
+        MoveToVersionId=first_vid,
+    )
+
+    current = sm.get_secret_value(SecretId="qa-sm-stage-move-current", VersionStage="AWSCURRENT")
+    assert current["SecretString"] == "v1"
+    previous = sm.get_secret_value(SecretId="qa-sm-stage-move-current", VersionStage="AWSPREVIOUS")
+    assert previous["SecretString"] == "v2"
+
+    versions = sm.list_secret_version_ids(SecretId="qa-sm-stage-move-current")["Versions"]
+    version_stages = {v["VersionId"]: set(v["VersionStages"]) for v in versions}
+    assert version_stages[first_vid] == {"AWSCURRENT"}
+    assert version_stages[second_vid] == {"AWSPREVIOUS"}
+
+
+def test_sm_update_secret_version_stage_moves_and_removes_custom_label(sm):
+    """UpdateSecretVersionStage can move a custom label and then detach it."""
+    first = sm.create_secret(Name="qa-sm-stage-custom", SecretString="v1")
+    first_vid = first["VersionId"]
+    second_vid = "33333333-3333-3333-3333-333333333333"
+    sm.put_secret_value(
+        SecretId="qa-sm-stage-custom",
+        SecretString="v2",
+        ClientRequestToken=second_vid,
+        VersionStages=["BLUE"],
+    )
+
+    before = sm.get_secret_value(SecretId="qa-sm-stage-custom", VersionStage="BLUE")
+    assert before["SecretString"] == "v2"
+
+    sm.update_secret_version_stage(
+        SecretId="qa-sm-stage-custom",
+        VersionStage="BLUE",
+        RemoveFromVersionId=second_vid,
+        MoveToVersionId=first_vid,
+    )
+
+    moved = sm.get_secret_value(SecretId="qa-sm-stage-custom", VersionStage="BLUE")
+    assert moved["SecretString"] == "v1"
+
+    sm.update_secret_version_stage(
+        SecretId="qa-sm-stage-custom",
+        VersionStage="BLUE",
+        RemoveFromVersionId=first_vid,
+    )
+
+    versions = sm.list_secret_version_ids(SecretId="qa-sm-stage-custom")["Versions"]
+    version_stages = {v["VersionId"]: set(v["VersionStages"]) for v in versions}
+    assert "BLUE" not in version_stages[first_vid]
+    assert "BLUE" not in version_stages[second_vid]
+
+    with pytest.raises(ClientError) as exc:
+        sm.get_secret_value(SecretId="qa-sm-stage-custom", VersionStage="BLUE")
+    assert exc.value.response["Error"]["Code"] == "ResourceNotFoundException"
+
+
+def test_sm_update_secret_version_stage_requires_matching_remove_version(sm):
+    """Moving an attached label requires RemoveFromVersionId to match the current owner."""
+    first = sm.create_secret(Name="qa-sm-stage-guard", SecretString="v1")
+    first_vid = first["VersionId"]
+    second_vid = "44444444-4444-4444-4444-444444444444"
+    sm.put_secret_value(
+        SecretId="qa-sm-stage-guard",
+        SecretString="v2",
+        ClientRequestToken=second_vid,
+    )
+
+    with pytest.raises(ClientError) as exc:
+        sm.update_secret_version_stage(
+            SecretId="qa-sm-stage-guard",
+            VersionStage="AWSCURRENT",
+            MoveToVersionId=first_vid,
+        )
+    assert exc.value.response["Error"]["Code"] == "InvalidParameterException"
+
+
 def test_sm_delete_and_restore(sm):
     """DeleteSecret schedules deletion; RestoreSecret cancels it."""
     sm.create_secret(Name="qa-sm-restore", SecretString="data")
