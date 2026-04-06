@@ -490,6 +490,7 @@ ecs.stop_task(cluster="dev", task=task_arn)
 | `LAMBDA_DOCKER_NETWORK` | _(unset)_ | Docker network for Lambda containers. Set to your Docker Compose network name so Lambda can reach MiniStack |
 | `SFN_MOCK_CONFIG` | _(unset)_ | Path to JSON file for Step Functions mock testing; compatible with AWS SFN Local format. Also accepts `LOCALSTACK_SFN_MOCK_CONFIG` |
 | `ATHENA_ENGINE` | `auto` | SQL engine for Athena: `auto`, `duckdb`, `mock` |
+| `SMTP_HOST` | _(unset)_ | SMTP server for SES email relay (e.g. `mailhog:1025`). When set, SES SendEmail/SendRawEmail actually deliver mail. When unset, emails are stored in-memory only |
 
 ### Athena SQL Engines
 
