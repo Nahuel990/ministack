@@ -433,6 +433,52 @@ def _delete_policy(p):
     return _xml(200, "DeletePolicyResponse", "", ns="iam")
 
 
+# -------------------- List entities for policy --------------------
+
+def _list_entities_for_policy(p):
+    arn = _p(p, "PolicyArn")
+    if arn not in _policies:
+        return _error(404, "NoSuchEntity", f"Policy {arn} not found.", ns="iam")
+    entity_filter = _p(p, "EntityFilter") or ""
+    path_prefix = _p(p, "PathPrefix") or "/"
+
+    groups_xml = ""
+    if entity_filter in ("", "Group"):
+        for g in _groups.values():
+            if not g.get("Path", "/").startswith(path_prefix):
+                continue
+            if arn in g.get("AttachedPolicies", []):
+                groups_xml += (f"<member><GroupName>{g['GroupName']}</GroupName>"
+                               f"<GroupId>{g['GroupId']}</GroupId></member>")
+
+    roles_xml = ""
+    if entity_filter in ("", "Role"):
+        for r in _roles.values():
+            if not r.get("Path", "/").startswith(path_prefix):
+                continue
+            if arn in r.get("AttachedPolicies", []):
+                roles_xml += (f"<member><RoleName>{r['RoleName']}</RoleName>"
+                              f"<RoleId>{r['RoleId']}</RoleId></member>")
+
+    users_xml = ""
+    if entity_filter in ("", "User"):
+        for u in _users.values():
+            if not u.get("Path", "/").startswith(path_prefix):
+                continue
+            if arn in u.get("AttachedPolicies", []):
+                users_xml += (f"<member><UserName>{u['UserName']}</UserName>"
+                              f"<UserId>{u['UserId']}</UserId></member>")
+
+    return _xml(200, "ListEntitiesForPolicyResponse",
+                f"<ListEntitiesForPolicyResult>"
+                f"<PolicyGroups>{groups_xml}</PolicyGroups>"
+                f"<PolicyRoles>{roles_xml}</PolicyRoles>"
+                f"<PolicyUsers>{users_xml}</PolicyUsers>"
+                f"<IsTruncated>false</IsTruncated>"
+                f"</ListEntitiesForPolicyResult>",
+                ns="iam")
+
+
 # -------------------- Attached role policies --------------------
 
 def _attach_role_policy(p):
@@ -1559,6 +1605,7 @@ _IAM_HANDLERS = {
     "DeletePolicyVersion": _delete_policy_version,
     "ListPolicies": _list_policies,
     "DeletePolicy": _delete_policy,
+    "ListEntitiesForPolicy": _list_entities_for_policy,
     "AttachRolePolicy": _attach_role_policy,
     "DetachRolePolicy": _detach_role_policy,
     "ListAttachedRolePolicies": _list_attached_role_policies,

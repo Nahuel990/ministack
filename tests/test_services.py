@@ -11772,6 +11772,38 @@ def test_iam_attach_detach_user_policy(iam):
     assert not any(p["PolicyArn"] == policy_arn for p in attached2)
 
 
+def test_iam_list_entities_for_policy(iam):
+    """ListEntitiesForPolicy returns users and roles attached to a policy."""
+    doc = json.dumps({"Version": "2012-10-17", "Statement": []})
+    assume = json.dumps({"Version": "2012-10-17", "Statement": []})
+    policy_arn = iam.create_policy(PolicyName="qa-entities-pol", PolicyDocument=doc)["Policy"]["Arn"]
+    iam.create_user(UserName="qa-entities-user")
+    try:
+        iam.create_role(RoleName="qa-entities-role", AssumeRolePolicyDocument=assume)
+    except ClientError:
+        pass
+    iam.attach_user_policy(UserName="qa-entities-user", PolicyArn=policy_arn)
+    iam.attach_role_policy(RoleName="qa-entities-role", PolicyArn=policy_arn)
+
+    resp = iam.list_entities_for_policy(PolicyArn=policy_arn)
+    user_names = [u["UserName"] for u in resp["PolicyUsers"]]
+    role_names = [r["RoleName"] for r in resp["PolicyRoles"]]
+    assert "qa-entities-user" in user_names
+    assert "qa-entities-role" in role_names
+
+    # Detach user and verify it's removed
+    iam.detach_user_policy(UserName="qa-entities-user", PolicyArn=policy_arn)
+    resp2 = iam.list_entities_for_policy(PolicyArn=policy_arn)
+    user_names2 = [u["UserName"] for u in resp2["PolicyUsers"]]
+    assert "qa-entities-user" not in user_names2
+    assert "qa-entities-role" in [r["RoleName"] for r in resp2["PolicyRoles"]]
+
+    # Test EntityFilter
+    resp3 = iam.list_entities_for_policy(PolicyArn=policy_arn, EntityFilter="Role")
+    assert len(resp3["PolicyRoles"]) >= 1
+    assert len(resp3.get("PolicyUsers", [])) == 0
+
+
 # ---------------------------------------------------------------------------
 # SECRETS MANAGER — edge cases
 # ---------------------------------------------------------------------------
