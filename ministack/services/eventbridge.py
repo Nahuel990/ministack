@@ -657,7 +657,7 @@ def _dispatch_to_sqs(arn, payload):
     msg_id = new_uuid()
     md5 = hashlib.md5(payload.encode()).hexdigest()
     now = time.time()
-    queue["messages"].append({
+    msg = {
         "id": msg_id,
         "body": payload,
         "md5_body": md5,
@@ -671,9 +671,17 @@ def _dispatch_to_sqs(arn, payload):
             "SenderId": "AROAEXAMPLE",
             "SentTimestamp": str(int(now * 1000)),
         },
-    })
+    }
+
+    # FIFO queues require group_id and dedup_id for ordering/deduplication
+    if queue.get("is_fifo"):
+        msg["group_id"] = msg_id  # unique group per event for parallel consumption
+        msg["dedup_id"] = msg_id
+        msg["seq"] = str(int(now * 1000000))
+
+    queue["messages"].append(msg)
     if hasattr(_sqs, "_ensure_msg_fields"):
-        _sqs._ensure_msg_fields(queue["messages"][-1])
+        _sqs._ensure_msg_fields(msg)
     logger.info("EventBridge → SQS %s", queue_name)
 
 

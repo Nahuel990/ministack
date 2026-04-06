@@ -194,19 +194,32 @@ def create_spark_job(
     submit_args = []
     if class_name:
         submit_args.extend(["--class", class_name])
-    submit_args.extend(["--master", "local[*]"])
+    submit_args.extend(["--master", "local[*]", "--deploy-mode", "client"])
 
-    # Add --conf flags for spark properties
+    # Add --conf flags for spark properties, filtering out settings
+    # incompatible with local[*] mode (e.g. deploy-mode cluster)
+    _skip_confs = {"spark.submit.deployMode", "spark.master"}
     if spark_conf:
         for k, v in spark_conf.items():
+            if k in _skip_confs:
+                continue
             submit_args.extend(["--conf", f"{k}={v}"])
 
     # Entry point JAR/py
     submit_args.append(entry_point)
 
-    # Application arguments
+    # Application arguments — strip --deploy-mode and --master flags
+    # since we force local[*] mode
     if spark_args:
-        submit_args.extend(spark_args)
+        skip_next = False
+        for arg in spark_args:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg in ("--deploy-mode", "--master"):
+                skip_next = True
+                continue
+            submit_args.append(arg)
 
     ministack_endpoint = os.environ.get(
         "MINISTACK_INTERNAL_ENDPOINT",
@@ -415,13 +428,15 @@ def _emit_state_change_event(job_name: str, state: str, details: str, labels: di
                 "EventBusName": "default",
             }
         elif service == "emr-ec2":
-            # EMR on EC2 event format
+            # EMR on EC2 event format (matches real AWS EMR Step Status Change)
             step_id = labels.get("ministack/step", "")
+            cluster_id = labels.get("ministack/cluster", "")
             event_entry = {
                 "Source": "aws.emr",
                 "DetailType": "EMR Step Status Change",
                 "Detail": json.dumps({
                     "severity": "INFO",
+                    "clusterId": cluster_id,
                     "stepId": step_id,
                     "name": job_name,
                     "state": state,

@@ -61,7 +61,12 @@ def _group_id():
     return "ig-" + "".join(random.choices(chars, k=13))
 
 def _now_iso():
-    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+    """Return current time as epoch seconds (float).
+
+    AWS EMR's JSON wire protocol uses epoch-second timestamps, not ISO-8601.
+    The AWS SDK v2 unmarshalls these as numbers.
+    """
+    return time.time()
 
 # ---------------------------------------------------------------------------
 # Handlers
@@ -267,7 +272,62 @@ def _set_visible_to_all_users(data):
 # Steps
 # ---------------------------------------------------------------------------
 
-def _make_step(step_config):
+# Spark-submit flags that take a value argument (flag + next token)
+_SPARK_SUBMIT_VALUE_FLAGS = {
+    "--class", "--master", "--deploy-mode", "--name", "--jars", "--packages",
+    "--exclude-packages", "--repositories", "--py-files", "--files",
+    "--driver-memory", "--driver-java-options", "--driver-library-path",
+    "--driver-class-path", "--executor-memory", "--executor-cores",
+    "--num-executors", "--total-executor-cores", "--queue", "--proxy-user",
+    "--principal", "--keytab", "--conf", "--properties-file",
+    "--driver-cores",
+}
+
+
+def _parse_spark_submit_args(args: list[str]) -> tuple[str, str, dict, list[str]]:
+    """Parse a spark-submit argument list into components.
+
+    Given args like: [--class, Foo, --master, yarn, --deploy-mode, cluster, --conf, k=v, s3://app.jar, app-arg1]
+    Returns: (entry_point, class_name, spark_conf, app_args)
+
+    Everything before the first non-flag token is a spark-submit option.
+    The first non-flag token is the entry point (JAR/py file).
+    Everything after that is application arguments.
+    """
+    class_name = ""
+    spark_conf = {}
+    i = 0
+    entry_point = ""
+    app_args = []
+
+    # Parse spark-submit flags
+    while i < len(args):
+        arg = args[i]
+        if arg == "--class" and i + 1 < len(args):
+            class_name = args[i + 1]
+            i += 2
+        elif arg == "--conf" and i + 1 < len(args):
+            kv = args[i + 1]
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                spark_conf[k] = v
+            i += 2
+        elif arg in _SPARK_SUBMIT_VALUE_FLAGS and i + 1 < len(args):
+            # Skip other flags with values (--master, --deploy-mode, etc.)
+            i += 2
+        elif arg.startswith("--"):
+            # Boolean flag
+            i += 1
+        else:
+            # First non-flag token is the entry point
+            entry_point = arg
+            app_args = args[i + 1:]
+            break
+
+    return entry_point, class_name, spark_conf, app_args
+
+
+def _make_step(step_config, cluster_id=None):
     """Build an EMR step record from a step config.
 
     If spark config is present (k8s mode), creates a real K8s Job for the step.
@@ -284,14 +344,30 @@ def _make_step(step_config):
     k8s_job_name = None
     if k8s_spark.is_k8s_mode():
         # Real execution: create K8s Job
-        # Parse --class from Args if MainClass not set (EMR CLI puts --class in Args)
         effective_class = class_name
+        effective_entry = entry_point
         effective_args = list(args)
-        if not effective_class and "--class" in effective_args:
-            idx = effective_args.index("--class")
-            if idx + 1 < len(effective_args):
-                effective_class = effective_args[idx + 1]
-                effective_args = effective_args[:idx] + effective_args[idx + 2:]
+
+        # Handle command-runner.jar pattern: EMR wraps spark-submit as
+        #   Jar: command-runner.jar
+        #   Args: [spark-submit, --class, Foo, --master, yarn, --deploy-mode, cluster, --conf, k=v, s3://app.jar, app-arg1, ...]
+        # We need to parse the inner spark-submit command line to extract
+        # the real entry point, class, confs, and application args.
+        if entry_point.endswith("command-runner.jar") and effective_args and effective_args[0] == "spark-submit":
+            effective_entry, effective_class, spark_conf_from_args, effective_args = \
+                _parse_spark_submit_args(effective_args[1:])  # skip "spark-submit"
+            # Merge any --conf from args into properties-based spark_conf
+            if spark_conf_from_args:
+                properties_conf = {p["Key"]: p["Value"] for p in properties} if properties else {}
+                properties_conf.update(spark_conf_from_args)
+                properties = [{"Key": k, "Value": v} for k, v in properties_conf.items()]
+        else:
+            # Parse --class from Args if MainClass not set (EMR CLI puts --class in Args)
+            if not effective_class and "--class" in effective_args:
+                idx = effective_args.index("--class")
+                if idx + 1 < len(effective_args):
+                    effective_class = effective_args[idx + 1]
+                    effective_args = effective_args[:idx] + effective_args[idx + 2:]
 
         # Convert Properties list to spark conf dict
         spark_conf = {p["Key"]: p["Value"] for p in properties} if properties else {}
@@ -299,13 +375,14 @@ def _make_step(step_config):
         k8s_job_name = f"emr-step-{step_id.lower()}"
         k8s_spark.create_spark_job(
             job_name=k8s_job_name,
-            entry_point=entry_point,
+            entry_point=effective_entry,
             class_name=effective_class,
             spark_args=effective_args if effective_args else None,
             spark_conf=spark_conf if spark_conf else None,
             labels={
                 "ministack/service": "emr-ec2",
                 "ministack/step": step_id,
+                "ministack/cluster": cluster_id or "",
             },
         )
         initial_state = "RUNNING"
@@ -340,7 +417,7 @@ def _add_job_flow_steps(data):
                                    f"Cluster id '{cluster_id}' is not valid.", 400)
     step_ids = []
     for step_config in data.get("Steps", []):
-        step = _make_step(step_config)
+        step = _make_step(step_config, cluster_id=cluster_id)
         _steps.setdefault(cluster_id, []).append(step)
         step_ids.append(step["Id"])
     return json_response({"StepIds": step_ids})
