@@ -55,7 +55,6 @@ def _load_persisted():
         restore_state(data)
         logger.info("Loaded persisted state for appsync")
 
-_load_persisted()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -993,3 +992,6 @@ def _resolve_lambda(data_source, args):
         except Exception:
             return {"result": body}
     return args
+
+# Load persisted state (must be after restore_state is defined)
+_load_persisted()

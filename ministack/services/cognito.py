@@ -791,6 +791,8 @@ def _admin_set_user_password(data):
     permanent = data.get("Permanent", False)
     if permanent:
         user["UserStatus"] = "CONFIRMED"
+    else:
+        user["UserStatus"] = "FORCE_CHANGE_PASSWORD"
     user["UserLastModifiedDate"] = _now_epoch()
     return json_response({})
 

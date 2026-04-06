@@ -7,6 +7,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.39] — 2026-04-06
+
+### Fixed
+- **AppSync persistence crash on restart** — `restore_state()` called before it was defined in the file, causing `NameError` when `PERSIST_STATE=1` and restarting. Reported by @samiuoi (#66)
+- **Cognito `AdminSetUserPassword` with `Permanent=false`** — now correctly sets `UserStatus` to `FORCE_CHANGE_PASSWORD`. Previously the password was updated but the status wasn't changed.
+
+### Tests
+- 10 new tests: KMS (list policies, rotation period), ElastiCache (parameter groups, snapshots, tags), Lambda (Image CRUD, update ImageUri, provided runtime), SecretsManager (rotate secret), Firehose (S3 destination writes)
+- 1011 tests total
+
+---
+
 ## [1.1.38] — 2026-04-05
 
 ### Added
