@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.40] — 2026-04-06
+
+### Added
+- **State persistence for all services** — 11 remaining services now support `PERSIST_STATE=1`: ALB, Glue, EFS, WAF, Athena, EMR, CloudFront, ACM, Firehose, SES, SES v2. All 35+ services now persist state across restarts.
+- **Step Functions persistence** — state machines, executions, tags, and activities persist. RUNNING executions restored as FAILED with `States.ServiceRestart`. Contributed by @TheJokersThief (#141)
+
+---
+
 ## [1.1.39] — 2026-04-06
 
 ### Fixed
