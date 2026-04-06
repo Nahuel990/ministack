@@ -19110,3 +19110,168 @@ def test_kms_terraform_full_flow(kms_client):
     desc = kms_client.describe_key(KeyId=key_id)
     assert desc["KeyMetadata"]["Description"] == "RDS key"
     kms_client.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=7)
+
+
+# ===== EMR Containers (EMR on EKS) =====
+
+
+def test_emr_containers_create_virtual_cluster(emr_containers):
+    resp = emr_containers.create_virtual_cluster(
+        name="test-vc",
+        containerProvider={
+            "type": "EKS",
+            "id": "kind-devbox",
+            "info": {"eksInfo": {"namespace": "devbox"}},
+        },
+    )
+    assert "id" in resp
+    assert resp["name"] == "test-vc"
+    assert "arn" in resp
+    assert "emr-containers" in resp["arn"]
+
+
+def test_emr_containers_describe_virtual_cluster(emr_containers):
+    create = emr_containers.create_virtual_cluster(
+        name="describe-vc",
+        containerProvider={
+            "type": "EKS",
+            "id": "kind-devbox",
+            "info": {"eksInfo": {"namespace": "devbox"}},
+        },
+    )
+    vc_id = create["id"]
+    desc = emr_containers.describe_virtual_cluster(id=vc_id)
+    vc = desc["virtualCluster"]
+    assert vc["id"] == vc_id
+    assert vc["name"] == "describe-vc"
+    assert vc["state"] == "RUNNING"
+    assert vc["containerProvider"]["type"] == "EKS"
+
+
+def test_emr_containers_delete_virtual_cluster(emr_containers):
+    create = emr_containers.create_virtual_cluster(
+        name="delete-vc",
+        containerProvider={
+            "type": "EKS",
+            "id": "kind-devbox",
+            "info": {"eksInfo": {"namespace": "devbox"}},
+        },
+    )
+    vc_id = create["id"]
+    emr_containers.delete_virtual_cluster(id=vc_id)
+    desc = emr_containers.describe_virtual_cluster(id=vc_id)
+    assert desc["virtualCluster"]["state"] == "TERMINATED"
+
+
+def test_emr_containers_start_job_run(emr_containers):
+    create = emr_containers.create_virtual_cluster(
+        name="job-vc",
+        containerProvider={
+            "type": "EKS",
+            "id": "kind-devbox",
+            "info": {"eksInfo": {"namespace": "devbox"}},
+        },
+    )
+    vc_id = create["id"]
+    resp = emr_containers.start_job_run(
+        virtualClusterId=vc_id,
+        name="spark-pi",
+        releaseLabel="emr-7.9.0-20250425",
+        executionRoleArn="arn:aws:iam::000000000000:role/test",
+        jobDriver={
+            "sparkSubmitJobDriver": {
+                "entryPoint": "local:///opt/spark/examples/jars/spark-examples.jar",
+                "sparkSubmitParameters": "--class org.apache.spark.examples.SparkPi",
+            }
+        },
+    )
+    assert "id" in resp
+    assert resp["name"] == "spark-pi"
+    assert resp["virtualClusterId"] == vc_id
+
+
+def test_emr_containers_describe_job_run(emr_containers):
+    create = emr_containers.create_virtual_cluster(
+        name="desc-job-vc",
+        containerProvider={
+            "type": "EKS",
+            "id": "kind-devbox",
+            "info": {"eksInfo": {"namespace": "devbox"}},
+        },
+    )
+    vc_id = create["id"]
+    jr = emr_containers.start_job_run(
+        virtualClusterId=vc_id,
+        name="desc-job",
+        releaseLabel="emr-7.9.0",
+        executionRoleArn="arn:aws:iam::000000000000:role/test",
+        jobDriver={
+            "sparkSubmitJobDriver": {
+                "entryPoint": "s3://bucket/app.jar",
+                "sparkSubmitParameters": "--class com.example.Main",
+            }
+        },
+    )
+    jr_id = jr["id"]
+    desc = emr_containers.describe_job_run(virtualClusterId=vc_id, id=jr_id)
+    job_run = desc["jobRun"]
+    assert job_run["id"] == jr_id
+    assert job_run["state"] == "COMPLETED"
+    assert job_run["virtualClusterId"] == vc_id
+    assert job_run["releaseLabel"] == "emr-7.9.0"
+
+
+def test_emr_containers_cancel_job_run(emr_containers):
+    create = emr_containers.create_virtual_cluster(
+        name="cancel-job-vc",
+        containerProvider={
+            "type": "EKS",
+            "id": "kind-devbox",
+            "info": {"eksInfo": {"namespace": "devbox"}},
+        },
+    )
+    vc_id = create["id"]
+    jr = emr_containers.start_job_run(
+        virtualClusterId=vc_id,
+        name="cancel-job",
+        releaseLabel="emr-7.9.0",
+        executionRoleArn="arn:aws:iam::000000000000:role/test",
+        jobDriver={
+            "sparkSubmitJobDriver": {
+                "entryPoint": "s3://bucket/app.jar",
+            }
+        },
+    )
+    jr_id = jr["id"]
+    emr_containers.cancel_job_run(virtualClusterId=vc_id, id=jr_id)
+    desc = emr_containers.describe_job_run(virtualClusterId=vc_id, id=jr_id)
+    assert desc["jobRun"]["state"] == "CANCELLED"
+
+
+def test_emr_containers_list_job_runs(emr_containers):
+    create = emr_containers.create_virtual_cluster(
+        name="list-job-vc",
+        containerProvider={
+            "type": "EKS",
+            "id": "kind-devbox",
+            "info": {"eksInfo": {"namespace": "devbox"}},
+        },
+    )
+    vc_id = create["id"]
+    # Start two jobs
+    emr_containers.start_job_run(
+        virtualClusterId=vc_id,
+        name="job-1",
+        releaseLabel="emr-7.9.0",
+        executionRoleArn="arn:aws:iam::000000000000:role/test",
+        jobDriver={"sparkSubmitJobDriver": {"entryPoint": "s3://b/a.jar"}},
+    )
+    emr_containers.start_job_run(
+        virtualClusterId=vc_id,
+        name="job-2",
+        releaseLabel="emr-7.9.0",
+        executionRoleArn="arn:aws:iam::000000000000:role/test",
+        jobDriver={"sparkSubmitJobDriver": {"entryPoint": "s3://b/b.jar"}},
+    )
+    resp = emr_containers.list_job_runs(virtualClusterId=vc_id)
+    assert len(resp["jobRuns"]) >= 2

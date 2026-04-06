@@ -57,6 +57,7 @@ from ministack.services import (
     efs,
     elasticache,
     emr,
+    emr_containers,
     eventbridge,
     firehose,
     glue,
@@ -119,6 +120,7 @@ SERVICE_HANDLERS = {
     "cognito-identity": cognito.handle_request,
     "ec2": ec2.handle_request,
     "elasticmapreduce": emr.handle_request,
+    "emr-containers": emr_containers.handle_request,
     "elasticloadbalancing": alb.handle_request,
     "elasticfilesystem": efs.handle_request,
     "kms": kms.handle_request,
@@ -141,6 +143,7 @@ SERVICE_NAME_ALIASES = {
     "elbv2": "elasticloadbalancing",
     "elb": "elasticloadbalancing",
     "ecr": "ecr",
+    "emr-containers": "emr-containers",
 }
 
 
@@ -368,6 +371,12 @@ async def app(scope, receive, send):
                 "Content-Type": "application/json",
                 "x-amzn-requestid": request_id,
             }, b"{}")
+        return
+
+    # EMR Containers REST API — /virtualclusters/...
+    if path.startswith("/virtualclusters"):
+        status, resp_headers, resp_body = await emr_containers.handle_request(method, path, headers, body, query_params)
+        await _send_response(send, status, resp_headers, resp_body)
         return
 
     # SES v2 REST API — /v2/email/...
@@ -660,6 +669,7 @@ def _reset_all_state():
         (cognito, cognito.reset),
         (ec2, ec2.reset),
         (emr, emr.reset),
+        (emr_containers, emr_containers.reset),
         (alb, alb.reset),
         (acm, acm.reset),
         (ses_v2, ses_v2.reset),

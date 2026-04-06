@@ -167,6 +167,10 @@ SERVICE_PATTERNS = {
         "path_prefixes": ["/v1/apis", "/v1/tags"],
         "credential_scope": "appsync",
     },
+    "emr-containers": {
+        "host_patterns": [r"emr-containers\."],
+        "credential_scope": "emr-containers",
+    },
 }
 
 
@@ -219,6 +223,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "kms": "kms",
                 "cloudfront": "cloudfront",
                 "appsync": "appsync",
+                "emr-containers": "emr-containers",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
@@ -435,6 +440,8 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
         return "cognito-idp"
     if path_lower.startswith(("/clusters", "/taskdefinitions", "/tasks", "/services", "/stoptask")):
         return "ecs"
+    if path_lower.startswith("/virtualclusters"):
+        return "emr-containers"
     # smithy-rpc-v2-cbor path: /service/ServiceName/operation/ActionName
     if "/service/" in path_lower and "/operation/" in path_lower:
         if "granite" in path_lower or "cloudwatch" in path_lower:

@@ -219,3 +219,7 @@ def sfn_sync():
 @pytest.fixture(scope="session")
 def cloudfront():
     return make_client("cloudfront")
+
+@pytest.fixture(scope="session")
+def emr_containers():
+    return make_client("emr-containers")
