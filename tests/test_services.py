@@ -19290,3 +19290,64 @@ def test_firehose_s3_destination_writes(s3, fh):
     obj = s3.get_object(Bucket=bucket, Key=key)
     body = obj["Body"].read()
     assert b"hello from firehose" in body
+
+
+# ========== Persistence roundtrip — Step Functions ==========
+
+
+def test_persist_stepfunctions_roundtrip():
+    from ministack.services import stepfunctions as _sfn
+    sm_arn = "arn:aws:states:us-east-1:000000000000:stateMachine:persist-sm"
+    _sfn._state_machines[sm_arn] = {
+        "stateMachineArn": sm_arn,
+        "name": "persist-sm",
+        "definition": '{"StartAt":"Pass","States":{"Pass":{"Type":"Pass","End":true}}}',
+        "roleArn": "arn:aws:iam::000000000000:role/sfn",
+        "type": "STANDARD",
+        "status": "ACTIVE",
+    }
+    state = _sfn.get_state()
+    assert "state_machines" in state
+    assert sm_arn in state["state_machines"]
+    _sfn._state_machines.pop(sm_arn)
+    _sfn.restore_state(state)
+    assert sm_arn in _sfn._state_machines
+    assert _sfn._state_machines[sm_arn]["name"] == "persist-sm"
+    _sfn._state_machines.pop(sm_arn)
+
+
+def test_persist_stepfunctions_running_marked_failed():
+    from ministack.services import stepfunctions as _sfn
+    run_arn = "arn:aws:states:us-east-1:000000000000:execution:persist-sm:run-1"
+    done_arn = "arn:aws:states:us-east-1:000000000000:execution:persist-sm:done-1"
+    _sfn._executions[run_arn] = {
+        "executionArn": run_arn,
+        "stateMachineArn": "arn:aws:states:us-east-1:000000000000:stateMachine:persist-sm",
+        "status": "RUNNING",
+        "startDate": "2026-01-01T00:00:00.000Z",
+    }
+    _sfn._executions[done_arn] = {
+        "executionArn": done_arn,
+        "stateMachineArn": "arn:aws:states:us-east-1:000000000000:stateMachine:persist-sm",
+        "status": "SUCCEEDED",
+        "startDate": "2026-01-01T00:00:00.000Z",
+        "stopDate": "2026-01-01T00:01:00.000Z",
+        "output": '{"result": "ok"}',
+    }
+    state = _sfn.get_state()
+    _sfn._executions.pop(run_arn)
+    _sfn._executions.pop(done_arn)
+    _sfn.restore_state(state)
+    # RUNNING execution should be marked FAILED
+    restored_run = _sfn._executions[run_arn]
+    assert restored_run["status"] == "FAILED"
+    assert restored_run["error"] == "States.ServiceRestart"
+    assert restored_run["cause"] == "Execution was running when service restarted"
+    assert "stopDate" in restored_run
+    assert restored_run["startDate"] == "2026-01-01T00:00:00.000Z"
+    # SUCCEEDED execution should pass through unchanged
+    restored_done = _sfn._executions[done_arn]
+    assert restored_done["status"] == "SUCCEEDED"
+    assert restored_done["output"] == '{"result": "ok"}'
+    _sfn._executions.pop(run_arn)
+    _sfn._executions.pop(done_arn)

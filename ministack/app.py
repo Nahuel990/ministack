@@ -590,6 +590,7 @@ async def _handle_lifespan(scope, receive, send):
                     "ecs": ecs.get_state,
                     "elasticache": elasticache.get_state,
                     "appsync": appsync.get_state,
+                    "stepfunctions": stepfunctions.get_state,
                 })
             await send({"type": "lifespan.shutdown.complete"})
             return

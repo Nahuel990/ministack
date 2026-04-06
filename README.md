@@ -511,7 +511,7 @@ Install DuckDB for full Athena SQL compatibility: `pip install ministack[full]`.
 
 When `PERSIST_STATE=1`, MiniStack saves service state to `STATE_DIR` on shutdown and reloads it on startup. Writes are atomic (write-to-tmp then rename) to prevent corruption on crash.
 
-Services currently supporting persistence: **API Gateway v1**, **API Gateway v2**
+Services currently supporting persistence: **API Gateway v1**, **API Gateway v2**, **AppSync**, **CloudWatch**, **CloudWatch Logs**, **Cognito**, **DynamoDB**, **EC2**, **ECR**, **ECS**, **ElastiCache**, **EventBridge**, **IAM/STS**, **Kinesis**, **KMS**, **Lambda**, **RDS**, **Route 53**, **S3**, **Secrets Manager**, **SNS**, **SQS**, **SSM**, **Step Functions**
 
 ```bash
 docker run -p 4566:4566 \

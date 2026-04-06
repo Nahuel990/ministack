@@ -19,10 +19,10 @@ SUCCEEDED / FAILED / TIMED_OUT / ABORTED.
 """
 
 import asyncio
-import os
 import copy
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
 from datetime import datetime, timezone
 
+from ministack.core.persistence import PERSIST_STATE, load_state
 from ministack.core.responses import (
     error_response_json,
     json_response,
@@ -96,6 +97,38 @@ _task_tokens: dict = {}
 _tags: dict = {}
 _activities: dict = {}
 _activity_tasks: dict = {}
+
+# ── Persistence ────────────────────────────────────────────
+
+def get_state():
+    return {
+        "state_machines": copy.deepcopy(_state_machines),
+        "executions": copy.deepcopy(_executions),
+        "tags": copy.deepcopy(_tags),
+        "activities": copy.deepcopy(_activities),
+    }
+
+
+def restore_state(data):
+    if not data:
+        return
+    _state_machines.update(data.get("state_machines", {}))
+    _executions.update(data.get("executions", {}))
+    _tags.update(data.get("tags", {}))
+    _activities.update(data.get("activities", {}))
+    # Executions that were RUNNING when the process died cannot resume —
+    # mark them FAILED, following the ECS precedent (tasks → STOPPED).
+    for exc in _executions.values():
+        if exc.get("status") == "RUNNING":
+            exc["status"] = "FAILED"
+            exc["stopDate"] = now_iso()
+            exc["error"] = "States.ServiceRestart"
+            exc["cause"] = "Execution was running when service restarted"
+
+
+_restored = load_state("stepfunctions")
+if _restored:
+    restore_state(_restored)
 
 
 # ---------------------------------------------------------------------------
