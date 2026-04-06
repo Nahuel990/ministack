@@ -27,6 +27,7 @@ import ministack.services.apigateway_v1 as _apigw_v1
 import ministack.services.appsync as _appsync
 import ministack.services.secretsmanager as _sm
 import ministack.services.cognito as _cognito
+import ministack.services.ecr as _ecr
 
 
 logger = logging.getLogger("cloudformation")
@@ -1271,6 +1272,29 @@ def _cognito_user_pool_domain_delete(physical_id, props):
 
 
 # ===========================================================================
+# --- ECR resource provisioners ---
+
+def _ecr_repo_create(logical_id, props, stack_name):
+    name = props.get("RepositoryName", f"{stack_name}-{logical_id}".lower())
+    arn = f"arn:aws:ecr:{REGION}:{ACCOUNT_ID}:repository/{name}"
+    _ecr._repositories[name] = {
+        "repositoryName": name,
+        "repositoryArn": arn,
+        "registryId": ACCOUNT_ID,
+        "repositoryUri": f"{ACCOUNT_ID}.dkr.ecr.{REGION}.amazonaws.com/{name}",
+        "createdAt": __import__("time").time(),
+        "imageTagMutability": props.get("ImageTagMutability", "MUTABLE"),
+        "imageScanningConfiguration": props.get("ImageScanningConfiguration", {"scanOnPush": False}),
+        "encryptionConfiguration": props.get("EncryptionConfiguration", {"encryptionType": "AES256"}),
+        "images": [],
+    }
+    return name, {"Arn": arn, "RepositoryUri": _ecr._repositories[name]["repositoryUri"]}
+
+
+def _ecr_repo_delete(physical_id, props):
+    _ecr._repositories.pop(physical_id, None)
+
+
 # Resource Handler Registry
 # ===========================================================================
 
@@ -1311,4 +1335,5 @@ _RESOURCE_HANDLERS = {
     "AWS::Cognito::UserPoolClient": {"create": _cognito_user_pool_client_create, "delete": _cognito_user_pool_client_delete},
     "AWS::Cognito::IdentityPool": {"create": _cognito_identity_pool_create, "delete": _cognito_identity_pool_delete},
     "AWS::Cognito::UserPoolDomain": {"create": _cognito_user_pool_domain_create, "delete": _cognito_user_pool_domain_delete},
+    "AWS::ECR::Repository": {"create": _ecr_repo_create, "delete": _ecr_repo_delete},
 }

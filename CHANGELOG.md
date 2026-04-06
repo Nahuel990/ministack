@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.43] — 2026-04-06
+
+### Added
+- **CFN `AWS::ECR::Repository`** — CDK bootstrap (`cdk bootstrap`) now works. Reported by @youngkwangk (#152)
+
+---
+
 ## [1.1.42] — 2026-04-06
 
 ### Added
