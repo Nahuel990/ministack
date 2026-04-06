@@ -7730,6 +7730,158 @@ def test_sfn_integration_ecs_run_task_output_contains_status(sfn, ecs):
     assert "failures" in output
 
 
+def test_sfn_integration_nested_start_execution_sync_returns_string_output(sfn):
+    """states:startExecution.sync should return the child Output as a JSON string."""
+    unique = str(time.time_ns())
+
+    child_definition = json.dumps(
+        {
+            "StartAt": "BuildResult",
+            "States": {
+                "BuildResult": {
+                    "Type": "Pass",
+                    "Result": {"message": "child-ok", "version": 1},
+                    "End": True,
+                }
+            },
+        }
+    )
+    child = sfn.create_state_machine(
+        name=f"sfn-child-sync-{unique}",
+        definition=child_definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+
+    parent_definition = json.dumps(
+        {
+            "StartAt": "RunChild",
+            "States": {
+                "RunChild": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::states:startExecution.sync",
+                    "Parameters": {
+                        "StateMachineArn": child["stateMachineArn"],
+                        "Input": {"requestId.$": "$.requestId"},
+                    },
+                    "End": True,
+                }
+            },
+        }
+    )
+    parent = sfn.create_state_machine(
+        name=f"sfn-parent-sync-{unique}",
+        definition=parent_definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+
+    ex = sfn.start_execution(
+        stateMachineArn=parent["stateMachineArn"],
+        input=json.dumps({"requestId": "req-123"}),
+    )
+
+    desc = _wait_sfn(sfn, ex["executionArn"])
+    assert desc["status"] == "SUCCEEDED"
+
+    output = json.loads(desc["output"])
+    assert output["Status"] == "SUCCEEDED"
+    assert isinstance(output["Output"], str)
+    assert json.loads(output["Output"]) == {"message": "child-ok", "version": 1}
+
+    child_execs = sfn.list_executions(
+        stateMachineArn=child["stateMachineArn"],
+        statusFilter="SUCCEEDED",
+    )["executions"]
+    assert any(e["executionArn"] == output["ExecutionArn"] for e in child_execs)
+
+
+def test_sfn_integration_nested_start_execution_sync2_returns_json_output(sfn):
+    """states:startExecution.sync:2 should expose the child Output as JSON."""
+    unique = str(time.time_ns())
+
+    child_definition = json.dumps(
+        {
+            "StartAt": "Echo",
+            "States": {
+                "Echo": {
+                    "Type": "Pass",
+                    "Parameters": {
+                        "childValue.$": "$.value",
+                        "source": "child",
+                    },
+                    "End": True,
+                }
+            },
+        }
+    )
+    child = sfn.create_state_machine(
+        name=f"sfn-child-sync2-{unique}",
+        definition=child_definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+
+    parent_definition = json.dumps(
+        {
+            "StartAt": "RunChild",
+            "States": {
+                "RunChild": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::states:startExecution.sync:2",
+                    "Parameters": {
+                        "StateMachineArn": child["stateMachineArn"],
+                        "Input": {"value.$": "$.value"},
+                    },
+                    "ResultPath": "$.child",
+                    "Next": "CheckChild",
+                },
+                "CheckChild": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {
+                            "Variable": "$.child.Output.childValue",
+                            "StringEquals": "expected",
+                            "Next": "Done",
+                        }
+                    ],
+                    "Default": "WrongChildOutput",
+                },
+                "WrongChildOutput": {
+                    "Type": "Fail",
+                    "Error": "WrongChildOutput",
+                },
+                "Done": {
+                    "Type": "Succeed",
+                },
+            },
+        }
+    )
+    parent = sfn.create_state_machine(
+        name=f"sfn-parent-sync2-{unique}",
+        definition=parent_definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+
+    ex = sfn.start_execution(
+        stateMachineArn=parent["stateMachineArn"],
+        input=json.dumps({"value": "expected"}),
+    )
+
+    desc = _wait_sfn(sfn, ex["executionArn"])
+    assert desc["status"] == "SUCCEEDED"
+
+    output = json.loads(desc["output"])
+    assert output["child"]["Status"] == "SUCCEEDED"
+    assert output["child"]["Output"] == {
+        "childValue": "expected",
+        "source": "child",
+    }
+
+    child_execs = sfn.list_executions(
+        stateMachineArn=child["stateMachineArn"],
+        statusFilter="SUCCEEDED",
+    )["executions"]
+    assert any(e["executionArn"] == output["child"]["ExecutionArn"] for e in child_execs)
+
+
 def test_sfn_integration_multi_service_pipeline(sfn, sqs, ddb):
     """End-to-end: Pass → DynamoDB putItem → SQS sendMessage → Succeed."""
     table_name = "sfn-pipeline-test"
