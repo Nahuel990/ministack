@@ -4293,6 +4293,118 @@ def test_sfn_tags_v2(sfn):
     assert any(t["key"] == "env" for t in tags3)
 
 
+def test_sfn_intrinsic_string_to_json(sfn, sfn_sync):
+    """States.StringToJson parses a JSON string into structured data."""
+    definition = json.dumps({
+        "StartAt": "Parse",
+        "States": {
+            "Parse": {
+                "Type": "Pass",
+                "Parameters": {
+                    "parsed.$": "States.StringToJson($.raw)"
+                },
+                "End": True,
+            }
+        },
+    })
+    sm = sfn.create_state_machine(
+        name="sfn-intrinsic-s2j",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=sm["stateMachineArn"],
+        input=json.dumps({"raw": '{"a":1,"b":2}'}),
+    )
+    assert resp["status"] == "SUCCEEDED"
+    output = json.loads(resp["output"])
+    assert output["parsed"] == {"a": 1, "b": 2}
+
+
+def test_sfn_intrinsic_json_merge(sfn, sfn_sync):
+    """States.JsonMerge shallow-merges two objects."""
+    definition = json.dumps({
+        "StartAt": "Merge",
+        "States": {
+            "Merge": {
+                "Type": "Pass",
+                "Parameters": {
+                    "merged.$": "States.JsonMerge($.obj1, $.obj2, false)"
+                },
+                "End": True,
+            }
+        },
+    })
+    sm = sfn.create_state_machine(
+        name="sfn-intrinsic-jm",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=sm["stateMachineArn"],
+        input=json.dumps({"obj1": {"a": 1, "c": 3}, "obj2": {"b": 2, "c": 99}}),
+    )
+    assert resp["status"] == "SUCCEEDED"
+    output = json.loads(resp["output"])
+    assert output["merged"] == {"a": 1, "b": 2, "c": 99}
+
+
+def test_sfn_intrinsic_format(sfn, sfn_sync):
+    """States.Format interpolates arguments into a template string."""
+    definition = json.dumps({
+        "StartAt": "Fmt",
+        "States": {
+            "Fmt": {
+                "Type": "Pass",
+                "Parameters": {
+                    "greeting.$": "States.Format('Hello {} from {}', $.name, $.city)"
+                },
+                "End": True,
+            }
+        },
+    })
+    sm = sfn.create_state_machine(
+        name="sfn-intrinsic-fmt",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=sm["stateMachineArn"],
+        input=json.dumps({"name": "Jay", "city": "SF"}),
+    )
+    assert resp["status"] == "SUCCEEDED"
+    output = json.loads(resp["output"])
+    assert output["greeting"] == "Hello Jay from SF"
+
+
+def test_sfn_intrinsic_nested(sfn, sfn_sync):
+    """Nested intrinsic: States.StringToJson(States.Format(...))"""
+    definition = json.dumps({
+        "StartAt": "Nested",
+        "States": {
+            "Nested": {
+                "Type": "Pass",
+                "Parameters": {
+                    "result.$": "States.StringToJson(States.Format('{\"key\":\"{}\"}', $.val))"
+                },
+                "End": True,
+            }
+        },
+    })
+    sm = sfn.create_state_machine(
+        name="sfn-intrinsic-nested",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=sm["stateMachineArn"],
+        input=json.dumps({"val": "hello"}),
+    )
+    assert resp["status"] == "SUCCEEDED"
+    output = json.loads(resp["output"])
+    assert output["result"] == {"key": "hello"}
+
+
 # ===================================================================
 # ECS — comprehensive tests
 # ===================================================================

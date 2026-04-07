@@ -1665,6 +1665,131 @@ def _resolve_path(path, data):
     return cur
 
 
+def _parse_intrinsic_args(s, pos):
+    """Recursive descent parser for intrinsic function arguments.
+
+    Returns (list_of_args, next_pos) where next_pos is after the closing ')'.
+    """
+    args = []
+    pos = _skip_ws(s, pos)
+    if pos < len(s) and s[pos] == ")":
+        return args, pos + 1
+
+    while pos < len(s):
+        pos = _skip_ws(s, pos)
+        if pos >= len(s):
+            break
+
+        ch = s[pos]
+
+        if s[pos:].startswith("States."):
+            arg, pos = _parse_intrinsic_call(s, pos)
+            args.append(arg)
+        elif ch == "'":
+            end = s.index("'", pos + 1)
+            args.append(("str", s[pos + 1 : end]))
+            pos = end + 1
+        elif ch == "$":
+            end = pos
+            while end < len(s) and s[end] not in (",", ")"):
+                end += 1
+            args.append(("path", s[pos:end].strip()))
+            pos = end
+        elif ch in "0123456789-":
+            end = pos + 1
+            while end < len(s) and s[end] not in (",", ")"):
+                end += 1
+            tok = s[pos:end].strip()
+            if "." in tok:
+                args.append(("num", float(tok)))
+            else:
+                args.append(("num", int(tok)))
+            pos = end
+        elif s[pos : pos + 4] == "true":
+            args.append(("bool", True))
+            pos += 4
+        elif s[pos : pos + 5] == "false":
+            args.append(("bool", False))
+            pos += 5
+        elif s[pos : pos + 4] == "null":
+            args.append(("null", None))
+            pos += 4
+        else:
+            pos += 1
+            continue
+
+        pos = _skip_ws(s, pos)
+        if pos < len(s) and s[pos] == ",":
+            pos += 1
+        elif pos < len(s) and s[pos] == ")":
+            return args, pos + 1
+
+    return args, pos
+
+
+def _skip_ws(s, pos):
+    while pos < len(s) and s[pos] in " \t\n\r":
+        pos += 1
+    return pos
+
+
+def _parse_intrinsic_call(s, pos):
+    """Parse a States.Xxx(...) call starting at pos. Returns (('call', name, args), next_pos)."""
+    paren = s.index("(", pos)
+    name = s[pos:paren].strip()
+    args, end = _parse_intrinsic_args(s, paren + 1)
+    return ("call", name, args), end
+
+
+def _eval_intrinsic_arg(arg, data, ctx):
+    """Evaluate a single parsed argument node."""
+    kind = arg[0]
+    if kind == "str":
+        return arg[1]
+    elif kind == "num" or kind == "bool" or kind == "null":
+        return arg[1]
+    elif kind == "path":
+        path = arg[1]
+        if path.startswith("$$."):
+            return _resolve_ctx_path(path, ctx or {})
+        return _resolve_path(path, data)
+    elif kind == "call":
+        return _exec_intrinsic(arg, data, ctx)
+    return None
+
+
+def _exec_intrinsic(node, data, ctx):
+    """Execute a parsed intrinsic call node ('call', name, args)."""
+    _, name, raw_args = node
+    args = [_eval_intrinsic_arg(a, data, ctx) for a in raw_args]
+
+    if name == "States.StringToJson":
+        return json.loads(args[0])
+    elif name == "States.JsonMerge":
+        merged = {}
+        merged.update(args[0])
+        merged.update(args[1])
+        return merged
+    elif name == "States.Format":
+        template = args[0]
+        parts = template.split("{}")
+        result_parts = []
+        for i, part in enumerate(parts):
+            result_parts.append(part)
+            if i < len(parts) - 1 and i < len(args) - 1:
+                val = args[i + 1]
+                result_parts.append(str(val) if not isinstance(val, str) else val)
+        return "".join(result_parts)
+
+    raise ValueError(f"Unsupported intrinsic function: {name}")
+
+
+def _evaluate_intrinsic(expression, data, ctx):
+    """Parse and evaluate a States.* intrinsic function expression."""
+    node, _ = _parse_intrinsic_call(expression, 0)
+    return _exec_intrinsic(node, data, ctx)
+
+
 def _resolve_params_obj(template, data, ctx=None):
     if not isinstance(template, dict):
         return template
@@ -1673,7 +1798,9 @@ def _resolve_params_obj(template, data, ctx=None):
         if key.endswith(".$"):
             real_key = key[:-2]
             if isinstance(value, str):
-                if value.startswith("$$."):
+                if value.startswith("States."):
+                    result[real_key] = _evaluate_intrinsic(value, data, ctx)
+                elif value.startswith("$$."):
                     result[real_key] = _resolve_ctx_path(value, ctx or {})
                 else:
                     result[real_key] = _resolve_path(value, data)

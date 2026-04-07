@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Step Functions intrinsic functions** — `States.StringToJson`, `States.JsonMerge`, `States.Format` now work in `Parameters` and `ResultSelector`. Supports nested intrinsic calls. Enables real-world ASL definitions that use string interpolation and JSON manipulation
+
+### Tests
+- 4 new tests: `States.StringToJson`, `States.JsonMerge`, `States.Format`, nested intrinsics
+
+---
+
 ## [1.1.45] — 2026-04-07
 
 ### Added
