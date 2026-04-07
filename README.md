@@ -570,6 +570,8 @@ print(json.loads(resp["Payload"].read()))  # {'statusCode': 200, 'body': '{"hell
 
 Layers that ship npm packages work too — MiniStack resolves the `nodejs/node_modules` subdirectory inside each layer zip and prepends it to the module search path.
 
+MiniStack also sets the standard Lambda runtime environment before the handler module is loaded, including `LAMBDA_TASK_ROOT`, `AWS_LAMBDA_FUNCTION_NAME`, `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`, and `_LAMBDA_FUNCTION_ARN`. That keeps import-time Lambda detection and conditional handler setup aligned with AWS warm runtime behaviour.
+
 ---
 
 ## Architecture

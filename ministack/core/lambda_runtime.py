@@ -182,6 +182,10 @@ rl.on("line", async (line) => {
     if (lineNum === 1) {
       const { code_dir, module: modPath, handler: handlerName, env } = msg;
       Object.assign(process.env, env || {});
+      process.env.LAMBDA_TASK_ROOT = code_dir;
+      process.env.AWS_LAMBDA_FUNCTION_NAME = msg.function_name || process.env.AWS_LAMBDA_FUNCTION_NAME || "";
+      process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE = String(msg.memory || process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE || "128");
+      process.env._LAMBDA_FUNCTION_ARN = msg.arn || process.env._LAMBDA_FUNCTION_ARN || "";
       patchAwsSdk();
       try {
         const fullPath = path.resolve(code_dir, modPath);
@@ -314,6 +318,10 @@ class Worker:
         module_name, handler_name = handler.rsplit(".", 1)
         env_vars = self.config.get("Environment", {}).get("Variables", {})
         spawn_env = {**os.environ, **env_vars}
+        spawn_env.setdefault("LAMBDA_TASK_ROOT", code_dir)
+        spawn_env.setdefault("AWS_LAMBDA_FUNCTION_NAME", self.config.get("FunctionName", ""))
+        spawn_env.setdefault("AWS_LAMBDA_FUNCTION_MEMORY_SIZE", str(self.config.get("MemorySize", 128)))
+        spawn_env.setdefault("_LAMBDA_FUNCTION_ARN", self.config.get("FunctionArn", ""))
 
         self._proc = subprocess.Popen(
             [binary, worker_path],
