@@ -13,11 +13,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Cloud Map (Service Discovery)** — new service with namespace lifecycle (HTTP, private/public DNS), service/instance CRUD, operation tracking, tagging, Route53 hosted zone integration. Contributed by @jgrumboe (#147)
 - **Step Functions intrinsic functions** — `States.StringToJson`, `States.JsonMerge`, `States.Format` in `Parameters` and `ResultSelector`. Supports nested intrinsic calls. Contributed by @jayjanssen (#167)
 - **STS `GetAccessKeyInfo`** — returns account ID for a given access key
+- **EC2 `ModifySnapshotAttribute` / `DescribeSnapshotAttribute`** — now actually stores and returns `createVolumePermission` instead of being stubs
 - **`ready.d` scripts** — execute after server startup for resource seeding. Contributed by @kjdev (#159)
 
 ### Tests
 - 3 WAF tests: check_capacity, describe_managed_rule_group, list_resources_for_web_acl. Contributed by @mvanhorn (#164)
 - 2 STS tests: assume_role_returns_credentials, get_access_key_info. Contributed by @mvanhorn (#162)
+- 3 EBS tests: snapshot_attribute, volume_attribute, volumes_modifications. Contributed by @mvanhorn (#163)
 
 ---
 

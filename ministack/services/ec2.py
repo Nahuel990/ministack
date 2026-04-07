@@ -1496,14 +1496,32 @@ def _copy_snapshot(p):
 
 
 def _modify_snapshot_attribute(p):
+    snap_id = _p(p, "SnapshotId")
+    snap = _snapshots.get(snap_id)
+    if not snap:
+        return _error("InvalidSnapshot.NotFound", f"Snapshot '{snap_id}' not found", 400)
+    op = _p(p, "OperationType")
+    user_ids = _parse_member_list(p, "UserId")
+    perms = snap.setdefault("CreateVolumePermissions", [])
+    if op == "add":
+        for uid in user_ids:
+            if not any(pp.get("UserId") == uid for pp in perms):
+                perms.append({"UserId": uid})
+    elif op == "remove":
+        perms[:] = [pp for pp in perms if pp.get("UserId") not in user_ids]
     return _xml(200, "ModifySnapshotAttributeResponse", "<return>true</return>")
 
 
 def _describe_snapshot_attribute(p):
     snap_id = _p(p, "SnapshotId")
+    snap = _snapshots.get(snap_id)
+    perms_xml = ""
+    if snap:
+        for pp in snap.get("CreateVolumePermissions", []):
+            perms_xml += f"<item><userId>{pp['UserId']}</userId></item>"
     return _xml(200, "DescribeSnapshotAttributeResponse", f"""
         <snapshotId>{snap_id}</snapshotId>
-        <createVolumePermission/>""")
+        <createVolumePermission>{perms_xml}</createVolumePermission>""")
 
 
 def _snapshot_inner_xml(snap):
