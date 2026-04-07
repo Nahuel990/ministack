@@ -220,24 +220,35 @@ def _identity_id(pool_id: str) -> str:
     return f"{REGION}:{new_uuid()}"
 
 
-def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "access") -> str:
-    """Return a plausible-looking but non-cryptographic JWT stub."""
+def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "access",
+                 username: str = "") -> str:
+    """Return a JWT signed with the RSA key when cryptography is available."""
     header = base64.urlsafe_b64encode(
         json.dumps({"alg": "RS256", "kid": "ministack-key-1"}).encode()
     ).rstrip(b"=").decode()
     now = int(time.time())
+    claims = {
+        "sub": sub,
+        "iss": f"https://cognito-idp.{REGION}.amazonaws.com/{pool_id}",
+        "client_id": client_id,
+        "token_use": token_type,
+        "iat": now,
+        "exp": now + 3600,
+        "jti": new_uuid(),
+    }
+    if token_type == "access" and username:
+        claims["username"] = username
     payload = base64.urlsafe_b64encode(
-        json.dumps({
-            "sub": sub,
-            "iss": f"https://cognito-idp.{REGION}.amazonaws.com/{pool_id}",
-            "client_id": client_id,
-            "token_use": token_type,
-            "iat": now,
-            "exp": now + 3600,
-            "jti": new_uuid(),
-        }).encode()
+        json.dumps(claims).encode()
     ).rstrip(b"=").decode()
-    sig = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    signing_input = f"{header}.{payload}".encode()
+    if _RSA_PRIVATE_KEY is not None:
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives import hashes
+        sig_bytes = _RSA_PRIVATE_KEY.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+        sig = base64.urlsafe_b64encode(sig_bytes).rstrip(b"=").decode()
+    else:
+        sig = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
     return f"{header}.{payload}.{sig}"
 
 
@@ -978,8 +989,9 @@ def _mfa_challenge_for_user(pool: dict, user: dict, pid: str, username: str) -> 
 
 def _build_auth_result(pool_id: str, client_id: str, user: dict) -> dict:
     sub = _attr_list_to_dict(user.get("Attributes", [])).get("sub", user["Username"])
+    username = user.get("Username", "")
     return {
-        "AccessToken": _fake_token(sub, pool_id, client_id, "access"),
+        "AccessToken": _fake_token(sub, pool_id, client_id, "access", username=username),
         "IdToken": _fake_token(sub, pool_id, client_id, "id"),
         "RefreshToken": _fake_token(sub, pool_id, client_id, "refresh"),
         "TokenType": "Bearer",
