@@ -76,6 +76,7 @@ from ministack.services import (
     waf,
     cloudfront,
     servicediscovery,
+    s3files,
 )
 from ministack.services import iam_sts
 from ministack.services.iam_sts import handle_iam_request, handle_sts_request
@@ -126,6 +127,7 @@ SERVICE_HANDLERS = {
     "cloudfront": cloudfront.handle_request,
     "appsync": appsync.handle_request,
     "servicediscovery": servicediscovery.handle_request,
+    "s3files": s3files.handle_request,
 }
 
 SERVICE_NAME_ALIASES = {
@@ -180,7 +182,7 @@ BANNER = r"""
           SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
           Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation, KMS, ECR, CloudFront,
-          AppSync, Cloud Map
+          AppSync, Cloud Map, S3 Files
 """
 
 
@@ -606,6 +608,7 @@ async def _handle_lifespan(scope, receive, send):
                     "ses": ses.get_state,
                     "ses_v2": ses_v2.get_state,
                     "servicediscovery": servicediscovery.get_state,
+                    "s3files": s3files.get_state,
                 })
             await send({"type": "lifespan.shutdown.complete"})
             return
@@ -742,6 +745,7 @@ def _reset_all_state():
         (ecr, ecr.reset),
         (appsync, appsync.reset),
         (servicediscovery, servicediscovery.reset),
+        (s3files, s3files.reset),
     ]:
         try:
             fn()
