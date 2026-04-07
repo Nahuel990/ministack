@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.47] — 2026-04-07
+
+### Added
+- **Step Functions generic `aws-sdk:*` task dispatcher** — Task states can now call any MiniStack service via `arn:aws:states:::aws-sdk:<service>:<action>` resource ARNs. Supports all JSON-protocol services (DynamoDB, SecretsManager, ECS, KMS, etc.). Contributed by @jayjanssen (#168)
+
+### Fixed
+- **S3 `PutObject` missing `Content-Length: 0` header** — CDK deploy failed with `Expected real number, got implicit NaN` because the JS SDK v3 parsed the missing header as NaN. Reported by @youngkwangk (#160)
+- **README reverts from stale PR branches** — restored Cloud Map, ready.d, persistence list, SFN intrinsics documentation
+
+---
+
 ## [1.1.46] — 2026-04-07
 
 ### Added

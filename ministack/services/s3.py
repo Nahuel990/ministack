@@ -1366,7 +1366,7 @@ def _put_object(bucket_name: str, key: str, body: bytes, headers: dict):
         bucket_name, key, "s3:ObjectCreated:Put", size=obj["size"], etag=obj["etag"]
     )
 
-    resp_headers = {"ETag": obj["etag"]}
+    resp_headers = {"ETag": obj["etag"], "Content-Length": "0"}
     if _bucket_versioning.get(bucket_name) in ("Enabled", "Suspended"):
         version_id = new_uuid()
         obj["version_id"] = version_id
