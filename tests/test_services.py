@@ -4574,6 +4574,198 @@ def test_sfn_aws_sdk_unknown_service_fails(sfn, sfn_sync):
 
 
 # ===================================================================
+# Step Functions aws-sdk:rds — query-protocol dispatch tests
+# ===================================================================
+
+
+def test_sfn_aws_sdk_rds_create_and_describe_cluster(sfn, sfn_sync):
+    """aws-sdk:rds CreateDBCluster + DescribeDBClusters via query-protocol dispatch."""
+    import uuid as _uuid
+
+    cluster_id = f"sfn-rds-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-rds-create-{_uuid.uuid4().hex[:8]}"
+
+    definition = json.dumps({
+        "StartAt": "CreateCluster",
+        "States": {
+            "CreateCluster": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:CreateDBCluster",
+                "Parameters": {
+                    "DBClusterIdentifier": cluster_id,
+                    "Engine": "aurora-postgresql",
+                    "MasterUsername": "admin",
+                    "MasterUserPassword": "testpass123",
+                },
+                "ResultPath": "$.createResult",
+                "Next": "DescribeClusters",
+            },
+            "DescribeClusters": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:DescribeDBClusters",
+                "Parameters": {
+                    "DBClusterIdentifier": cluster_id,
+                },
+                "ResultPath": "$.describeResult",
+                "Next": "Done",
+            },
+            "Done": {"Type": "Succeed"},
+        },
+    })
+
+    sm_arn = sfn_sync.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )["stateMachineArn"]
+
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+    assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+    output = json.loads(resp["output"])
+
+    # Verify create result contains the cluster
+    create_cluster = output["createResult"]["DBCluster"]
+    assert create_cluster["DBClusterIdentifier"] == cluster_id
+    assert create_cluster["Engine"] == "aurora-postgresql"
+
+    # Verify describe result
+    describe_clusters = output["describeResult"]["DBClusters"]
+    assert "DBCluster" in describe_clusters
+
+    sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_rds_create_and_describe_instance(sfn, sfn_sync):
+    """aws-sdk:rds CreateDBInstance + DescribeDBInstances via query-protocol dispatch."""
+    import uuid as _uuid
+
+    instance_id = f"sfn-inst-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-rds-inst-{_uuid.uuid4().hex[:8]}"
+
+    definition = json.dumps({
+        "StartAt": "CreateInstance",
+        "States": {
+            "CreateInstance": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:CreateDBInstance",
+                "Parameters": {
+                    "DBInstanceIdentifier": instance_id,
+                    "DBInstanceClass": "db.t3.micro",
+                    "Engine": "postgres",
+                },
+                "ResultPath": "$.createResult",
+                "Next": "DescribeInstances",
+            },
+            "DescribeInstances": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:DescribeDBInstances",
+                "Parameters": {
+                    "DBInstanceIdentifier": instance_id,
+                },
+                "ResultPath": "$.describeResult",
+                "Next": "Done",
+            },
+            "Done": {"Type": "Succeed"},
+        },
+    })
+
+    sm_arn = sfn_sync.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )["stateMachineArn"]
+
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+    assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+    output = json.loads(resp["output"])
+
+    create_inst = output["createResult"]["DBInstance"]
+    assert create_inst["DBInstanceIdentifier"] == instance_id
+    assert create_inst["Engine"] == "postgres"
+
+    sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_rds_modify_cluster(sfn, sfn_sync, rds):
+    """aws-sdk:rds ModifyDBCluster via query-protocol dispatch."""
+    import uuid as _uuid
+
+    cluster_id = f"sfn-mod-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-rds-mod-{_uuid.uuid4().hex[:8]}"
+
+    # Pre-create cluster directly
+    rds.create_db_cluster(
+        DBClusterIdentifier=cluster_id,
+        Engine="aurora-postgresql",
+        MasterUsername="admin",
+        MasterUserPassword="testpass123",
+    )
+
+    definition = json.dumps({
+        "StartAt": "ModifyCluster",
+        "States": {
+            "ModifyCluster": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:ModifyDBCluster",
+                "Parameters": {
+                    "DBClusterIdentifier": cluster_id,
+                    "BackupRetentionPeriod": "7",
+                },
+                "ResultPath": "$.modifyResult",
+                "Next": "Done",
+            },
+            "Done": {"Type": "Succeed"},
+        },
+    })
+
+    sm_arn = sfn_sync.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )["stateMachineArn"]
+
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+    assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+    output = json.loads(resp["output"])
+    assert output["modifyResult"]["DBCluster"]["BackupRetentionPeriod"] == "7"
+
+    sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_rds_not_found_error(sfn, sfn_sync):
+    """aws-sdk:rds DescribeDBClusters on missing cluster propagates error."""
+    import uuid as _uuid
+
+    sm_name = f"sdk-rds-notfound-{_uuid.uuid4().hex[:8]}"
+
+    definition = json.dumps({
+        "StartAt": "DescribeMissing",
+        "States": {
+            "DescribeMissing": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:DescribeDBClusters",
+                "Parameters": {
+                    "DBClusterIdentifier": "this-cluster-does-not-exist",
+                },
+                "End": True,
+            },
+        },
+    })
+
+    sm_arn = sfn_sync.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )["stateMachineArn"]
+
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+    assert resp["status"] == "FAILED"
+    assert "DBClusterNotFoundFault" in (resp.get("error", "") + resp.get("cause", ""))
+
+    sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+# ===================================================================
 # ECS — comprehensive tests
 # ===================================================================
 
