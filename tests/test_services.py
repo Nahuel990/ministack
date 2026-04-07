@@ -14989,6 +14989,47 @@ def test_ebs_copy_snapshot(ebs):
     assert new_snap_id.startswith("snap-")
 
 
+def test_ebs_snapshot_attribute(ebs):
+    vol = ebs.create_volume(AvailabilityZone="us-east-1a", Size=10, VolumeType="gp2")
+    snap = ebs.create_snapshot(VolumeId=vol["VolumeId"], Description="attr test")
+    snap_id = snap["SnapshotId"]
+
+    ebs.modify_snapshot_attribute(
+        SnapshotId=snap_id,
+        Attribute="createVolumePermission",
+        OperationType="add",
+        UserIds=["123456789012"],
+    )
+    resp = ebs.describe_snapshot_attribute(
+        SnapshotId=snap_id, Attribute="createVolumePermission"
+    )
+    assert resp["SnapshotId"] == snap_id
+    assert any(
+        p.get("UserId") == "123456789012"
+        for p in resp.get("CreateVolumePermissions", [])
+    )
+
+
+def test_ebs_volume_attribute(ebs):
+    vol = ebs.create_volume(AvailabilityZone="us-east-1a", Size=10, VolumeType="gp2")
+    vol_id = vol["VolumeId"]
+    resp = ebs.describe_volume_attribute(VolumeId=vol_id, Attribute="autoEnableIO")
+    assert resp["VolumeId"] == vol_id
+    assert "AutoEnableIO" in resp
+
+
+def test_ebs_describe_volumes_modifications(ebs):
+    vol = ebs.create_volume(AvailabilityZone="us-east-1a", Size=10, VolumeType="gp2")
+    vol_id = vol["VolumeId"]
+    ebs.modify_volume(VolumeId=vol_id, Size=50, VolumeType="gp3")
+    resp = ebs.describe_volumes_modifications(VolumeIds=[vol_id])
+    mods = resp["VolumesModifications"]
+    assert len(mods) >= 1
+    assert mods[0]["VolumeId"] == vol_id
+    assert mods[0]["TargetSize"] == 50
+    assert mods[0]["TargetVolumeType"] == "gp3"
+
+
 # ---------------------------------------------------------------------------
 # EFS (Elastic File System)
 # ---------------------------------------------------------------------------
