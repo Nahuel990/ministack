@@ -1453,6 +1453,25 @@ def test_sts_get_caller_identity(sts):
     assert resp["Account"] == "000000000000"
 
 
+def test_sts_assume_role_returns_credentials(sts):
+    resp = sts.assume_role(
+        RoleArn="arn:aws:iam::000000000000:role/test-role",
+        RoleSessionName="intg-session",
+    )
+    creds = resp["Credentials"]
+    assert "AccessKeyId" in creds
+    assert "SecretAccessKey" in creds
+    assert "SessionToken" in creds
+    assert "Expiration" in creds
+    assert resp["AssumedRoleUser"]["Arn"]
+
+
+def test_sts_get_access_key_info(sts):
+    resp = sts.get_access_key_info(AccessKeyId="AKIAIOSFODNN7EXAMPLE")
+    assert "Account" in resp
+    assert resp["Account"] == "000000000000"
+
+
 # ========== SecretsManager ==========
 
 
