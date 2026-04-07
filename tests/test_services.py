@@ -16164,6 +16164,61 @@ def test_waf_tags(wafv2):
     wafv2.untag_resource(ResourceARN=arn, TagKeys=["env"])
     tags_resp3 = wafv2.list_tags_for_resource(ResourceARN=arn)
     assert not any(t["Key"] == "env" for t in tags_resp3["TagInfoForResource"]["TagList"])
+
+
+def test_waf_check_capacity(wafv2):
+    resp = wafv2.check_capacity(
+        Scope="REGIONAL",
+        Rules=[
+            {
+                "Name": "rate-rule",
+                "Priority": 1,
+                "Statement": {"RateBasedStatement": {"Limit": 1000, "AggregateKeyType": "IP"}},
+                "Action": {"Block": {}},
+                "VisibilityConfig": {
+                    "SampledRequestsEnabled": False,
+                    "CloudWatchMetricsEnabled": False,
+                    "MetricName": "rate",
+                },
+            }
+        ],
+    )
+    assert "Capacity" in resp
+    assert isinstance(resp["Capacity"], int)
+
+
+def test_waf_describe_managed_rule_group(wafv2):
+    resp = wafv2.describe_managed_rule_group(
+        VendorName="AWS",
+        Name="AWSManagedRulesCommonRuleSet",
+        Scope="REGIONAL",
+    )
+    assert "Capacity" in resp
+    assert "Rules" in resp
+    assert isinstance(resp["Rules"], list)
+
+
+def test_waf_list_resources_for_web_acl(wafv2):
+    resp = wafv2.create_web_acl(
+        Name="res-list-acl",
+        Scope="REGIONAL",
+        DefaultAction={"Allow": {}},
+        VisibilityConfig={
+            "SampledRequestsEnabled": False,
+            "CloudWatchMetricsEnabled": False,
+            "MetricName": "m",
+        },
+    )
+    acl_arn = resp["Summary"]["ARN"]
+    resource_arn = "arn:aws:elasticloadbalancing:us-east-1:000000000000:loadbalancer/app/waf-test/xyz"
+    wafv2.associate_web_acl(WebACLArn=acl_arn, ResourceArn=resource_arn)
+
+    list_resp = wafv2.list_resources_for_web_acl(
+        WebACLArn=acl_arn, ResourceType="APPLICATION_LOAD_BALANCER"
+    )
+    assert resource_arn in list_resp.get("ResourceArns", [])
+
+
 # ========== CloudFormation ==========
 
 
