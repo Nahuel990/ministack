@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Step Functions generic `aws-sdk:*` task dispatcher** — Task states can now use `arn:aws:states:::aws-sdk:<service>:<action>` resources to call any JSON-protocol MiniStack service (DynamoDB, SecretsManager, SSM, Logs, Kinesis, Glue, Athena, ECS, ECR, KMS, EventBridge). Query/REST services return clear "not yet supported" errors
+- **Step Functions sync execution error details** — `StartSyncExecution` now returns `error` and `cause` fields for failed executions, matching AWS SFN behaviour
+
+### Tests
+- 3 new tests: SecretsManager round-trip via aws-sdk, DynamoDB round-trip via aws-sdk, unknown service error handling
+
+---
+
 ## [1.1.46] — 2026-04-07
 
 ### Added
@@ -22,7 +33,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - 3 EBS tests: snapshot_attribute, volume_attribute, volumes_modifications. Contributed by @mvanhorn (#163)
 
 ---
-
 ## [1.1.45] — 2026-04-07
 
 ### Added
