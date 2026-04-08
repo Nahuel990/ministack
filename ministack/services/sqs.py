@@ -378,10 +378,18 @@ def _act_delete_message(data: dict, qurl: str) -> dict:
     # Only remove messages whose receipt_handle is set and matches.
     # Messages that have never been received (receipt_handle is None) are never
     # accidentally removed by an empty or unrelated receipt handle.
-    q["messages"] = [
-        m for m in q["messages"]
-        if not (m["receipt_handle"] is not None and m["receipt_handle"] == rh)
-    ]
+    kept = []
+    for m in q["messages"]:
+        if m["receipt_handle"] is not None and m["receipt_handle"] == rh:
+            # Clear the FIFO dedup cache entry so the same dedup ID can be
+            # reused immediately after deletion.  Real AWS keeps a strict
+            # 5-minute window, but clearing on delete is more practical for
+            # local development where tests re-run with fixed dedup IDs.
+            if q["is_fifo"] and m.get("dedup_id"):
+                q["dedup_cache"].pop(m["dedup_id"], None)
+        else:
+            kept.append(m)
+    q["messages"] = kept
     return {}
 
 
@@ -504,10 +512,14 @@ def _act_delete_message_batch(data: dict, qurl: str) -> dict:
         eid = e.get("Id", "")
         rh = e.get("ReceiptHandle", "")
         before = len(q["messages"])
-        q["messages"] = [
-            m for m in q["messages"]
-            if not (m["receipt_handle"] is not None and m["receipt_handle"] == rh)
-        ]
+        kept = []
+        for m in q["messages"]:
+            if m["receipt_handle"] is not None and m["receipt_handle"] == rh:
+                if q["is_fifo"] and m.get("dedup_id"):
+                    q["dedup_cache"].pop(m["dedup_id"], None)
+            else:
+                kept.append(m)
+        q["messages"] = kept
         if len(q["messages"]) < before:
             ok.append({"Id": eid})
         else:
@@ -572,6 +584,16 @@ _HANDLERS.update({
 
 def _get_q(url: str) -> dict:
     q = _queues.get(url)
+    if q is None:
+        # Fallback: extract queue name from URL and look up by name.
+        # This handles cases where the hostname differs (e.g. docker-compose
+        # service name "ministack" vs "localhost").
+        parts = url.rstrip("/").split("/")
+        if len(parts) >= 2:
+            name = parts[-1]
+            canonical_url = _queue_name_to_url.get(name)
+            if canonical_url:
+                q = _queues.get(canonical_url)
     if q is None:
         raise _Err("QueueDoesNotExist",
                     "The specified queue does not exist for this wsdl version.")
@@ -1283,7 +1305,11 @@ def _delete_messages_for_esm(queue_url: str, receipt_handles: set[str]) -> None:
         return
     with _queues_lock:
         q = _get_q(queue_url)
-        q["messages"] = [
-            m for m in q["messages"]
-            if not (m.get("receipt_handle") is not None and m.get("receipt_handle") in receipt_handles)
-        ]
+        kept = []
+        for m in q["messages"]:
+            if m.get("receipt_handle") is not None and m.get("receipt_handle") in receipt_handles:
+                if q["is_fifo"] and m.get("dedup_id"):
+                    q["dedup_cache"].pop(m["dedup_id"], None)
+            else:
+                kept.append(m)
+        q["messages"] = kept

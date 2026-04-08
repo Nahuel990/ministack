@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.52] — 2026-04-08
+
+### Fixed
+- **SQS queue URL hostname resolution** — `QueueUrl` with a different hostname (e.g. `http://ministack:4566/...` in docker-compose) now resolves correctly. The queue lookup extracts the queue name from the URL and falls back to name-based resolution when the exact URL doesn't match.
+- **SQS FIFO dedup cache not cleared on message delete** — Deleting a FIFO message now clears its deduplication cache entry, so the same `MessageDeduplicationId` can be reused immediately. Previously, the 5-minute dedup window blocked re-sends even after the message was consumed and deleted, breaking test reruns with fixed dedup IDs. Reported by @mspiller
+- **API Gateway deadlock when Lambda calls back to MiniStack** — Lambda invocations from API Gateway (both v1 REST and v2 HTTP) now run in a thread pool (`asyncio.to_thread`), preventing deadlock when the Lambda handler makes HTTP requests back to MiniStack. Contributed by @rankinjl (#191)
+
+### Changed
+- **Tests split into per-service files** — The monolithic `test_services.py` (21K lines) has been split into ~45 focused test files (`test_s3.py`, `test_sqs.py`, `test_ec2.py`, etc.). Contributed by @jgrumboe (#189)
+- **Lambda runtime env vars set before handler load** — `LAMBDA_TASK_ROOT`, `AWS_LAMBDA_FUNCTION_NAME`, `AWS_LAMBDA_FUNCTION_MEMORY_SIZE`, and `_LAMBDA_FUNCTION_ARN` are now available at import time (cold start), matching real AWS Lambda behavior. Contributed by @lubond (#190)
+
+---
+
 ## [1.1.51] — 2026-04-08
 
 ### Added
