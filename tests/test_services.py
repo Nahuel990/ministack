@@ -19973,6 +19973,194 @@ def test_ec2_full_terraform_vpc_flow(ec2):
 
 
 # ---------------------------------------------------------------------------
+# EC2 Launch Templates
+# ---------------------------------------------------------------------------
+
+def test_ec2_launch_template_crud(ec2):
+    """Create, describe, and delete a launch template."""
+    resp = ec2.create_launch_template(
+        LaunchTemplateName="qa-lt-basic",
+        LaunchTemplateData={
+            "InstanceType": "t3.micro",
+            "ImageId": "ami-12345678",
+            "KeyName": "my-key",
+        },
+    )
+    lt = resp["LaunchTemplate"]
+    lt_id = lt["LaunchTemplateId"]
+    assert lt_id.startswith("lt-")
+    assert lt["LaunchTemplateName"] == "qa-lt-basic"
+    assert lt["DefaultVersionNumber"] == 1
+    assert lt["LatestVersionNumber"] == 1
+
+    # Describe
+    desc = ec2.describe_launch_templates(LaunchTemplateIds=[lt_id])
+    assert len(desc["LaunchTemplates"]) == 1
+    assert desc["LaunchTemplates"][0]["LaunchTemplateName"] == "qa-lt-basic"
+
+    # Describe by name
+    desc2 = ec2.describe_launch_templates(LaunchTemplateNames=["qa-lt-basic"])
+    assert len(desc2["LaunchTemplates"]) == 1
+
+    # Describe versions
+    versions = ec2.describe_launch_template_versions(LaunchTemplateId=lt_id)
+    assert len(versions["LaunchTemplateVersions"]) == 1
+    ver = versions["LaunchTemplateVersions"][0]
+    assert ver["VersionNumber"] == 1
+    assert ver["LaunchTemplateData"]["InstanceType"] == "t3.micro"
+    assert ver["LaunchTemplateData"]["ImageId"] == "ami-12345678"
+
+    # Delete
+    ec2.delete_launch_template(LaunchTemplateId=lt_id)
+    desc3 = ec2.describe_launch_templates(LaunchTemplateIds=[lt_id])
+    assert len(desc3["LaunchTemplates"]) == 0
+
+
+def test_ec2_launch_template_duplicate_name(ec2):
+    """Creating a template with a duplicate name should fail."""
+    ec2.create_launch_template(
+        LaunchTemplateName="qa-lt-dup",
+        LaunchTemplateData={"InstanceType": "t3.micro"},
+    )
+    with pytest.raises(ClientError) as exc:
+        ec2.create_launch_template(
+            LaunchTemplateName="qa-lt-dup",
+            LaunchTemplateData={"InstanceType": "t3.small"},
+        )
+    assert "AlreadyExists" in exc.value.response["Error"]["Code"]
+    # Cleanup
+    ec2.delete_launch_template(LaunchTemplateName="qa-lt-dup")
+
+
+def test_ec2_launch_template_versions(ec2):
+    """Create multiple versions and query $Latest / $Default."""
+    resp = ec2.create_launch_template(
+        LaunchTemplateName="qa-lt-ver",
+        LaunchTemplateData={"InstanceType": "t3.micro", "ImageId": "ami-v1"},
+    )
+    lt_id = resp["LaunchTemplate"]["LaunchTemplateId"]
+
+    # Create version 2
+    ec2.create_launch_template_version(
+        LaunchTemplateId=lt_id,
+        LaunchTemplateData={"InstanceType": "t3.small", "ImageId": "ami-v2"},
+        VersionDescription="version two",
+    )
+    # Create version 3
+    ec2.create_launch_template_version(
+        LaunchTemplateId=lt_id,
+        LaunchTemplateData={"InstanceType": "t3.large", "ImageId": "ami-v3"},
+    )
+
+    # Latest should be version 3
+    latest = ec2.describe_launch_template_versions(
+        LaunchTemplateId=lt_id, Versions=["$Latest"],
+    )
+    assert len(latest["LaunchTemplateVersions"]) == 1
+    assert latest["LaunchTemplateVersions"][0]["VersionNumber"] == 3
+    assert latest["LaunchTemplateVersions"][0]["LaunchTemplateData"]["InstanceType"] == "t3.large"
+
+    # Default should still be version 1
+    default = ec2.describe_launch_template_versions(
+        LaunchTemplateId=lt_id, Versions=["$Default"],
+    )
+    assert default["LaunchTemplateVersions"][0]["VersionNumber"] == 1
+
+    # All versions
+    all_ver = ec2.describe_launch_template_versions(LaunchTemplateId=lt_id)
+    assert len(all_ver["LaunchTemplateVersions"]) == 3
+
+    # Modify default to version 2
+    ec2.modify_launch_template(LaunchTemplateId=lt_id, DefaultVersion="2")
+    desc = ec2.describe_launch_templates(LaunchTemplateIds=[lt_id])
+    assert desc["LaunchTemplates"][0]["DefaultVersionNumber"] == 2
+
+    default2 = ec2.describe_launch_template_versions(
+        LaunchTemplateId=lt_id, Versions=["$Default"],
+    )
+    assert default2["LaunchTemplateVersions"][0]["VersionNumber"] == 2
+
+    # Cleanup
+    ec2.delete_launch_template(LaunchTemplateId=lt_id)
+
+
+def test_ec2_launch_template_with_block_devices(ec2):
+    """Create a template with block device mappings."""
+    resp = ec2.create_launch_template(
+        LaunchTemplateName="qa-lt-bdm",
+        LaunchTemplateData={
+            "InstanceType": "t3.micro",
+            "BlockDeviceMappings": [
+                {
+                    "DeviceName": "/dev/xvda",
+                    "Ebs": {
+                        "VolumeSize": 50,
+                        "VolumeType": "gp3",
+                        "Encrypted": True,
+                        "DeleteOnTermination": True,
+                    },
+                }
+            ],
+        },
+    )
+    lt_id = resp["LaunchTemplate"]["LaunchTemplateId"]
+
+    versions = ec2.describe_launch_template_versions(LaunchTemplateId=lt_id)
+    data = versions["LaunchTemplateVersions"][0]["LaunchTemplateData"]
+    assert len(data["BlockDeviceMappings"]) == 1
+    bdm = data["BlockDeviceMappings"][0]
+    assert bdm["DeviceName"] == "/dev/xvda"
+    assert bdm["Ebs"]["VolumeSize"] == 50
+    assert bdm["Ebs"]["VolumeType"] == "gp3"
+
+    ec2.delete_launch_template(LaunchTemplateId=lt_id)
+
+
+def test_ec2_launch_template_not_found(ec2):
+    """Describe/delete a non-existent template should fail."""
+    with pytest.raises(ClientError) as exc:
+        ec2.describe_launch_template_versions(LaunchTemplateId="lt-nonexistent")
+    assert "NotFound" in exc.value.response["Error"]["Code"]
+
+
+def test_cfn_ec2_launch_template(cfn, ec2):
+    """CloudFormation should provision and delete an EC2 LaunchTemplate."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "MyLT": {
+                "Type": "AWS::EC2::LaunchTemplate",
+                "Properties": {
+                    "LaunchTemplateName": "cfn-lt-test",
+                    "LaunchTemplateData": {
+                        "InstanceType": "t3.medium",
+                        "ImageId": "ami-cfn123",
+                    },
+                },
+            }
+        },
+    }
+    cfn.create_stack(StackName="cfn-lt-stack", TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, "cfn-lt-stack")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    # Verify the launch template exists via EC2 API
+    desc = ec2.describe_launch_templates(LaunchTemplateNames=["cfn-lt-test"])
+    assert len(desc["LaunchTemplates"]) == 1
+    lt_id = desc["LaunchTemplates"][0]["LaunchTemplateId"]
+
+    versions = ec2.describe_launch_template_versions(LaunchTemplateId=lt_id)
+    assert versions["LaunchTemplateVersions"][0]["LaunchTemplateData"]["InstanceType"] == "t3.medium"
+
+    # Delete and verify cleanup
+    cfn.delete_stack(StackName="cfn-lt-stack")
+    _wait_stack(cfn, "cfn-lt-stack")
+
+    desc2 = ec2.describe_launch_templates(LaunchTemplateIds=[lt_id])
+    assert len(desc2["LaunchTemplates"]) == 0
+
+
+# ---------------------------------------------------------------------------
 # KMS v1.1.36 — Terraform key rotation, policy, tags, lifecycle
 # ---------------------------------------------------------------------------
 

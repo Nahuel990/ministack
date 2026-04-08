@@ -49,6 +49,9 @@ Supports:
                    EnableVgwRoutePropagation, DisableVgwRoutePropagation
   Customer GW:     CreateCustomerGateway, DescribeCustomerGateways,
                    DeleteCustomerGateway
+  Launch Tmpl:     CreateLaunchTemplate, CreateLaunchTemplateVersion,
+                   DescribeLaunchTemplates, DescribeLaunchTemplateVersions,
+                   ModifyLaunchTemplate, DeleteLaunchTemplate
 """
 
 import copy
@@ -94,6 +97,7 @@ _egress_igws: dict = {}     # eigw_id -> egress-only internet gateway record
 _prefix_lists: dict = {}    # pl_id -> managed prefix list record
 _vpn_gateways: dict = {}    # vgw_id -> VPN gateway record
 _customer_gateways: dict = {}  # cgw_id -> customer gateway record
+_launch_templates: dict = {}   # lt_id -> launch template record (includes versions list)
 
 
 # ── Persistence ────────────────────────────────────────────
@@ -122,6 +126,7 @@ def get_state():
         "prefix_lists": copy.deepcopy(_prefix_lists),
         "vpn_gateways": copy.deepcopy(_vpn_gateways),
         "customer_gateways": copy.deepcopy(_customer_gateways),
+        "launch_templates": copy.deepcopy(_launch_templates),
     }
 
 
@@ -149,6 +154,7 @@ def restore_state(data):
         _prefix_lists.update(data.get("prefix_lists", {}))
         _vpn_gateways.update(data.get("vpn_gateways", {}))
         _customer_gateways.update(data.get("customer_gateways", {}))
+        _launch_templates.update(data.get("launch_templates", {}))
 
 
 _restored = load_state("ec2")
@@ -2828,6 +2834,7 @@ def reset():
     _prefix_lists.clear()
     _vpn_gateways.clear()
     _customer_gateways.clear()
+    _launch_templates.clear()
     _init_defaults()
 
 
@@ -3054,6 +3061,501 @@ def _describe_security_group_rules(p):
     return _xml(200, "DescribeSecurityGroupRulesResponse", f"<securityGroupRuleSet>{items}</securityGroupRuleSet>")
 
 
+# ---------------------------------------------------------------------------
+# Launch Templates
+# ---------------------------------------------------------------------------
+
+def _new_lt_id():
+    return "lt-" + "".join(random.choices(string.hexdigits[:16], k=17))
+
+
+def _parse_lt_data(params, prefix="LaunchTemplateData"):
+    """Extract LaunchTemplateData from EC2 Query API params."""
+    data = {}
+    img = _p(params, f"{prefix}.ImageId")
+    if img:
+        data["ImageId"] = img
+    itype = _p(params, f"{prefix}.InstanceType")
+    if itype:
+        data["InstanceType"] = itype
+    key = _p(params, f"{prefix}.KeyName")
+    if key:
+        data["KeyName"] = key
+    ud = _p(params, f"{prefix}.UserData")
+    if ud:
+        data["UserData"] = ud
+    # Security group IDs
+    sg_ids = []
+    i = 1
+    while True:
+        sg = _p(params, f"{prefix}.SecurityGroupId.{i}")
+        if not sg:
+            break
+        sg_ids.append(sg)
+        i += 1
+    if sg_ids:
+        data["SecurityGroupIds"] = sg_ids
+    # Security groups by name
+    sg_names = []
+    i = 1
+    while True:
+        sg = _p(params, f"{prefix}.SecurityGroup.{i}")
+        if not sg:
+            break
+        sg_names.append(sg)
+        i += 1
+    if sg_names:
+        data["SecurityGroups"] = sg_names
+    # Block device mappings
+    bdms = []
+    i = 1
+    while True:
+        dev = _p(params, f"{prefix}.BlockDeviceMapping.{i}.DeviceName")
+        if not dev:
+            break
+        bdm = {"DeviceName": dev}
+        ebs = {}
+        vol_size = _p(params, f"{prefix}.BlockDeviceMapping.{i}.Ebs.VolumeSize")
+        if vol_size:
+            ebs["VolumeSize"] = int(vol_size)
+        vol_type = _p(params, f"{prefix}.BlockDeviceMapping.{i}.Ebs.VolumeType")
+        if vol_type:
+            ebs["VolumeType"] = vol_type
+        encrypted = _p(params, f"{prefix}.BlockDeviceMapping.{i}.Ebs.Encrypted")
+        if encrypted:
+            ebs["Encrypted"] = encrypted.lower() == "true"
+        delete_on = _p(params, f"{prefix}.BlockDeviceMapping.{i}.Ebs.DeleteOnTermination")
+        if delete_on:
+            ebs["DeleteOnTermination"] = delete_on.lower() == "true"
+        snap = _p(params, f"{prefix}.BlockDeviceMapping.{i}.Ebs.SnapshotId")
+        if snap:
+            ebs["SnapshotId"] = snap
+        iops = _p(params, f"{prefix}.BlockDeviceMapping.{i}.Ebs.Iops")
+        if iops:
+            ebs["Iops"] = int(iops)
+        throughput = _p(params, f"{prefix}.BlockDeviceMapping.{i}.Ebs.Throughput")
+        if throughput:
+            ebs["Throughput"] = int(throughput)
+        if ebs:
+            bdm["Ebs"] = ebs
+        bdms.append(bdm)
+        i += 1
+    if bdms:
+        data["BlockDeviceMappings"] = bdms
+    # Network interfaces
+    nis = []
+    i = 1
+    while True:
+        dev_idx = _p(params, f"{prefix}.NetworkInterface.{i}.DeviceIndex")
+        if not dev_idx and not _p(params, f"{prefix}.NetworkInterface.{i}.SubnetId"):
+            break
+        ni = {}
+        if dev_idx:
+            ni["DeviceIndex"] = int(dev_idx)
+        sub = _p(params, f"{prefix}.NetworkInterface.{i}.SubnetId")
+        if sub:
+            ni["SubnetId"] = sub
+        assoc_pub = _p(params, f"{prefix}.NetworkInterface.{i}.AssociatePublicIpAddress")
+        if assoc_pub:
+            ni["AssociatePublicIpAddress"] = assoc_pub.lower() == "true"
+        desc = _p(params, f"{prefix}.NetworkInterface.{i}.Description")
+        if desc:
+            ni["Description"] = desc
+        groups = []
+        j = 1
+        while True:
+            g = _p(params, f"{prefix}.NetworkInterface.{i}.Groups.SecurityGroupId.{j}")
+            if not g:
+                g = _p(params, f"{prefix}.NetworkInterface.{i}.SecurityGroupId.{j}")
+            if not g:
+                break
+            groups.append(g)
+            j += 1
+        if groups:
+            ni["Groups"] = groups
+        nis.append(ni)
+        i += 1
+    if nis:
+        data["NetworkInterfaces"] = nis
+    # IamInstanceProfile
+    iam_arn = _p(params, f"{prefix}.IamInstanceProfile.Arn")
+    iam_name = _p(params, f"{prefix}.IamInstanceProfile.Name")
+    if iam_arn or iam_name:
+        iip = {}
+        if iam_arn:
+            iip["Arn"] = iam_arn
+        if iam_name:
+            iip["Name"] = iam_name
+        data["IamInstanceProfile"] = iip
+    # TagSpecifications
+    tag_specs = []
+    i = 1
+    while True:
+        rtype = _p(params, f"{prefix}.TagSpecification.{i}.ResourceType")
+        if not rtype:
+            break
+        ts = {"ResourceType": rtype, "Tags": []}
+        j = 1
+        while True:
+            tk = _p(params, f"{prefix}.TagSpecification.{i}.Tag.{j}.Key")
+            if not tk:
+                break
+            ts["Tags"].append({"Key": tk, "Value": _p(params, f"{prefix}.TagSpecification.{i}.Tag.{j}.Value", "")})
+            j += 1
+        tag_specs.append(ts)
+        i += 1
+    if tag_specs:
+        data["TagSpecifications"] = tag_specs
+    # Monitoring
+    monitoring = _p(params, f"{prefix}.Monitoring.Enabled")
+    if monitoring:
+        data["Monitoring"] = {"Enabled": monitoring.lower() == "true"}
+    # DisableApiTermination
+    disable_api = _p(params, f"{prefix}.DisableApiTermination")
+    if disable_api:
+        data["DisableApiTermination"] = disable_api.lower() == "true"
+    # EbsOptimized
+    ebs_opt = _p(params, f"{prefix}.EbsOptimized")
+    if ebs_opt:
+        data["EbsOptimized"] = ebs_opt.lower() == "true"
+    return data
+
+
+def _lt_data_xml(data):
+    """Render LaunchTemplateData dict as XML response fragment."""
+    xml = ""
+    if data.get("ImageId"):
+        xml += f"<imageId>{_esc(data['ImageId'])}</imageId>"
+    if data.get("InstanceType"):
+        xml += f"<instanceType>{_esc(data['InstanceType'])}</instanceType>"
+    if data.get("KeyName"):
+        xml += f"<keyName>{_esc(data['KeyName'])}</keyName>"
+    if data.get("UserData"):
+        xml += f"<userData>{_esc(data['UserData'])}</userData>"
+    if data.get("EbsOptimized") is not None:
+        xml += f"<ebsOptimized>{str(data['EbsOptimized']).lower()}</ebsOptimized>"
+    if data.get("DisableApiTermination") is not None:
+        xml += f"<disableApiTermination>{str(data['DisableApiTermination']).lower()}</disableApiTermination>"
+    if data.get("SecurityGroupIds"):
+        inner = "".join(f"<item>{_esc(s)}</item>" for s in data["SecurityGroupIds"])
+        xml += f"<securityGroupIdSet>{inner}</securityGroupIdSet>"
+    if data.get("SecurityGroups"):
+        inner = "".join(f"<item>{_esc(s)}</item>" for s in data["SecurityGroups"])
+        xml += f"<securityGroupSet>{inner}</securityGroupSet>"
+    if data.get("BlockDeviceMappings"):
+        inner = ""
+        for bdm in data["BlockDeviceMappings"]:
+            inner += f"<item><deviceName>{_esc(bdm['DeviceName'])}</deviceName>"
+            if "Ebs" in bdm:
+                ebs = bdm["Ebs"]
+                inner += "<ebs>"
+                if "VolumeSize" in ebs:
+                    inner += f"<volumeSize>{ebs['VolumeSize']}</volumeSize>"
+                if "VolumeType" in ebs:
+                    inner += f"<volumeType>{_esc(ebs['VolumeType'])}</volumeType>"
+                if "Encrypted" in ebs:
+                    inner += f"<encrypted>{str(ebs['Encrypted']).lower()}</encrypted>"
+                if "DeleteOnTermination" in ebs:
+                    inner += f"<deleteOnTermination>{str(ebs['DeleteOnTermination']).lower()}</deleteOnTermination>"
+                if "SnapshotId" in ebs:
+                    inner += f"<snapshotId>{_esc(ebs['SnapshotId'])}</snapshotId>"
+                if "Iops" in ebs:
+                    inner += f"<iops>{ebs['Iops']}</iops>"
+                if "Throughput" in ebs:
+                    inner += f"<throughput>{ebs['Throughput']}</throughput>"
+                inner += "</ebs>"
+            inner += "</item>"
+        xml += f"<blockDeviceMappingSet>{inner}</blockDeviceMappingSet>"
+    if data.get("NetworkInterfaces"):
+        inner = ""
+        for ni in data["NetworkInterfaces"]:
+            inner += "<item>"
+            if "DeviceIndex" in ni:
+                inner += f"<deviceIndex>{ni['DeviceIndex']}</deviceIndex>"
+            if "SubnetId" in ni:
+                inner += f"<subnetId>{_esc(ni['SubnetId'])}</subnetId>"
+            if "AssociatePublicIpAddress" in ni:
+                inner += f"<associatePublicIpAddress>{str(ni['AssociatePublicIpAddress']).lower()}</associatePublicIpAddress>"
+            if "Description" in ni:
+                inner += f"<description>{_esc(ni['Description'])}</description>"
+            if "Groups" in ni:
+                gi = "".join(f"<item>{_esc(g)}</item>" for g in ni["Groups"])
+                inner += f"<groupSet>{gi}</groupSet>"
+            inner += "</item>"
+        xml += f"<networkInterfaceSet>{inner}</networkInterfaceSet>"
+    if data.get("IamInstanceProfile"):
+        iip = data["IamInstanceProfile"]
+        xml += "<iamInstanceProfile>"
+        if "Arn" in iip:
+            xml += f"<arn>{_esc(iip['Arn'])}</arn>"
+        if "Name" in iip:
+            xml += f"<name>{_esc(iip['Name'])}</name>"
+        xml += "</iamInstanceProfile>"
+    if data.get("TagSpecifications"):
+        inner = ""
+        for ts in data["TagSpecifications"]:
+            inner += f"<item><resourceType>{_esc(ts['ResourceType'])}</resourceType><tagSet>"
+            for t in ts.get("Tags", []):
+                inner += f"<item><key>{_esc(t['Key'])}</key><value>{_esc(t.get('Value', ''))}</value></item>"
+            inner += "</tagSet></item>"
+        xml += f"<tagSpecificationSet>{inner}</tagSpecificationSet>"
+    if data.get("Monitoring"):
+        xml += f"<monitoring><enabled>{str(data['Monitoring'].get('Enabled', False)).lower()}</enabled></monitoring>"
+    return xml
+
+
+def _lt_version_xml(ver):
+    """Render a single launch template version as XML."""
+    xml = f"""<item>
+        <launchTemplateId>{_esc(ver['LaunchTemplateId'])}</launchTemplateId>
+        <launchTemplateName>{_esc(ver['LaunchTemplateName'])}</launchTemplateName>
+        <versionNumber>{ver['VersionNumber']}</versionNumber>
+        <versionDescription>{_esc(ver.get('VersionDescription', ''))}</versionDescription>
+        <defaultVersion>{str(ver.get('DefaultVersion', False)).lower()}</defaultVersion>
+        <createTime>{ver['CreateTime']}</createTime>
+        <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+        <launchTemplateData>{_lt_data_xml(ver.get('LaunchTemplateData', {}))}</launchTemplateData>
+    </item>"""
+    return xml
+
+
+def _create_launch_template(p):
+    name = _p(p, "LaunchTemplateName")
+    if not name:
+        return _error("MissingParameter", "LaunchTemplateName is required", 400)
+    # Check uniqueness
+    for lt in _launch_templates.values():
+        if lt["LaunchTemplateName"] == name:
+            return _error("InvalidLaunchTemplateName.AlreadyExistsException",
+                          f"Launch template name already in use: {name}", 400)
+    lt_id = _new_lt_id()
+    lt_data = _parse_lt_data(p)
+    ver_desc = _p(p, "VersionDescription")
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    version = {
+        "LaunchTemplateId": lt_id,
+        "LaunchTemplateName": name,
+        "VersionNumber": 1,
+        "VersionDescription": ver_desc,
+        "DefaultVersion": True,
+        "CreateTime": now,
+        "LaunchTemplateData": lt_data,
+    }
+    lt = {
+        "LaunchTemplateId": lt_id,
+        "LaunchTemplateName": name,
+        "CreateTime": now,
+        "DefaultVersionNumber": 1,
+        "LatestVersionNumber": 1,
+        "Versions": [version],
+    }
+    # Parse tag specifications for the template itself
+    tags = []
+    i = 1
+    while True:
+        rtype = _p(p, f"TagSpecification.{i}.ResourceType")
+        if not rtype:
+            break
+        if rtype == "launch-template":
+            j = 1
+            while True:
+                tk = _p(p, f"TagSpecification.{i}.Tag.{j}.Key")
+                if not tk:
+                    break
+                tags.append({"Key": tk, "Value": _p(p, f"TagSpecification.{i}.Tag.{j}.Value", "")})
+                j += 1
+        i += 1
+    if tags:
+        lt["Tags"] = tags
+        _tags[lt_id] = tags
+    _launch_templates[lt_id] = lt
+    tags_xml = ""
+    for t in tags:
+        tags_xml += f"<item><key>{_esc(t['Key'])}</key><value>{_esc(t.get('Value', ''))}</value></item>"
+    return _xml(200, "CreateLaunchTemplateResponse", f"""<launchTemplate>
+        <launchTemplateId>{lt_id}</launchTemplateId>
+        <launchTemplateName>{_esc(name)}</launchTemplateName>
+        <createTime>{now}</createTime>
+        <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+        <defaultVersionNumber>1</defaultVersionNumber>
+        <latestVersionNumber>1</latestVersionNumber>
+        <tags>{tags_xml}</tags>
+    </launchTemplate>""")
+
+
+def _create_launch_template_version(p):
+    lt_id = _p(p, "LaunchTemplateId")
+    lt_name = _p(p, "LaunchTemplateName")
+    lt = None
+    if lt_id:
+        lt = _launch_templates.get(lt_id)
+    elif lt_name:
+        for t in _launch_templates.values():
+            if t["LaunchTemplateName"] == lt_name:
+                lt = t
+                break
+    if not lt:
+        return _error("InvalidLaunchTemplateId.NotFoundException",
+                      "The specified launch template does not exist", 400)
+    lt_data = _parse_lt_data(p)
+    # Merge with source version if SourceVersion specified
+    source_ver = _p(p, "SourceVersion")
+    if source_ver:
+        src = None
+        for v in lt["Versions"]:
+            if str(v["VersionNumber"]) == source_ver:
+                src = v
+                break
+        if src:
+            merged = copy.deepcopy(src.get("LaunchTemplateData", {}))
+            merged.update(lt_data)
+            lt_data = merged
+    ver_num = lt["LatestVersionNumber"] + 1
+    ver_desc = _p(p, "VersionDescription")
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    version = {
+        "LaunchTemplateId": lt["LaunchTemplateId"],
+        "LaunchTemplateName": lt["LaunchTemplateName"],
+        "VersionNumber": ver_num,
+        "VersionDescription": ver_desc,
+        "DefaultVersion": ver_num == lt["DefaultVersionNumber"],
+        "CreateTime": now,
+        "LaunchTemplateData": lt_data,
+    }
+    lt["Versions"].append(version)
+    lt["LatestVersionNumber"] = ver_num
+    return _xml(200, "CreateLaunchTemplateVersionResponse",
+                f"<launchTemplateVersion>{_lt_version_xml(version)}</launchTemplateVersion>")
+
+
+def _describe_launch_templates(p):
+    lt_ids = _parse_member_list(p, "LaunchTemplateId")
+    lt_names = _parse_member_list(p, "LaunchTemplateName")
+    filters = _parse_filters(p)
+    items = ""
+    for lt in _launch_templates.values():
+        if lt_ids and lt["LaunchTemplateId"] not in lt_ids:
+            continue
+        if lt_names and lt["LaunchTemplateName"] not in lt_names:
+            continue
+        if filters:
+            if "launch-template-name" in filters:
+                if lt["LaunchTemplateName"] not in filters["launch-template-name"]:
+                    continue
+        tags_xml = ""
+        for t in lt.get("Tags", _tags.get(lt["LaunchTemplateId"], [])):
+            tags_xml += f"<item><key>{_esc(t['Key'])}</key><value>{_esc(t.get('Value', ''))}</value></item>"
+        items += f"""<item>
+            <launchTemplateId>{lt['LaunchTemplateId']}</launchTemplateId>
+            <launchTemplateName>{_esc(lt['LaunchTemplateName'])}</launchTemplateName>
+            <createTime>{lt['CreateTime']}</createTime>
+            <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+            <defaultVersionNumber>{lt['DefaultVersionNumber']}</defaultVersionNumber>
+            <latestVersionNumber>{lt['LatestVersionNumber']}</latestVersionNumber>
+            <tags>{tags_xml}</tags>
+        </item>"""
+    return _xml(200, "DescribeLaunchTemplatesResponse",
+                f"<launchTemplates>{items}</launchTemplates>")
+
+
+def _describe_launch_template_versions(p):
+    lt_id = _p(p, "LaunchTemplateId")
+    lt_name = _p(p, "LaunchTemplateName")
+    lt = None
+    if lt_id:
+        lt = _launch_templates.get(lt_id)
+    elif lt_name:
+        for t in _launch_templates.values():
+            if t["LaunchTemplateName"] == lt_name:
+                lt = t
+                break
+    if not lt:
+        return _error("InvalidLaunchTemplateId.NotFoundException",
+                      "The specified launch template does not exist", 400)
+    # Filter by version numbers
+    req_versions = _parse_member_list(p, "LaunchTemplateVersion")
+    versions = lt["Versions"]
+    if req_versions:
+        filtered = []
+        for rv in req_versions:
+            if rv == "$Latest":
+                for v in versions:
+                    if v["VersionNumber"] == lt["LatestVersionNumber"]:
+                        filtered.append(v)
+            elif rv == "$Default":
+                for v in versions:
+                    if v["VersionNumber"] == lt["DefaultVersionNumber"]:
+                        filtered.append(v)
+            else:
+                for v in versions:
+                    if str(v["VersionNumber"]) == rv:
+                        filtered.append(v)
+        versions = filtered
+    items = "".join(_lt_version_xml(v) for v in versions)
+    return _xml(200, "DescribeLaunchTemplateVersionsResponse",
+                f"<launchTemplateVersionSet>{items}</launchTemplateVersionSet>")
+
+
+def _modify_launch_template(p):
+    lt_id = _p(p, "LaunchTemplateId")
+    lt_name = _p(p, "LaunchTemplateName")
+    lt = None
+    if lt_id:
+        lt = _launch_templates.get(lt_id)
+    elif lt_name:
+        for t in _launch_templates.values():
+            if t["LaunchTemplateName"] == lt_name:
+                lt = t
+                break
+    if not lt:
+        return _error("InvalidLaunchTemplateId.NotFoundException",
+                      "The specified launch template does not exist", 400)
+    default_ver = _p(p, "SetDefaultVersion")
+    if default_ver:
+        ver_num = int(default_ver)
+        found = any(v["VersionNumber"] == ver_num for v in lt["Versions"])
+        if not found:
+            return _error("InvalidLaunchTemplateId.VersionNotFound",
+                          f"Version {ver_num} does not exist", 400)
+        lt["DefaultVersionNumber"] = ver_num
+        for v in lt["Versions"]:
+            v["DefaultVersion"] = v["VersionNumber"] == ver_num
+    return _xml(200, "ModifyLaunchTemplateResponse", f"""<launchTemplate>
+        <launchTemplateId>{lt['LaunchTemplateId']}</launchTemplateId>
+        <launchTemplateName>{_esc(lt['LaunchTemplateName'])}</launchTemplateName>
+        <createTime>{lt['CreateTime']}</createTime>
+        <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+        <defaultVersionNumber>{lt['DefaultVersionNumber']}</defaultVersionNumber>
+        <latestVersionNumber>{lt['LatestVersionNumber']}</latestVersionNumber>
+    </launchTemplate>""")
+
+
+def _delete_launch_template(p):
+    lt_id = _p(p, "LaunchTemplateId")
+    lt_name = _p(p, "LaunchTemplateName")
+    lt = None
+    if lt_id:
+        lt = _launch_templates.get(lt_id)
+    elif lt_name:
+        for t in _launch_templates.values():
+            if t["LaunchTemplateName"] == lt_name:
+                lt = t
+                lt_id = lt["LaunchTemplateId"]
+                break
+    if not lt:
+        return _error("InvalidLaunchTemplateId.NotFoundException",
+                      "The specified launch template does not exist", 400)
+    _launch_templates.pop(lt_id, None)
+    _tags.pop(lt_id, None)
+    return _xml(200, "DeleteLaunchTemplateResponse", f"""<launchTemplate>
+        <launchTemplateId>{lt['LaunchTemplateId']}</launchTemplateId>
+        <launchTemplateName>{_esc(lt['LaunchTemplateName'])}</launchTemplateName>
+        <createTime>{lt['CreateTime']}</createTime>
+        <defaultVersionNumber>{lt['DefaultVersionNumber']}</defaultVersionNumber>
+        <latestVersionNumber>{lt['LatestVersionNumber']}</latestVersionNumber>
+    </launchTemplate>""")
+
+
 _ACTION_MAP = {
     "RunInstances": _run_instances,
     "DescribeInstances": _describe_instances,
@@ -3190,4 +3692,11 @@ _ACTION_MAP = {
     "CreateEgressOnlyInternetGateway": _create_egress_only_igw,
     "DescribeEgressOnlyInternetGateways": _describe_egress_only_igws,
     "DeleteEgressOnlyInternetGateway": _delete_egress_only_igw,
+    # Launch Templates
+    "CreateLaunchTemplate": _create_launch_template,
+    "CreateLaunchTemplateVersion": _create_launch_template_version,
+    "DescribeLaunchTemplates": _describe_launch_templates,
+    "DescribeLaunchTemplateVersions": _describe_launch_template_versions,
+    "ModifyLaunchTemplate": _modify_launch_template,
+    "DeleteLaunchTemplate": _delete_launch_template,
 }

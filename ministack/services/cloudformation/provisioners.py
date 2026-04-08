@@ -1661,6 +1661,44 @@ def _ecs_service_delete(physical_id, props):
     _ecs._services.pop(physical_id, None)
 
 
+# --- EC2 Launch Template provisioners ---
+
+def _ec2_launch_template_create(logical_id, props, stack_name):
+    name = props.get("LaunchTemplateName", _physical_name(stack_name, logical_id))
+    lt_data = props.get("LaunchTemplateData", {})
+    lt_id = _ec2._new_lt_id()
+    now = __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime())
+    version = {
+        "LaunchTemplateId": lt_id,
+        "LaunchTemplateName": name,
+        "VersionNumber": 1,
+        "VersionDescription": props.get("VersionDescription", ""),
+        "DefaultVersion": True,
+        "CreateTime": now,
+        "LaunchTemplateData": lt_data,
+    }
+    lt = {
+        "LaunchTemplateId": lt_id,
+        "LaunchTemplateName": name,
+        "CreateTime": now,
+        "DefaultVersionNumber": 1,
+        "LatestVersionNumber": 1,
+        "Versions": [version],
+        "Tags": [{"Key": t["Key"], "Value": t["Value"]} for t in props.get("Tags", [])],
+    }
+    _ec2._launch_templates[lt_id] = lt
+    return lt_id, {
+        "LaunchTemplateId": lt_id,
+        "LaunchTemplateName": name,
+        "DefaultVersionNumber": "1",
+        "LatestVersionNumber": "1",
+    }
+
+
+def _ec2_launch_template_delete(physical_id, props):
+    _ec2._launch_templates.pop(physical_id, None)
+
+
 # Resource Handler Registry
 # ===========================================================================
 
@@ -1716,4 +1754,5 @@ _RESOURCE_HANDLERS = {
     "AWS::ECS::Cluster": {"create": _ecs_cluster_create, "delete": _ecs_cluster_delete},
     "AWS::ECS::TaskDefinition": {"create": _ecs_task_def_create, "delete": _ecs_task_def_delete},
     "AWS::ECS::Service": {"create": _ecs_service_create, "delete": _ecs_service_delete},
+    "AWS::EC2::LaunchTemplate": {"create": _ec2_launch_template_create, "delete": _ec2_launch_template_delete},
 }
