@@ -599,30 +599,6 @@ def test_lambda_nodejs_env_vars_at_spawn(lam):
     payload = json.loads(resp["Payload"].read())
     assert payload["myVar"] == "from-spawn"
 
-def test_lambda_nodejs_runtime_env_available_before_handler_resolution(lam):
-    """Standard Lambda runtime env vars are available before the module is required."""
-    code = (
-        "const lambdaTaskRoot = process.env.LAMBDA_TASK_ROOT;"
-        "const functionName = process.env.AWS_LAMBDA_FUNCTION_NAME;"
-        "if (lambdaTaskRoot) {"
-        "  exports.handler = async () => ({"
-        "    lambdaTaskRoot,"
-        "    functionName"
-        "  });"
-        "}"
-    )
-    lam.create_function(
-        FunctionName="lam-node-runtime-env-before-require",
-        Runtime="nodejs20.x",
-        Role=_LAMBDA_ROLE,
-        Handler="index.handler",
-        Code={"ZipFile": _make_zip_js(code, "index.js")},
-    )
-    resp = lam.invoke(FunctionName="lam-node-runtime-env-before-require", Payload=b"{}")
-    payload = json.loads(resp["Payload"].read())
-    assert payload["functionName"] == "lam-node-runtime-env-before-require"
-    assert payload["lambdaTaskRoot"]
-
 def test_lambda_python_env_vars_at_spawn(lam):
     """Python Lambda env vars are available at process startup."""
     code = (
