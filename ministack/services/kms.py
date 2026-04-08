@@ -157,7 +157,17 @@ def _create_key(data):
     key_usage = data.get("KeyUsage", "ENCRYPT_DECRYPT")
     description = data.get("Description", "")
     tags = data.get("Tags", [])
-    policy = data.get("Policy", "")
+    policy = data.get("Policy", json.dumps({
+        "Version": "2012-10-17",
+        "Id": "key-default-1",
+        "Statement": [{
+            "Sid": "Enable IAM User Permissions",
+            "Effect": "Allow",
+            "Principal": {"AWS": f"arn:aws:iam::{ACCOUNT_ID}:root"},
+            "Action": "kms:*",
+            "Resource": "*",
+        }],
+    }))
 
     rec = {
         "KeyId": key_id,
@@ -697,17 +707,7 @@ def _get_key_policy(data):
     rec = _resolve_key(data.get("KeyId", ""))
     if not rec:
         return error_response_json("NotFoundException", f"Key {data.get('KeyId', '')} not found", 400)
-    policy = rec.get("Policy", json.dumps({
-        "Version": "2012-10-17",
-        "Id": "key-default-1",
-        "Statement": [{
-            "Sid": "Enable IAM User Permissions",
-            "Effect": "Allow",
-            "Principal": {"AWS": f"arn:aws:iam::{ACCOUNT_ID}:root"},
-            "Action": "kms:*",
-            "Resource": "*",
-        }],
-    }))
+    policy = rec.get("Policy")
     return json_response({"Policy": policy, "PolicyName": "default"})
 
 
