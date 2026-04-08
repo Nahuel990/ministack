@@ -15,7 +15,9 @@ Supports: CreateDBInstance, DeleteDBInstance, DescribeDBInstances, ModifyDBInsta
           CreateOptionGroup, DeleteOptionGroup, DescribeOptionGroups, DescribeOptionGroupOptions,
           CreateDBInstanceReadReplica (stub), RestoreDBInstanceFromDBSnapshot (stub),
           ListTagsForResource, AddTagsToResource, RemoveTagsFromResource,
-          DescribeDBEngineVersions, DescribeOrderableDBInstanceOptions.
+          DescribeDBEngineVersions, DescribeOrderableDBInstanceOptions,
+          CreateGlobalCluster, DescribeGlobalClusters, DeleteGlobalCluster,
+          RemoveFromGlobalCluster, ModifyGlobalCluster.
 
 When Docker is available, CreateDBInstance spins up a real Postgres/MySQL container
 and returns the actual host:port as the endpoint.
@@ -47,6 +49,7 @@ _snapshots: dict = {}
 _db_cluster_param_groups: dict = {}
 _db_cluster_snapshots: dict = {}
 _option_groups: dict = {}
+_global_clusters: dict = {}
 _tags: dict = {}
 _port_counter = [BASE_PORT]
 
@@ -65,6 +68,7 @@ def get_state():
         "db_cluster_param_groups": copy.deepcopy(_db_cluster_param_groups),
         "db_cluster_snapshots": copy.deepcopy(_db_cluster_snapshots),
         "option_groups": copy.deepcopy(_option_groups),
+        "global_clusters": copy.deepcopy(_global_clusters),
         "tags": copy.deepcopy(_tags),
         "port_counter": _port_counter[0],
     }
@@ -85,6 +89,7 @@ def restore_state(data):
     _db_cluster_param_groups.update(data.get("db_cluster_param_groups", {}))
     _db_cluster_snapshots.update(data.get("db_cluster_snapshots", {}))
     _option_groups.update(data.get("option_groups", {}))
+    _global_clusters.update(data.get("global_clusters", {}))
     _tags.update(data.get("tags", {}))
     if "port_counter" in data:
         _port_counter[0] = data["port_counter"]
@@ -1363,6 +1368,173 @@ def _sync_tag_list_to_resource(arn):
 
 
 # ---------------------------------------------------------------------------
+# Global Clusters
+#
+# Emulation scope: single-member global clusters only.  A global cluster can
+# be created standalone or attached to one existing DB cluster via
+# SourceDBClusterIdentifier.  Multi-member membership (secondary clusters
+# in other regions), FailoverGlobalCluster, and SwitchoverGlobalCluster are
+# not supported — MiniStack is a single-region emulator.
+# ---------------------------------------------------------------------------
+
+def _create_global_cluster(p):
+    gc_id = _p(p, "GlobalClusterIdentifier")
+    if not gc_id:
+        return _error("MissingParameter", "GlobalClusterIdentifier is required", 400)
+    if gc_id in _global_clusters:
+        return _error("GlobalClusterAlreadyExistsFault",
+            f"Global cluster {gc_id} already exists.", 400)
+
+    engine = _p(p, "Engine") or "aurora-postgresql"
+    engine_version = _p(p, "EngineVersion") or _default_engine_version(engine)
+    source_cluster_id = _p(p, "SourceDBClusterIdentifier")
+    storage_encrypted = _p(p, "StorageEncrypted") == "true"
+    deletion_protection = _p(p, "DeletionProtection") == "true"
+
+    arn = f"arn:aws:rds::{ACCOUNT_ID}:global-cluster:{gc_id}"
+    resource_id = f"cluster-{new_uuid().replace('-', '')[:20].lower()}"
+
+    members = []
+    if source_cluster_id:
+        source_arn = source_cluster_id
+        for cl in _clusters.values():
+            if cl["DBClusterIdentifier"] == source_cluster_id or cl["DBClusterArn"] == source_cluster_id:
+                source_arn = cl["DBClusterArn"]
+                engine = cl["Engine"]
+                engine_version = cl["EngineVersion"]
+                break
+        members.append({
+            "DBClusterArn": source_arn,
+            "IsWriter": True,
+            "GlobalWriteForwardingStatus": "disabled",
+        })
+
+    gc = {
+        "GlobalClusterIdentifier": gc_id,
+        "GlobalClusterArn": arn,
+        "GlobalClusterResourceId": resource_id,
+        "Engine": engine,
+        "EngineVersion": engine_version,
+        "Status": "available",
+        "StorageEncrypted": storage_encrypted,
+        "DeletionProtection": deletion_protection,
+        "GlobalClusterMembers": members,
+        "DatabaseName": _p(p, "DatabaseName") or "",
+    }
+    _global_clusters[gc_id] = gc
+    return _xml(200, "CreateGlobalClusterResponse",
+        f"<CreateGlobalClusterResult><GlobalCluster>{_global_cluster_xml(gc)}</GlobalCluster></CreateGlobalClusterResult>")
+
+
+def _describe_global_clusters(p):
+    gc_id = _p(p, "GlobalClusterIdentifier")
+    if gc_id:
+        gc = _global_clusters.get(gc_id)
+        if not gc:
+            return _error("GlobalClusterNotFoundFault",
+                f"Global cluster {gc_id} not found.", 404)
+        gcs = [gc]
+    else:
+        gcs = list(_global_clusters.values())
+
+    members_xml = "".join(
+        f"<GlobalCluster>{_global_cluster_xml(gc)}</GlobalCluster>" for gc in gcs
+    )
+    return _xml(200, "DescribeGlobalClustersResponse",
+        f"<DescribeGlobalClustersResult><GlobalClusters>{members_xml}</GlobalClusters></DescribeGlobalClustersResult>")
+
+
+def _delete_global_cluster(p):
+    gc_id = _p(p, "GlobalClusterIdentifier")
+    gc = _global_clusters.get(gc_id)
+    if not gc:
+        return _error("GlobalClusterNotFoundFault",
+            f"Global cluster {gc_id} not found.", 404)
+
+    if gc.get("DeletionProtection"):
+        return _error("InvalidParameterCombination",
+            "Cannot delete a global cluster when DeletionProtection is enabled.", 400)
+
+    writer_members = [m for m in gc.get("GlobalClusterMembers", []) if m.get("IsWriter")]
+    if writer_members:
+        return _error("InvalidGlobalClusterStateFault",
+            "Global cluster still has member clusters. Remove them before deleting.", 400)
+
+    gc["Status"] = "deleting"
+    del _global_clusters[gc_id]
+    return _xml(200, "DeleteGlobalClusterResponse",
+        f"<DeleteGlobalClusterResult><GlobalCluster>{_global_cluster_xml(gc)}</GlobalCluster></DeleteGlobalClusterResult>")
+
+
+def _remove_from_global_cluster(p):
+    gc_id = _p(p, "GlobalClusterIdentifier")
+    db_cluster_id = _p(p, "DbClusterIdentifier")
+    gc = _global_clusters.get(gc_id)
+    if not gc:
+        return _error("GlobalClusterNotFoundFault",
+            f"Global cluster {gc_id} not found.", 404)
+
+    members = gc.get("GlobalClusterMembers", [])
+    new_members = [m for m in members if m["DBClusterArn"] != db_cluster_id]
+    if len(new_members) == len(members):
+        for cl in _clusters.values():
+            if cl["DBClusterIdentifier"] == db_cluster_id:
+                db_cluster_id = cl["DBClusterArn"]
+                break
+        new_members = [m for m in members if m["DBClusterArn"] != db_cluster_id]
+
+    gc["GlobalClusterMembers"] = new_members
+    return _xml(200, "RemoveFromGlobalClusterResponse",
+        f"<RemoveFromGlobalClusterResult><GlobalCluster>{_global_cluster_xml(gc)}</GlobalCluster></RemoveFromGlobalClusterResult>")
+
+
+def _modify_global_cluster(p):
+    gc_id = _p(p, "GlobalClusterIdentifier")
+    gc = _global_clusters.get(gc_id)
+    if not gc:
+        return _error("GlobalClusterNotFoundFault",
+            f"Global cluster {gc_id} not found.", 404)
+
+    new_id = _p(p, "NewGlobalClusterIdentifier")
+    if new_id and new_id != gc_id:
+        if new_id in _global_clusters:
+            return _error("GlobalClusterAlreadyExistsFault",
+                f"Global cluster {new_id} already exists.", 400)
+        gc["GlobalClusterIdentifier"] = new_id
+        gc["GlobalClusterArn"] = f"arn:aws:rds::{ACCOUNT_ID}:global-cluster:{new_id}"
+        _global_clusters[new_id] = gc
+        del _global_clusters[gc_id]
+
+    if _p(p, "DeletionProtection"):
+        gc["DeletionProtection"] = _p(p, "DeletionProtection") == "true"
+    if _p(p, "EngineVersion"):
+        gc["EngineVersion"] = _p(p, "EngineVersion")
+
+    return _xml(200, "ModifyGlobalClusterResponse",
+        f"<ModifyGlobalClusterResult><GlobalCluster>{_global_cluster_xml(gc)}</GlobalCluster></ModifyGlobalClusterResult>")
+
+
+def _global_cluster_xml(gc):
+    member_xml = ""
+    for m in gc.get("GlobalClusterMembers", []):
+        member_xml += f"""<GlobalClusterMember>
+            <DBClusterArn>{m['DBClusterArn']}</DBClusterArn>
+            <IsWriter>{str(m.get('IsWriter', False)).lower()}</IsWriter>
+            <GlobalWriteForwardingStatus>{m.get('GlobalWriteForwardingStatus', 'disabled')}</GlobalWriteForwardingStatus>
+        </GlobalClusterMember>"""
+    return f"""<GlobalClusterIdentifier>{gc['GlobalClusterIdentifier']}</GlobalClusterIdentifier>
+        <GlobalClusterArn>{gc['GlobalClusterArn']}</GlobalClusterArn>
+        <GlobalClusterResourceId>{gc['GlobalClusterResourceId']}</GlobalClusterResourceId>
+        <Engine>{gc['Engine']}</Engine>
+        <EngineVersion>{gc['EngineVersion']}</EngineVersion>
+        <Status>{gc['Status']}</Status>
+        <DatabaseName>{gc.get('DatabaseName', '')}</DatabaseName>
+        <StorageEncrypted>{str(gc.get('StorageEncrypted', False)).lower()}</StorageEncrypted>
+        <DeletionProtection>{str(gc.get('DeletionProtection', False)).lower()}</DeletionProtection>
+        <GlobalClusterMembers>{member_xml}</GlobalClusterMembers>"""
+
+
+# ---------------------------------------------------------------------------
 # Engine Versions & Orderable Options
 # ---------------------------------------------------------------------------
 
@@ -2018,6 +2190,11 @@ _ACTION_MAP = {
     "RemoveTagsFromResource": _remove_tags,
     "DescribeDBEngineVersions": _describe_engine_versions,
     "DescribeOrderableDBInstanceOptions": _describe_orderable_options,
+    "CreateGlobalCluster": _create_global_cluster,
+    "DescribeGlobalClusters": _describe_global_clusters,
+    "DeleteGlobalCluster": _delete_global_cluster,
+    "RemoveFromGlobalCluster": _remove_from_global_cluster,
+    "ModifyGlobalCluster": _modify_global_cluster,
 }
 
 
@@ -2041,5 +2218,6 @@ def reset():
     _db_cluster_param_groups.clear()
     _db_cluster_snapshots.clear()
     _option_groups.clear()
+    _global_clusters.clear()
     _tags.clear()
     _port_counter[0] = BASE_PORT

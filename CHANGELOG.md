@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **RDS Aurora Global Clusters (5 operations)** — `CreateGlobalCluster`, `DescribeGlobalClusters`, `DeleteGlobalCluster`, `RemoveFromGlobalCluster`, `ModifyGlobalCluster`. In-memory global cluster model with member cluster membership, source cluster auto-attach, deletion protection, and rename support.
+
+---
+
 ## [1.1.52] — 2026-04-08
 
 ### Fixed

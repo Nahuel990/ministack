@@ -322,3 +322,125 @@ def test_rds_deletion_protection(rds):
             ApplyImmediately=True,
         )
         rds.delete_db_instance(DBInstanceIdentifier="qa-rds-protected", SkipFinalSnapshot=True)
+
+def test_rds_global_cluster_lifecycle(rds):
+    """CreateGlobalCluster / DescribeGlobalClusters / DeleteGlobalCluster lifecycle."""
+    rds.create_global_cluster(
+        GlobalClusterIdentifier="test-global-1",
+        Engine="aurora-postgresql",
+        EngineVersion="15.3",
+    )
+    try:
+        resp = rds.describe_global_clusters(GlobalClusterIdentifier="test-global-1")
+        gcs = resp["GlobalClusters"]
+        assert len(gcs) == 1
+        gc = gcs[0]
+        assert gc["GlobalClusterIdentifier"] == "test-global-1"
+        assert gc["Engine"] == "aurora-postgresql"
+        assert gc["Status"] == "available"
+        assert "GlobalClusterArn" in gc
+        assert "GlobalClusterResourceId" in gc
+    finally:
+        rds.delete_global_cluster(GlobalClusterIdentifier="test-global-1")
+
+    with pytest.raises(ClientError) as exc:
+        rds.describe_global_clusters(GlobalClusterIdentifier="test-global-1")
+    assert exc.value.response["Error"]["Code"] == "GlobalClusterNotFoundFault"
+
+def test_rds_global_cluster_with_source(rds):
+    """CreateGlobalCluster with SourceDBClusterIdentifier picks up engine from source."""
+    rds.create_db_cluster(
+        DBClusterIdentifier="gc-source-cluster",
+        Engine="aurora-postgresql",
+        MasterUsername="admin",
+        MasterUserPassword="password123",
+    )
+    try:
+        rds.create_global_cluster(
+            GlobalClusterIdentifier="test-global-src",
+            SourceDBClusterIdentifier="gc-source-cluster",
+        )
+        resp = rds.describe_global_clusters(GlobalClusterIdentifier="test-global-src")
+        gc = resp["GlobalClusters"][0]
+        assert gc["Engine"] == "aurora-postgresql"
+        members = gc["GlobalClusterMembers"]
+        assert len(members) == 1
+        assert members[0]["IsWriter"] is True
+
+        # Remove the member, then delete
+        rds.remove_from_global_cluster(
+            GlobalClusterIdentifier="test-global-src",
+            DbClusterIdentifier="gc-source-cluster",
+        )
+        resp2 = rds.describe_global_clusters(GlobalClusterIdentifier="test-global-src")
+        assert len(resp2["GlobalClusters"][0]["GlobalClusterMembers"]) == 0
+
+        rds.delete_global_cluster(GlobalClusterIdentifier="test-global-src")
+    finally:
+        rds.delete_db_cluster(DBClusterIdentifier="gc-source-cluster", SkipFinalSnapshot=True)
+
+def test_rds_global_cluster_delete_with_members_fails(rds):
+    """DeleteGlobalCluster fails when writer members still attached."""
+    rds.create_db_cluster(
+        DBClusterIdentifier="gc-member-cluster",
+        Engine="aurora-postgresql",
+        MasterUsername="admin",
+        MasterUserPassword="password123",
+    )
+    rds.create_global_cluster(
+        GlobalClusterIdentifier="test-global-members",
+        SourceDBClusterIdentifier="gc-member-cluster",
+    )
+    try:
+        with pytest.raises(ClientError) as exc:
+            rds.delete_global_cluster(GlobalClusterIdentifier="test-global-members")
+        assert exc.value.response["Error"]["Code"] == "InvalidGlobalClusterStateFault"
+    finally:
+        rds.remove_from_global_cluster(
+            GlobalClusterIdentifier="test-global-members",
+            DbClusterIdentifier="gc-member-cluster",
+        )
+        rds.delete_global_cluster(GlobalClusterIdentifier="test-global-members")
+        rds.delete_db_cluster(DBClusterIdentifier="gc-member-cluster", SkipFinalSnapshot=True)
+
+def test_rds_global_cluster_modify(rds):
+    """ModifyGlobalCluster can rename and toggle DeletionProtection."""
+    rds.create_global_cluster(
+        GlobalClusterIdentifier="test-global-mod",
+        Engine="aurora-postgresql",
+    )
+    try:
+        rds.modify_global_cluster(
+            GlobalClusterIdentifier="test-global-mod",
+            DeletionProtection=True,
+        )
+        gc = rds.describe_global_clusters(
+            GlobalClusterIdentifier="test-global-mod"
+        )["GlobalClusters"][0]
+        assert gc["DeletionProtection"] is True
+
+        # Cannot delete while protected
+        with pytest.raises(ClientError) as exc:
+            rds.delete_global_cluster(GlobalClusterIdentifier="test-global-mod")
+        assert exc.value.response["Error"]["Code"] == "InvalidParameterCombination"
+
+        # Rename
+        rds.modify_global_cluster(
+            GlobalClusterIdentifier="test-global-mod",
+            NewGlobalClusterIdentifier="test-global-renamed",
+            DeletionProtection=False,
+        )
+        resp = rds.describe_global_clusters(GlobalClusterIdentifier="test-global-renamed")
+        assert resp["GlobalClusters"][0]["GlobalClusterIdentifier"] == "test-global-renamed"
+
+        with pytest.raises(ClientError):
+            rds.describe_global_clusters(GlobalClusterIdentifier="test-global-mod")
+    finally:
+        try:
+            rds.modify_global_cluster(
+                GlobalClusterIdentifier="test-global-renamed",
+                DeletionProtection=False,
+            )
+            rds.delete_global_cluster(GlobalClusterIdentifier="test-global-renamed")
+        except Exception:
+            pass
