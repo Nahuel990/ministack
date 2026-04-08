@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.49] — 2026-04-08
+
+### Added
+- **EventBridge `UpdateEventBus`** — new operation for Terraform `aws_cloudwatch_event_bus`. Contributed by @jgrumboe (#177)
+- **EventBridge `Description` and `Policy` fields** — `DescribeEventBus` and `ListEventBuses` now return description, policy, and `LastModifiedTime`
+
+### Fixed
+- **Lambda `LAMBDA_EXECUTOR=docker` ignored for Python/Node runtimes** — warm pool always took priority over the Docker executor setting. Now `LAMBDA_EXECUTOR=docker` routes all runtimes through Docker for clean log output. Contributed by @PorterK (#178)
+- **Lambda Docker fallback crash** — `runtime` referenced before definition when Docker SDK unavailable
+- **EventBridge timestamps** — all timestamp fields now return epoch numbers instead of ISO strings. Fixes Terraform deserialization. Legacy ISO strings in persisted state auto-coerced on restore. Contributed by @jgrumboe (#177)
+
+---
+
 ## [1.1.48] — 2026-04-07
 
 ### Added
