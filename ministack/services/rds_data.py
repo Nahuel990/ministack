@@ -7,6 +7,7 @@ Routes SQL to real database containers managed by the RDS service emulator.
 import json
 import logging
 import os
+import threading
 import uuid
 
 from ministack.core.responses import error_response_json, json_response
@@ -18,6 +19,7 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # Active transactions: txn_id -> {conn, engine, resourceArn, database}
 _transactions: dict = {}
+_lock = threading.Lock()
 
 
 def _error(code, message, status=400):
@@ -162,6 +164,34 @@ def _column_metadata(description, engine):
     return metadata
 
 
+def _convert_parameters(parameters):
+    """Convert RDS Data API parameters to DB-API named params dict."""
+    if not parameters:
+        return {}
+    result = {}
+    for param in parameters:
+        name = param.get("name")
+        if not name:
+            continue
+        value = param.get("value", {})
+        if "isNull" in value and value["isNull"]:
+            result[name] = None
+        elif "stringValue" in value:
+            result[name] = value["stringValue"]
+        elif "longValue" in value:
+            result[name] = value["longValue"]
+        elif "doubleValue" in value:
+            result[name] = value["doubleValue"]
+        elif "booleanValue" in value:
+            result[name] = value["booleanValue"]
+        elif "blobValue" in value:
+            import base64
+            result[name] = base64.b64decode(value["blobValue"])
+        else:
+            result[name] = None
+    return result
+
+
 async def handle_request(method, path, headers, body, query_params):
     """Route RDS Data API requests by path."""
     try:
@@ -189,6 +219,7 @@ def _execute_statement(data):
     sql = data.get("sql")
     database = data.get("database")
     txn_id = data.get("transactionId")
+    parameters = data.get("parameters", [])
     include_metadata = data.get("includeResultMetadata", False)
 
     if not resource_arn:
@@ -212,15 +243,25 @@ def _execute_statement(data):
 
     password = _get_secret_password(secret_arn)
 
-    try:
-        if txn_id and txn_id in _transactions:
-            conn = _transactions[txn_id]["conn"]
-            cursor = conn.cursor()
-        else:
-            conn = _connect(instance, engine, database, password)
-            cursor = conn.cursor()
+    # Convert :name placeholders to %(name)s for DB-API
+    params = _convert_parameters(parameters)
+    exec_sql = sql
+    if params:
+        for name in params:
+            exec_sql = exec_sql.replace(f":{name}", f"%({name})s")
 
-        cursor.execute(sql)
+    own_conn = False
+    conn = None
+    try:
+        with _lock:
+            if txn_id and txn_id in _transactions:
+                conn = _transactions[txn_id]["conn"]
+            else:
+                conn = _connect(instance, engine, database, password)
+                own_conn = True
+
+        cursor = conn.cursor()
+        cursor.execute(exec_sql, params or None)
 
         response = {
             "numberOfRecordsUpdated": cursor.rowcount if cursor.rowcount >= 0 else 0,
@@ -242,14 +283,18 @@ def _execute_statement(data):
             response["records"] = []
 
         cursor.close()
-        if not txn_id or txn_id not in _transactions:
+        if own_conn:
             conn.close()
 
         return json_response(response)
 
     except ImportError as e:
+        if own_conn and conn:
+            conn.close()
         return _error("BadRequestException", str(e))
     except Exception as e:
+        if own_conn and conn:
+            conn.close()
         return _error("BadRequestException", f"Database error: {e}")
 
 
@@ -282,12 +327,13 @@ def _begin_transaction(data):
         return _error("BadRequestException", f"Database connection error: {e}")
 
     txn_id = str(uuid.uuid4())
-    _transactions[txn_id] = {
-        "conn": conn,
-        "engine": engine,
-        "resourceArn": resource_arn,
-        "database": database,
-    }
+    with _lock:
+        _transactions[txn_id] = {
+            "conn": conn,
+            "engine": engine,
+            "resourceArn": resource_arn,
+            "database": database,
+        }
 
     return json_response({"transactionId": txn_id})
 
@@ -297,7 +343,8 @@ def _commit_transaction(data):
     if not txn_id:
         return _error("BadRequestException", "transactionId is required")
 
-    txn = _transactions.pop(txn_id, None)
+    with _lock:
+        txn = _transactions.pop(txn_id, None)
     if not txn:
         return _error("NotFoundException",
                        f"Transaction {txn_id} not found", 404)
@@ -316,7 +363,8 @@ def _rollback_transaction(data):
     if not txn_id:
         return _error("BadRequestException", "transactionId is required")
 
-    txn = _transactions.pop(txn_id, None)
+    with _lock:
+        txn = _transactions.pop(txn_id, None)
     if not txn:
         return _error("NotFoundException",
                        f"Transaction {txn_id} not found", 404)
@@ -352,11 +400,15 @@ def _batch_execute_statement(data):
 
     password = _get_secret_password(secret_arn)
 
+    own_conn = False
+    conn = None
     try:
-        if txn_id and txn_id in _transactions:
-            conn = _transactions[txn_id]["conn"]
-        else:
-            conn = _connect(instance, engine, database, password)
+        with _lock:
+            if txn_id and txn_id in _transactions:
+                conn = _transactions[txn_id]["conn"]
+            else:
+                conn = _connect(instance, engine, database, password)
+                own_conn = True
 
         cursor = conn.cursor()
         update_results = []
@@ -365,26 +417,39 @@ def _batch_execute_statement(data):
             cursor.execute(sql)
             update_results.append({"generatedFields": []})
         else:
-            for _params in parameter_sets:
-                cursor.execute(sql)
+            # Convert :name placeholders to %(name)s for DB-API
+            exec_sql = sql
+            if parameter_sets:
+                sample = _convert_parameters(parameter_sets[0])
+                for name in sample:
+                    exec_sql = exec_sql.replace(f":{name}", f"%({name})s")
+
+            for param_set in parameter_sets:
+                params = _convert_parameters(param_set)
+                cursor.execute(exec_sql, params or None)
                 update_results.append({"generatedFields": []})
 
         cursor.close()
-        if not txn_id or txn_id not in _transactions:
+        if own_conn:
             conn.close()
 
         return json_response({"updateResults": update_results})
 
     except ImportError as e:
+        if own_conn and conn:
+            conn.close()
         return _error("BadRequestException", str(e))
     except Exception as e:
+        if own_conn and conn:
+            conn.close()
         return _error("BadRequestException", f"Database error: {e}")
 
 
 def reset():
-    for txn in _transactions.values():
-        try:
-            txn["conn"].close()
-        except Exception:
-            pass
-    _transactions.clear()
+    with _lock:
+        for txn in _transactions.values():
+            try:
+                txn["conn"].close()
+            except Exception:
+                pass
+        _transactions.clear()

@@ -564,13 +564,12 @@ def _ssm_create(logical_id, props, stack_name):
     # ARN: no extra slash if name starts with /
     param_arn = f"arn:aws:ssm:{REGION}:{ACCOUNT_ID}:parameter{name}"
 
-    now = now_iso()
     _ssm._parameters[name] = {
         "Name": name,
         "Type": ptype,
         "Value": value,
         "Version": 1,
-        "LastModifiedDate": now,
+        "LastModifiedDate": _ssm._now_epoch(),
         "ARN": param_arn,
         "DataType": "text",
         "Description": description,
