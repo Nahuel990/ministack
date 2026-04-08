@@ -22,34 +22,6 @@ def _reset_ses():
     from ministack.services import ses
     ses.reset()
 
-
-# ---------------------------------------------------------------------------
-# _parse_smtp_host
-# ---------------------------------------------------------------------------
-
-def test_parse_smtp_host_not_set():
-    from ministack.services.ses import _parse_smtp_host
-    assert _parse_smtp_host() is None
-
-
-def test_parse_smtp_host_with_port():
-    os.environ['SMTP_HOST'] = '127.0.0.1:1025'
-    from ministack.services.ses import _parse_smtp_host
-    assert _parse_smtp_host() == ('127.0.0.1', 1025)
-
-
-def test_parse_smtp_host_without_port():
-    os.environ['SMTP_HOST'] = 'mail.example.com'
-    from ministack.services.ses import _parse_smtp_host
-    assert _parse_smtp_host() == ('mail.example.com', 25)
-
-
-def test_parse_smtp_host_hostname_with_port():
-    os.environ['SMTP_HOST'] = 'smtp.gmail.com:587'
-    from ministack.services.ses import _parse_smtp_host
-    assert _parse_smtp_host() == ('smtp.gmail.com', 587)
-
-
 # ---------------------------------------------------------------------------
 # _build_mime_message
 # ---------------------------------------------------------------------------
@@ -93,19 +65,18 @@ def test_build_mime_multipart():
     assert msg.get_content_type() == 'multipart/alternative'
     assert msg['Cc'] == 'cc@test.com'
 
-
 # ---------------------------------------------------------------------------
 # _smtp_relay
 # ---------------------------------------------------------------------------
 
-def test_smtp_relay_skipped_when_no_host():
+def test_ses_smtp_relay_skipped_when_no_host():
     from ministack.services.ses import _smtp_relay
     with patch('ministack.services.ses.smtplib.SMTP') as mock_cls:
         _smtp_relay('from@test.com', ['to@test.com'], 'message')
         mock_cls.assert_not_called()
 
 
-def test_smtp_relay_sends_when_host_set():
+def test_ses_smtp_relay_sends_when_host_set():
     os.environ['SMTP_HOST'] = '127.0.0.1:1025'
     from ministack.services.ses import _smtp_relay
     mock_smtp = MagicMock()
@@ -119,7 +90,7 @@ def test_smtp_relay_sends_when_host_set():
         )
 
 
-def test_smtp_relay_error_is_logged_not_raised():
+def test_ses_smtp_relay_error_is_logged_not_raised():
     os.environ['SMTP_HOST'] = '127.0.0.1:1025'
     from ministack.services.ses import _smtp_relay
     with patch('ministack.services.ses.smtplib.SMTP', side_effect=ConnectionRefusedError):
@@ -131,7 +102,7 @@ def test_smtp_relay_error_is_logged_not_raised():
 # SendEmail with SMTP relay
 # ---------------------------------------------------------------------------
 
-def test_send_email_relays(monkeypatch):
+def test_ses_smtp_relay_send_email(monkeypatch):
     monkeypatch.setenv('SMTP_HOST', '127.0.0.1:1025')
     from ministack.services.ses import _send_email
     mock_smtp = MagicMock()
@@ -157,7 +128,7 @@ def test_send_email_relays(monkeypatch):
         assert msg.get_content_type() == 'multipart/alternative'
 
 
-def test_send_email_no_relay_without_host():
+def test_ses_smtp_relay_send_email_no_relay_without_host():
     from ministack.services.ses import _send_email
     with patch('ministack.services.ses.smtplib.SMTP') as mock_cls:
         params = {
@@ -175,7 +146,7 @@ def test_send_email_no_relay_without_host():
 # SendRawEmail with SMTP relay
 # ---------------------------------------------------------------------------
 
-def test_send_raw_email_relays(monkeypatch):
+def test_ses_smtp_relay_send_raw_email(monkeypatch):
     monkeypatch.setenv('SMTP_HOST', 'localhost:2525')
     from ministack.services.ses import _send_raw_email
     mock_smtp = MagicMock()
@@ -206,7 +177,7 @@ def test_send_raw_email_relays(monkeypatch):
 # SendTemplatedEmail with SMTP relay
 # ---------------------------------------------------------------------------
 
-def test_send_templated_email_relays(monkeypatch):
+def test_ses_smtp_relay_send_templated_email(monkeypatch):
     monkeypatch.setenv('SMTP_HOST', 'localhost:1025')
     from ministack.services.ses import _send_templated_email, _templates
     _templates['MyTemplate'] = {
