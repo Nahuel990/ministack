@@ -17732,6 +17732,8 @@ def test_kms_create_symmetric_key(kms_client):
         KeySpec="SYMMETRIC_DEFAULT",
         KeyUsage="ENCRYPT_DECRYPT",
         Description="test symmetric key",
+        Tags=[{"TagKey": "env", "TagValue": "test"}],
+        Policy="{}",
     )
     meta = resp["KeyMetadata"]
     assert meta["KeyId"]
@@ -17740,6 +17742,13 @@ def test_kms_create_symmetric_key(kms_client):
     assert meta["KeyUsage"] == "ENCRYPT_DECRYPT"
     assert meta["Enabled"] is True
     assert meta["KeyState"] == "Enabled"
+    assert meta["Description"] == "test symmetric key"
+
+    tags = kms_client.list_resource_tags(KeyId=meta["KeyId"])["Tags"]
+    assert {"TagKey": "env", "TagValue": "test"} in tags
+
+    policy = kms_client.get_key_policy(KeyId=meta["KeyId"], PolicyName="default")["Policy"]
+    assert policy == "{}"
 
 
 def test_kms_create_rsa_2048_sign_key(kms_client):

@@ -156,6 +156,8 @@ def _create_key(data):
     key_spec = data.get("KeySpec", data.get("CustomerMasterKeySpec", "SYMMETRIC_DEFAULT"))
     key_usage = data.get("KeyUsage", "ENCRYPT_DECRYPT")
     description = data.get("Description", "")
+    tags = data.get("Tags", [])
+    policy = data.get("Policy", "")
 
     rec = {
         "KeyId": key_id,
@@ -167,6 +169,8 @@ def _create_key(data):
         "Description": description,
         "CreationDate": time.time(),
         "Origin": "AWS_KMS",
+        "Tags": tags,
+        "Policy": policy,
     }
 
     if key_spec == "SYMMETRIC_DEFAULT":
