@@ -25,11 +25,10 @@ import re
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("appsync")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---------------------------------------------------------------------------
@@ -65,7 +64,7 @@ def _now():
 
 
 def _api_arn(api_id):
-    return f"arn:aws:appsync:{REGION}:{ACCOUNT_ID}:apis/{api_id}"
+    return f"arn:aws:appsync:{REGION}:{get_account_id()}:apis/{api_id}"
 
 
 def _json(status, body):

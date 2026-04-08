@@ -15,11 +15,10 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("ssm")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 DEFAULT_PAGE_SIZE = 10
 
@@ -55,7 +54,7 @@ def _now_epoch() -> float:
 
 
 def _param_arn(name: str) -> str:
-    return f"arn:aws:ssm:{REGION}:{ACCOUNT_ID}:parameter{name}"
+    return f"arn:aws:ssm:{REGION}:{get_account_id()}:parameter{name}"
 
 
 def _encode_next_token(index: int) -> str:
@@ -153,7 +152,7 @@ def _put_parameter(data):
         "KeyId": key_id,
         "Version": version,
         "LastModifiedDate": now,
-        "LastModifiedUser": f"arn:aws:iam::{ACCOUNT_ID}:root",
+        "LastModifiedUser": f"arn:aws:iam::{get_account_id()}:root",
         "Description": record["Description"],
         "AllowedPattern": record["AllowedPattern"],
         "Tier": record["Tier"],
@@ -296,7 +295,7 @@ def _describe_parameters(data):
             "Type": param["Type"],
             "Version": param["Version"],
             "LastModifiedDate": param["LastModifiedDate"],
-            "LastModifiedUser": f"arn:aws:iam::{ACCOUNT_ID}:root",
+            "LastModifiedUser": f"arn:aws:iam::{get_account_id()}:root",
             "ARN": param["ARN"],
             "DataType": param["DataType"],
             "Description": param.get("Description", ""),
@@ -370,7 +369,7 @@ def _get_parameter_history(data):
             "Type": entry["Type"],
             "Version": entry["Version"],
             "LastModifiedDate": entry["LastModifiedDate"],
-            "LastModifiedUser": entry.get("LastModifiedUser", f"arn:aws:iam::{ACCOUNT_ID}:root"),
+            "LastModifiedUser": entry.get("LastModifiedUser", f"arn:aws:iam::{get_account_id()}:root"),
             "Description": entry.get("Description", ""),
             "DataType": entry.get("DataType", "text"),
             "Tier": entry.get("Tier", "Standard"),

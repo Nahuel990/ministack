@@ -476,6 +476,18 @@ def extract_region(headers: dict) -> str:
     return os.environ.get("MINISTACK_REGION", "us-east-1")
 
 
+def extract_access_key_id(headers: dict) -> str:
+    """Extract the AWS access key ID from the Authorization header."""
+    auth = headers.get("authorization", "")
+    if auth:
+        match = re.search(r"Credential=([^/]+)/", auth)
+        if match:
+            return match.group(1)
+    return ""
+
+
 def extract_account_id(headers: dict) -> str:
-    """Extract or generate account ID."""
-    return os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
+    """Extract account ID from credentials or env var.
+    If the access key is a 12-digit number, use it as the account ID."""
+    from ministack.core.responses import get_account_id
+    return get_account_id()

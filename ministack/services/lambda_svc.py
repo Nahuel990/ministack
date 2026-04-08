@@ -43,12 +43,11 @@ from typing import Any
 from urllib.parse import unquote
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 from ministack.core.lambda_runtime import get_or_create_worker, invalidate_worker
 
 logger = logging.getLogger("lambda")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
 LAMBDA_EXECUTOR = os.environ.get("LAMBDA_EXECUTOR", "local").lower()
 LAMBDA_DOCKER_VOLUME_MOUNT = os.environ.get("LAMBDA_REMOTE_DOCKER_VOLUME_MOUNT", "")
@@ -282,11 +281,11 @@ def _resolve_name_and_qualifier(name_or_arn: str) -> tuple[str, str | None]:
 
 
 def _func_arn(name: str) -> str:
-    return f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:function:{name}"
+    return f"arn:aws:lambda:{REGION}:{get_account_id()}:function:{name}"
 
 
 def _layer_arn(name: str) -> str:
-    return f"arn:aws:lambda:{REGION}:{ACCOUNT_ID}:layer:{name}"
+    return f"arn:aws:lambda:{REGION}:{get_account_id()}:layer:{name}"
 
 
 def _now_iso() -> str:
@@ -340,7 +339,7 @@ def _build_config(name: str, data: dict, code_zip: bytes | None = None) -> dict:
         "FunctionName": name,
         "FunctionArn": _func_arn(name),
         "Runtime": data.get("Runtime", "python3.9"),
-        "Role": data.get("Role", f"arn:aws:iam::{ACCOUNT_ID}:role/lambda-role"),
+        "Role": data.get("Role", f"arn:aws:iam::{get_account_id()}:role/lambda-role"),
         "Handler": data.get("Handler", "index.handler"),
         "CodeSize": code_size,
         "CodeSha256": code_sha,
@@ -2526,7 +2525,7 @@ def _poll_sqs():
                 "attributes": {
                     "ApproximateReceiveCount": str(msg.get("receive_count", 1)),
                     "SentTimestamp": str(int(msg["sent_at"] * 1000)),
-                    "SenderId": ACCOUNT_ID,
+                    "SenderId": get_account_id(),
                     "ApproximateFirstReceiveTimestamp": str(int(first_recv * 1000)),
                 },
                 "messageAttributes": msg.get("message_attributes", {}),
@@ -2623,7 +2622,7 @@ def _poll_kinesis():
                     "eventVersion": "1.0",
                     "eventID": f"{shard_id}:{r['SequenceNumber']}",
                     "eventName": "aws:kinesis:record",
-                    "invokeIdentityArn": f"arn:aws:iam::{ACCOUNT_ID}:role/lambda-role",
+                    "invokeIdentityArn": f"arn:aws:iam::{get_account_id()}:role/lambda-role",
                     "awsRegion": REGION,
                     "eventSourceARN": source_arn,
                 })

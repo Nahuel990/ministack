@@ -8,13 +8,13 @@ import json
 import logging
 import time
 
-from ministack.core.responses import new_uuid, now_iso
+from ministack.core.responses import get_account_id, new_uuid, now_iso
 
 from .engine import (
     _evaluate_conditions, _parse_template, _resolve_parameters,
     _resolve_refs, _topological_sort, _NO_VALUE,
 )
-from .provisioners import _provision_resource, _delete_resource, ACCOUNT_ID, REGION
+from .provisioners import _provision_resource, _delete_resource, REGION
 
 logger = logging.getLogger("cloudformation")
 

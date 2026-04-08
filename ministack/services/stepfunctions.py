@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 
 from ministack.core.persistence import PERSIST_STATE, load_state
 from ministack.core.responses import (
+    get_account_id,
     error_response_json,
     json_response,
     new_uuid,
@@ -40,7 +41,6 @@ from ministack.core.responses import (
 
 logger = logging.getLogger("states")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # SFN mock config — compatible with LocalStack's SFN_MOCK_CONFIG / LOCALSTACK_SFN_MOCK_CONFIG
@@ -237,7 +237,7 @@ def _create_state_machine(data):
     if not name:
         return error_response_json("ValidationException", "name is required", 400)
 
-    arn = f"arn:aws:states:{REGION}:{ACCOUNT_ID}:stateMachine:{name}"
+    arn = f"arn:aws:states:{REGION}:{get_account_id()}:stateMachine:{name}"
     if arn in _state_machines:
         return error_response_json(
             "StateMachineAlreadyExists",
@@ -249,7 +249,7 @@ def _create_state_machine(data):
         "name": name,
         "definition": data.get("definition", "{}"),
         "roleArn": data.get("roleArn",
-                            f"arn:aws:iam::{ACCOUNT_ID}:role/StepFunctionsRole"),
+                            f"arn:aws:iam::{get_account_id()}:role/StepFunctionsRole"),
         "type": data.get("type", "STANDARD"),
         "creationDate": ts,
         "status": "ACTIVE",
@@ -346,7 +346,7 @@ def _start_execution(data):
 
     sm = _state_machines[sm_arn]
     name = data.get("name") or new_uuid()
-    exec_arn = (f"arn:aws:states:{REGION}:{ACCOUNT_ID}"
+    exec_arn = (f"arn:aws:states:{REGION}:{get_account_id()}"
                 f":execution:{sm['name']}:{name}")
 
     start_date = now_iso()
@@ -484,7 +484,7 @@ def _start_sync_execution(data):
 
     sm = _state_machines[sm_arn]
     name = data.get("name") or new_uuid()
-    exec_arn = (f"arn:aws:states:{REGION}:{ACCOUNT_ID}"
+    exec_arn = (f"arn:aws:states:{REGION}:{get_account_id()}"
                 f":execution:{sm['name']}:{name}")
 
     start_date = now_iso()
@@ -611,7 +611,7 @@ def _create_activity(data):
     if not name:
         return error_response_json("ValidationException", "name is required", 400)
 
-    arn = f"arn:aws:states:{REGION}:{ACCOUNT_ID}:activity:{name}"
+    arn = f"arn:aws:states:{REGION}:{get_account_id()}:activity:{name}"
     if arn in _activities:
         return error_response_json(
             "ActivityAlreadyExists", f"Activity already exists: {arn}", 400)
@@ -780,7 +780,7 @@ def _test_state(data):
             ctx = {}
     else:
         ctx = {}
-    ctx.setdefault("Execution", {"Id": f"arn:aws:states:{REGION}:{ACCOUNT_ID}:execution:test:{new_uuid()}", "Name": "test", "StartTime": now_iso()})
+    ctx.setdefault("Execution", {"Id": f"arn:aws:states:{REGION}:{get_account_id()}:execution:test:{new_uuid()}", "Name": "test", "StartTime": now_iso()})
     ctx.setdefault("StateMachine", {"Id": "test", "Name": "test"})
     ctx["State"] = {"Name": state_name, "EnteredTime": now_iso()}
 

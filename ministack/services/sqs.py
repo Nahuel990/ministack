@@ -35,7 +35,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import md5_hash, new_uuid, now_iso
+from ministack.core.responses import get_account_id, md5_hash, new_uuid, now_iso
 
 logger = logging.getLogger("sqs")
 
@@ -62,7 +62,6 @@ _restored = load_state("sqs")
 if _restored:
     restore_state(_restored)
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 DEFAULT_HOST = os.environ.get("MINISTACK_HOST", "localhost")
 DEFAULT_PORT = os.environ.get("GATEWAY_PORT", "4566")
@@ -82,7 +81,7 @@ class _Err(Exception):
 # ── Queue URL ───────────────────────────────────────────────
 
 def _queue_url(name: str) -> str:
-    return f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/{ACCOUNT_ID}/{name}"
+    return f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/{get_account_id()}/{name}"
 
 
 # ────────────────────────────────────────────────────────────
@@ -182,7 +181,7 @@ def _act_create_queue(data: dict, _u: str) -> dict:
     q: dict = {
         "name": name, "url": url, "is_fifo": is_fifo,
         "attributes": {
-            "QueueArn": f"arn:aws:sqs:{REGION}:{ACCOUNT_ID}:{name}",
+            "QueueArn": f"arn:aws:sqs:{REGION}:{get_account_id()}:{name}",
             "CreatedTimestamp": ts,
             "LastModifiedTimestamp": ts,
             "VisibilityTimeout": "30",
@@ -296,7 +295,7 @@ def _act_send_message(data: dict, qurl: str) -> dict:
         "first_receive_at": None,
         "message_attributes": msg_attrs,
         "sys": {
-            "SenderId": ACCOUNT_ID,
+            "SenderId": get_account_id(),
             "SentTimestamp": str(int(now * 1000)),
         },
         "group_id": group_id,
@@ -619,7 +618,7 @@ def _ensure_msg_fields(m: dict) -> None:
     if "sys" not in m:
         sent = m["sent_at"]
         m["sys"] = {
-            "SenderId": ACCOUNT_ID,
+            "SenderId": get_account_id(),
             "SentTimestamp": str(int(sent * 1000)),
         }
     m.setdefault("group_id", None)
@@ -747,7 +746,7 @@ def _build_sys_attrs(msg: dict, names: list) -> dict:
     want_all = "All" in names
     r: dict = {}
     if want_all or "SenderId" in names:
-        r["SenderId"] = msg["sys"].get("SenderId", ACCOUNT_ID)
+        r["SenderId"] = msg["sys"].get("SenderId", get_account_id())
     if want_all or "SentTimestamp" in names:
         r["SentTimestamp"] = msg["sys"].get("SentTimestamp", "0")
     if want_all or "ApproximateReceiveCount" in names:

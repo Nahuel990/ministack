@@ -10,11 +10,10 @@ import os
 import threading
 import uuid
 
-from ministack.core.responses import error_response_json, json_response
+from ministack.core.responses import get_account_id, error_response_json, json_response
 
 logger = logging.getLogger("rds-data")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # Active transactions: txn_id -> {conn, engine, resourceArn, database}

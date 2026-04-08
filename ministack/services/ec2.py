@@ -64,11 +64,10 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 
 logger = logging.getLogger("ec2")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---------------------------------------------------------------------------
@@ -180,7 +179,7 @@ def _init_defaults():
             "IsDefault": True,
             "DhcpOptionsId": "dopt-00000001",
             "InstanceTenancy": "default",
-            "OwnerId": ACCOUNT_ID,
+            "OwnerId": get_account_id(),
             "DefaultNetworkAclId": _DEFAULT_ACL_ID,
             "DefaultSecurityGroupId": _DEFAULT_SG_ID,
             "MainRouteTableId": _DEFAULT_RTB_ID,
@@ -195,7 +194,7 @@ def _init_defaults():
             "State": "available",
             "DefaultForAz": True,
             "MapPublicIpOnLaunch": True,
-            "OwnerId": ACCOUNT_ID,
+            "OwnerId": get_account_id(),
         }
     if _DEFAULT_SG_ID not in _security_groups:
         _security_groups[_DEFAULT_SG_ID] = {
@@ -203,7 +202,7 @@ def _init_defaults():
             "GroupName": "default",
             "Description": "default VPC security group",
             "VpcId": _DEFAULT_VPC_ID,
-            "OwnerId": ACCOUNT_ID,
+            "OwnerId": get_account_id(),
             "IpPermissions": [],
             "IpPermissionsEgress": [
                 {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
@@ -213,7 +212,7 @@ def _init_defaults():
     if _DEFAULT_IGW_ID not in _internet_gateways:
         _internet_gateways[_DEFAULT_IGW_ID] = {
             "InternetGatewayId": _DEFAULT_IGW_ID,
-            "OwnerId": ACCOUNT_ID,
+            "OwnerId": get_account_id(),
             "Attachments": [{"VpcId": _DEFAULT_VPC_ID, "State": "available"}],
         }
     default_rtb = "rtb-00000001"
@@ -221,7 +220,7 @@ def _init_defaults():
         _route_tables[default_rtb] = {
             "RouteTableId": default_rtb,
             "VpcId": _DEFAULT_VPC_ID,
-            "OwnerId": ACCOUNT_ID,
+            "OwnerId": get_account_id(),
             "Routes": [
                 {"DestinationCidrBlock": "172.31.0.0/16", "GatewayId": "local",
                  "State": "active", "Origin": "CreateRouteTable"},
@@ -312,7 +311,7 @@ def _run_instances(p):
     items = "".join(_instance_xml(i) for i in created)
     inner = f"""<instancesSet>{items}</instancesSet>
     <reservationId>r-{new_uuid().replace('-','')[:17]}</reservationId>
-    <ownerId>{ACCOUNT_ID}</ownerId>
+    <ownerId>{get_account_id()}</ownerId>
     <groupSet/>"""
     return _xml(200, "RunInstancesResponse", inner)
 
@@ -339,7 +338,7 @@ def _describe_instances(p):
     items = "".join(
         f"""<item>
             <reservationId>r-{inst['InstanceId'][2:]}</reservationId>
-            <ownerId>{ACCOUNT_ID}</ownerId>
+            <ownerId>{get_account_id()}</ownerId>
             <groupSet/>
             <instancesSet>{_instance_xml(inst)}</instancesSet>
         </item>"""
@@ -422,7 +421,7 @@ def _describe_images(p):
             <imageId>{ami_id}</imageId>
             <imageLocation>{name}</imageLocation>
             <imageState>available</imageState>
-            <imageOwnerId>{ACCOUNT_ID}</imageOwnerId>
+            <imageOwnerId>{get_account_id()}</imageOwnerId>
             <isPublic>true</isPublic>
             <architecture>x86_64</architecture>
             <imageType>machine</imageType>
@@ -457,7 +456,7 @@ def _create_security_group(p):
         "GroupName": name,
         "Description": desc,
         "VpcId": vpc_id,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "IpPermissions": [],
         "IpPermissionsEgress": [
             {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
@@ -636,13 +635,13 @@ def _create_vpc(p):
             {"RuleNumber": 100, "Protocol": "-1", "RuleAction": "allow", "Egress": True, "CidrBlock": "0.0.0.0/0"},
             {"RuleNumber": 32767, "Protocol": "-1", "RuleAction": "deny", "Egress": True, "CidrBlock": "0.0.0.0/0"},
         ],
-        "Associations": [], "Tags": [], "OwnerId": ACCOUNT_ID,
+        "Associations": [], "Tags": [], "OwnerId": get_account_id(),
     }
     # Per-VPC main route table
     rtb_id = "rtb-" + "".join(random.choices(string.hexdigits[:16], k=17))
     rtb_assoc_id = "rtbassoc-" + "".join(random.choices(string.hexdigits[:16], k=17))
     _route_tables[rtb_id] = {
-        "RouteTableId": rtb_id, "VpcId": vpc_id, "OwnerId": ACCOUNT_ID,
+        "RouteTableId": rtb_id, "VpcId": vpc_id, "OwnerId": get_account_id(),
         "Routes": [{"DestinationCidrBlock": cidr, "GatewayId": "local", "State": "active", "Origin": "CreateRouteTable"}],
         "Associations": [{"RouteTableAssociationId": rtb_assoc_id, "RouteTableId": rtb_id, "Main": True,
                           "AssociationState": {"State": "associated"}}],
@@ -651,7 +650,7 @@ def _create_vpc(p):
     sg_id = _new_sg_id()
     _security_groups[sg_id] = {
         "GroupId": sg_id, "GroupName": "default", "Description": "default VPC security group",
-        "VpcId": vpc_id, "OwnerId": ACCOUNT_ID, "IpPermissions": [],
+        "VpcId": vpc_id, "OwnerId": get_account_id(), "IpPermissions": [],
         "IpPermissionsEgress": [
             {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
              "Ipv6Ranges": [], "PrefixListIds": [], "UserIdGroupPairs": []},
@@ -660,7 +659,7 @@ def _create_vpc(p):
     _vpcs[vpc_id] = {
         "VpcId": vpc_id, "CidrBlock": cidr, "State": "available", "IsDefault": False,
         "DhcpOptionsId": "dopt-00000001", "InstanceTenancy": _p(p, "InstanceTenancy") or "default",
-        "OwnerId": ACCOUNT_ID, "DefaultNetworkAclId": acl_id,
+        "OwnerId": get_account_id(), "DefaultNetworkAclId": acl_id,
         "DefaultSecurityGroupId": sg_id, "MainRouteTableId": rtb_id,
     }
     return _xml(200, "CreateVpcResponse", _vpc_fields_xml(_vpcs[vpc_id], tag="vpc"))
@@ -702,7 +701,7 @@ def _create_subnet(p):
         "State": "available",
         "DefaultForAz": False,
         "MapPublicIpOnLaunch": False,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
     }
     return _xml(200, "CreateSubnetResponse", _subnet_fields_xml(_subnets[subnet_id], tag="subnet"))
 
@@ -724,7 +723,7 @@ def _create_internet_gateway(p):
     igw_id = _new_igw_id()
     _internet_gateways[igw_id] = {
         "InternetGatewayId": igw_id,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "Attachments": [],
     }
     return _xml(200, "CreateInternetGatewayResponse",
@@ -827,7 +826,7 @@ def _create_route_table(p):
     _route_tables[rtb_id] = {
         "RouteTableId": rtb_id,
         "VpcId": vpc_id,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "Routes": [
             {"DestinationCidrBlock": _vpcs.get(vpc_id, {}).get("CidrBlock", "10.0.0.0/16"),
              "GatewayId": "local", "State": "active", "Origin": "CreateRouteTable"},
@@ -990,7 +989,7 @@ def _create_network_interface(p):
         "VpcId": _subnets.get(subnet_id, {}).get("VpcId", _DEFAULT_VPC_ID),
         "AvailabilityZone": az,
         "Description": description,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "Status": "available",
         "PrivateIpAddress": private_ip,
         "InterfaceType": "interface",
@@ -1073,7 +1072,7 @@ def _create_vpc_endpoint(p):
         "State": "available",
         "RouteTableIds": _parse_member_list(p, "RouteTableId"),
         "SubnetIds": _parse_member_list(p, "SubnetId"),
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
     }
     return _xml(200, "CreateVpcEndpointResponse",
                 _vpce_fields_xml(_vpc_endpoints[vpce_id], tag="vpcEndpoint"))
@@ -1456,7 +1455,7 @@ def _create_snapshot(p):
         "State": "completed",
         "StartTime": now,
         "Progress": "100%",
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "Encrypted": vol["Encrypted"],
         "StorageTier": "standard",
     }
@@ -1643,7 +1642,7 @@ def _vpc_xml(vpc):
 def _subnet_fields_xml(subnet, tag="item"):
     return f"""<{tag}>
         <subnetId>{subnet['SubnetId']}</subnetId>
-        <subnetArn>arn:aws:ec2:{REGION}:{ACCOUNT_ID}:subnet/{subnet['SubnetId']}</subnetArn>
+        <subnetArn>arn:aws:ec2:{REGION}:{get_account_id()}:subnet/{subnet['SubnetId']}</subnetArn>
         <state>{subnet['State']}</state>
         <vpcId>{subnet['VpcId']}</vpcId>
         <cidrBlock>{subnet['CidrBlock']}</cidrBlock>
@@ -2044,7 +2043,7 @@ def _create_network_acl(params):
         "Entries": [],
         "Associations": [],
         "Tags": tags,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
     }
     _network_acls[acl_id] = record
     if tags:
@@ -2056,7 +2055,7 @@ def _create_network_acl(params):
         <entrySet/>
         <associationSet/>
         <tagSet/>
-        <ownerId>{ACCOUNT_ID}</ownerId>
+        <ownerId>{get_account_id()}</ownerId>
     </networkAcl>"""
     return _xml(200, "CreateNetworkAclResponse", inner)
 
@@ -2236,14 +2235,14 @@ def _delete_flow_logs(params):
 def _create_vpc_peering_connection(params):
     vpc_id = _p(params, "VpcId")
     peer_vpc_id = _p(params, "PeerVpcId")
-    peer_owner_id = _p(params, "PeerOwnerId") or ACCOUNT_ID
+    peer_owner_id = _p(params, "PeerOwnerId") or get_account_id()
     peer_region = _p(params, "PeerRegion") or REGION
     if not vpc_id or not peer_vpc_id:
         return _error("MissingParameter", "VpcId and PeerVpcId are required", 400)
     pcx_id = "pcx-" + "".join(random.choices(string.hexdigits[:16], k=17))
     record = {
         "VpcPeeringConnectionId": pcx_id,
-        "RequesterVpcInfo": {"VpcId": vpc_id, "OwnerId": ACCOUNT_ID, "Region": REGION},
+        "RequesterVpcInfo": {"VpcId": vpc_id, "OwnerId": get_account_id(), "Region": REGION},
         "AccepterVpcInfo": {"VpcId": peer_vpc_id, "OwnerId": peer_owner_id, "Region": peer_region},
         "Status": {"Code": "pending-acceptance", "Message": "Pending Acceptance by " + peer_owner_id},
         "ExpirationTime": _now_ts(),
@@ -2252,7 +2251,7 @@ def _create_vpc_peering_connection(params):
     _vpc_peering[pcx_id] = record
     inner = f"""<vpcPeeringConnection>
         <vpcPeeringConnectionId>{pcx_id}</vpcPeeringConnectionId>
-        <requesterVpcInfo><vpcId>{vpc_id}</vpcId><ownerId>{ACCOUNT_ID}</ownerId><region>{REGION}</region></requesterVpcInfo>
+        <requesterVpcInfo><vpcId>{vpc_id}</vpcId><ownerId>{get_account_id()}</ownerId><region>{REGION}</region></requesterVpcInfo>
         <accepterVpcInfo><vpcId>{peer_vpc_id}</vpcId><ownerId>{peer_owner_id}</ownerId><region>{peer_region}</region></accepterVpcInfo>
         <status><code>pending-acceptance</code></status>
         <tagSet/>
@@ -2333,7 +2332,7 @@ def _create_dhcp_options(params):
     record = {
         "DhcpOptionsId": dopt_id,
         "DhcpConfigurations": configs,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "Tags": tags,
     }
     _dhcp_options[dopt_id] = record
@@ -2346,7 +2345,7 @@ def _create_dhcp_options(params):
     inner = f"""<dhcpOptions>
         <dhcpOptionsId>{dopt_id}</dhcpOptionsId>
         <dhcpConfigurationSet>{configs_xml}</dhcpConfigurationSet>
-        <ownerId>{ACCOUNT_ID}</ownerId>
+        <ownerId>{get_account_id()}</ownerId>
         <tagSet/>
     </dhcpOptions>"""
     return _xml(200, "CreateDhcpOptionsResponse", inner)
@@ -2568,8 +2567,8 @@ def _create_managed_prefix_list(p):
     _prefix_lists[pl_id] = {
         "PrefixListId": pl_id, "PrefixListName": name, "State": "create-complete",
         "AddressFamily": af, "MaxEntries": max_entries, "Version": 1,
-        "Entries": entries, "Tags": tags, "OwnerId": ACCOUNT_ID,
-        "PrefixListArn": f"arn:aws:ec2:{REGION}:{ACCOUNT_ID}:prefix-list/{pl_id}",
+        "Entries": entries, "Tags": tags, "OwnerId": get_account_id(),
+        "PrefixListArn": f"arn:aws:ec2:{REGION}:{get_account_id()}:prefix-list/{pl_id}",
     }
     if tags:
         _tags[pl_id] = tags
@@ -2646,7 +2645,7 @@ def _prefix_list_xml(pl, tag="item"):
         <maxEntries>{pl.get('MaxEntries',10)}</maxEntries>
         <version>{pl.get('Version',1)}</version>
         <prefixListArn>{pl.get('PrefixListArn','')}</prefixListArn>
-        <ownerId>{pl.get('OwnerId', ACCOUNT_ID)}</ownerId>
+        <ownerId>{pl.get('OwnerId', get_account_id())}</ownerId>
         <tagSet/>
     </{tag}>"""
 
@@ -2664,7 +2663,7 @@ def _create_vpn_gateway(p):
     _vpn_gateways[vgw_id] = {
         "VpnGatewayId": vgw_id, "Type": gw_type, "State": "available",
         "AvailabilityZone": az, "AmazonSideAsn": asn,
-        "Attachments": [], "Tags": tags, "OwnerId": ACCOUNT_ID,
+        "Attachments": [], "Tags": tags, "OwnerId": get_account_id(),
     }
     if tags:
         _tags[vgw_id] = tags
@@ -2771,7 +2770,7 @@ def _create_customer_gateway(p):
     tags = _parse_tags(p)
     _customer_gateways[cgw_id] = {
         "CustomerGatewayId": cgw_id, "BgpAsn": bgp_asn, "IpAddress": ip_address,
-        "Type": gw_type, "State": "available", "Tags": tags, "OwnerId": ACCOUNT_ID,
+        "Type": gw_type, "State": "available", "Tags": tags, "OwnerId": get_account_id(),
     }
     if tags:
         _tags[cgw_id] = tags
@@ -3038,7 +3037,7 @@ def _describe_security_group_rules(p):
                 items += f"""<item>
                     <securityGroupRuleId>{rule_id}</securityGroupRuleId>
                     <groupId>{sg_id}</groupId>
-                    <groupOwnerId>{ACCOUNT_ID}</groupOwnerId>
+                    <groupOwnerId>{get_account_id()}</groupOwnerId>
                     <isEgress>false</isEgress>
                     <ipProtocol>{rule.get('IpProtocol', '-1')}</ipProtocol>
                     <fromPort>{rule.get('FromPort', -1)}</fromPort>
@@ -3051,7 +3050,7 @@ def _describe_security_group_rules(p):
                 items += f"""<item>
                     <securityGroupRuleId>{rule_id}</securityGroupRuleId>
                     <groupId>{sg_id}</groupId>
-                    <groupOwnerId>{ACCOUNT_ID}</groupOwnerId>
+                    <groupOwnerId>{get_account_id()}</groupOwnerId>
                     <isEgress>true</isEgress>
                     <ipProtocol>{rule.get('IpProtocol', '-1')}</ipProtocol>
                     <fromPort>{rule.get('FromPort', -1)}</fromPort>
@@ -3313,7 +3312,7 @@ def _lt_version_xml(ver):
         <versionDescription>{_esc(ver.get('VersionDescription', ''))}</versionDescription>
         <defaultVersion>{str(ver.get('DefaultVersion', False)).lower()}</defaultVersion>
         <createTime>{ver['CreateTime']}</createTime>
-        <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+        <createdBy>arn:aws:iam::{get_account_id()}:root</createdBy>
         <launchTemplateData>{_lt_data_xml(ver.get('LaunchTemplateData', {}))}</launchTemplateData>
     </item>"""
     return xml
@@ -3376,7 +3375,7 @@ def _create_launch_template(p):
         <launchTemplateId>{lt_id}</launchTemplateId>
         <launchTemplateName>{_esc(name)}</launchTemplateName>
         <createTime>{now}</createTime>
-        <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+        <createdBy>arn:aws:iam::{get_account_id()}:root</createdBy>
         <defaultVersionNumber>1</defaultVersionNumber>
         <latestVersionNumber>1</latestVersionNumber>
         <tags>{tags_xml}</tags>
@@ -3449,7 +3448,7 @@ def _describe_launch_templates(p):
             <launchTemplateId>{lt['LaunchTemplateId']}</launchTemplateId>
             <launchTemplateName>{_esc(lt['LaunchTemplateName'])}</launchTemplateName>
             <createTime>{lt['CreateTime']}</createTime>
-            <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+            <createdBy>arn:aws:iam::{get_account_id()}:root</createdBy>
             <defaultVersionNumber>{lt['DefaultVersionNumber']}</defaultVersionNumber>
             <latestVersionNumber>{lt['LatestVersionNumber']}</latestVersionNumber>
             <tags>{tags_xml}</tags>
@@ -3524,7 +3523,7 @@ def _modify_launch_template(p):
         <launchTemplateId>{lt['LaunchTemplateId']}</launchTemplateId>
         <launchTemplateName>{_esc(lt['LaunchTemplateName'])}</launchTemplateName>
         <createTime>{lt['CreateTime']}</createTime>
-        <createdBy>arn:aws:iam::{ACCOUNT_ID}:root</createdBy>
+        <createdBy>arn:aws:iam::{get_account_id()}:root</createdBy>
         <defaultVersionNumber>{lt['DefaultVersionNumber']}</defaultVersionNumber>
         <latestVersionNumber>{lt['LatestVersionNumber']}</latestVersionNumber>
     </launchTemplate>""")

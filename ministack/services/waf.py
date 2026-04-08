@@ -15,11 +15,10 @@ import os
 import logging
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import error_response_json, json_response, new_uuid, now_iso
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid, now_iso
 
 logger = logging.getLogger("wafv2")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 _web_acls: dict = {}       # id -> webacl
@@ -57,15 +56,15 @@ def _waf_err(code, message):
 
 
 def _acl_arn(name, uid):
-    return f"arn:aws:wafv2:{REGION}:{ACCOUNT_ID}:regional/webacl/{name}/{uid}"
+    return f"arn:aws:wafv2:{REGION}:{get_account_id()}:regional/webacl/{name}/{uid}"
 
 
 def _ipset_arn(name, uid):
-    return f"arn:aws:wafv2:{REGION}:{ACCOUNT_ID}:regional/ipset/{name}/{uid}"
+    return f"arn:aws:wafv2:{REGION}:{get_account_id()}:regional/ipset/{name}/{uid}"
 
 
 def _rg_arn(name, uid):
-    return f"arn:aws:wafv2:{REGION}:{ACCOUNT_ID}:regional/rulegroup/{name}/{uid}"
+    return f"arn:aws:wafv2:{REGION}:{get_account_id()}:regional/rulegroup/{name}/{uid}"
 
 
 async def handle_request(method, path, headers, body, query_params):

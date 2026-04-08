@@ -1061,3 +1061,39 @@ def test_cfn_ec2_launch_template(cfn, ec2):
 
     desc2 = ec2.describe_launch_templates(LaunchTemplateIds=[lt_id])
     assert len(desc2["LaunchTemplates"]) == 0
+
+
+def test_cfn_ssm_parameter_timestamp_is_epoch(cfn, ssm):
+    """SSM parameters created via CloudFormation must store LastModifiedDate
+    as an epoch float, not an ISO string.  The JS SDK v3 deserializes SSM
+    timestamps with parseEpochTimestamp() which throws 'Expected real number,
+    got implicit NaN' when the value is an ISO string.  This broke cdk deploy."""
+    template = json.dumps({
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Param": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {
+                    "Name": "/cfn-test/epoch-check",
+                    "Type": "String",
+                    "Value": "42",
+                },
+            },
+        },
+    })
+    cfn.create_stack(StackName="cfn-ssm-epoch", TemplateBody=template)
+    _wait_stack(cfn, "cfn-ssm-epoch")
+
+    try:
+        resp = ssm.get_parameter(Name="/cfn-test/epoch-check")
+        last_mod = resp["Parameter"]["LastModifiedDate"]
+        # boto3 converts epoch floats to datetime objects automatically.
+        # If it were an ISO string, boto3 would leave it as a string or error.
+        import datetime
+        assert isinstance(last_mod, datetime.datetime), (
+            f"LastModifiedDate should be datetime (from epoch float), "
+            f"got {type(last_mod).__name__}: {last_mod}"
+        )
+    finally:
+        cfn.delete_stack(StackName="cfn-ssm-epoch")
+        _wait_stack(cfn, "cfn-ssm-epoch")

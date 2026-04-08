@@ -7,15 +7,15 @@ import copy
 import json
 import logging
 
-from ministack.core.responses import new_uuid, now_iso
+from ministack.core.responses import get_account_id, new_uuid, now_iso
 
 from .engine import (
     _evaluate_conditions, _parse_template, _resolve_parameters,
     _resolve_refs, _NO_VALUE,
 )
 from .stacks import _add_event, _deploy_stack_async, _delete_stack_async, _diff_resources
-from .provisioners import _provision_resource, ACCOUNT_ID, REGION
-from .helpers import _xml, _error, _p, _esc, _extract_members, _extract_stack_status_filters, CFN_NS
+from .provisioners import _provision_resource, REGION
+from .helpers import _xml, _error, _p, _esc, _extract_members, _extract_stack_status_filters, _resolve_template, CFN_NS
 from .changesets import (
     _create_change_set, _describe_change_set, _execute_change_set,
     _delete_change_set, _list_change_sets,
@@ -32,14 +32,11 @@ def _create_stack(params):
     if not stack_name:
         return _error("ValidationError", "StackName is required")
 
-    # Check TemplateURL (not supported)
-    if _p(params, "TemplateURL"):
-        return _error("ValidationError",
-                      "TemplateURL is not supported; use TemplateBody")
-
-    template_body = _p(params, "TemplateBody")
+    template_body, resolve_err = _resolve_template(params)
+    if resolve_err:
+        return resolve_err
     if not template_body:
-        return _error("ValidationError", "TemplateBody is required")
+        return _error("ValidationError", "TemplateBody or TemplateURL is required")
 
     # Check stack name uniqueness (active stacks)
     existing = _stacks.get(stack_name)
@@ -64,7 +61,7 @@ def _create_stack(params):
         return _error("ValidationError", str(exc))
 
     stack_id = (
-        f"arn:aws:cloudformation:{REGION}:{ACCOUNT_ID}:"
+        f"arn:aws:cloudformation:{REGION}:{get_account_id()}:"
         f"stack/{stack_name}/{new_uuid()}"
     )
 
@@ -412,16 +409,15 @@ def _update_stack(params):
                       f"Stack [{stack_name}] is in {current_status} state "
                       f"and cannot be updated")
 
-    template_body = _p(params, "TemplateBody")
-    if _p(params, "TemplateURL"):
-        return _error("ValidationError",
-                      "TemplateURL is not supported; use TemplateBody")
+    template_body, resolve_err = _resolve_template(params)
+    if resolve_err:
+        return resolve_err
     if not template_body:
         # Use previous template if UsePreviousTemplate
         if _p(params, "UsePreviousTemplate", "false").lower() == "true":
             template_body = stack.get("_template_body", "{}")
         else:
-            return _error("ValidationError", "TemplateBody is required")
+            return _error("ValidationError", "TemplateBody or TemplateURL is required")
 
     try:
         template = _parse_template(template_body)
@@ -531,10 +527,12 @@ def _list_exports(params):
 
 def _get_template_summary(params):
     from ministack.services.cloudformation import _stacks
-    template_body = _p(params, "TemplateBody")
+    template_body, resolve_err = _resolve_template(params)
+    if resolve_err:
+        return resolve_err
     stack_name = _p(params, "StackName")
 
-    if stack_name:
+    if stack_name and not template_body:
         stack = _stacks.get(stack_name)
         if not stack:
             return _error("ValidationError",
@@ -543,7 +541,7 @@ def _get_template_summary(params):
 
     if not template_body:
         return _error("ValidationError",
-                      "Either TemplateBody or StackName must be provided")
+                      "Either TemplateBody, TemplateURL, or StackName must be provided")
 
     try:
         template = _parse_template(template_body)

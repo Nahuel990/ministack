@@ -27,11 +27,10 @@ import time
 from urllib.parse import parse_qs
 
 from ministack.core.persistence import load_state
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 
 logger = logging.getLogger("elasticache")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 REDIS_DEFAULT_HOST = os.environ.get("REDIS_HOST", "redis")
 REDIS_DEFAULT_PORT = int(os.environ.get("REDIS_PORT", "6379"))
@@ -111,23 +110,23 @@ def _get_docker():
 
 
 def _arn_cluster(cluster_id):
-    return f"arn:aws:elasticache:{REGION}:{ACCOUNT_ID}:cluster:{cluster_id}"
+    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:cluster:{cluster_id}"
 
 
 def _arn_replication_group(rg_id):
-    return f"arn:aws:elasticache:{REGION}:{ACCOUNT_ID}:replicationgroup:{rg_id}"
+    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:replicationgroup:{rg_id}"
 
 
 def _arn_subnet_group(name):
-    return f"arn:aws:elasticache:{REGION}:{ACCOUNT_ID}:subnetgroup:{name}"
+    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:subnetgroup:{name}"
 
 
 def _arn_param_group(name):
-    return f"arn:aws:elasticache:{REGION}:{ACCOUNT_ID}:parametergroup:{name}"
+    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:parametergroup:{name}"
 
 
 def _arn_snapshot(name):
-    return f"arn:aws:elasticache:{REGION}:{ACCOUNT_ID}:snapshot:{name}"
+    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:snapshot:{name}"
 
 
 def _record_event(source_id, source_type, message):
@@ -958,11 +957,11 @@ def _describe_events(p):
 # ---- Users (Redis ACL) ----
 
 def _arn_user(user_id):
-    return f"arn:aws:elasticache:{REGION}:{ACCOUNT_ID}:user:{user_id}"
+    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:user:{user_id}"
 
 
 def _arn_user_group(group_id):
-    return f"arn:aws:elasticache:{REGION}:{ACCOUNT_ID}:usergroup:{group_id}"
+    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:usergroup:{group_id}"
 
 
 def _create_user(p):

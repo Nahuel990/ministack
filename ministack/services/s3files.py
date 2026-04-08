@@ -19,11 +19,10 @@ import os
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("s3files")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 _file_systems: dict = {}
@@ -71,7 +70,7 @@ def reset():
 
 
 def _arn(resource_type, resource_id):
-    return f"arn:aws:s3files:{REGION}:{ACCOUNT_ID}:{resource_type}/{resource_id}"
+    return f"arn:aws:s3files:{REGION}:{get_account_id()}:{resource_type}/{resource_id}"
 
 
 def _now_iso():
@@ -197,7 +196,7 @@ def _create_file_system(data):
         "BucketName": bucket_name,
         "LifeCycleState": "available",
         "CreationTime": _now_iso(),
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
     }
     _file_systems[fs_id] = fs
     logger.info("Created S3 file system %s for bucket %s", fs_id, bucket_name)

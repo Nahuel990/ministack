@@ -19,11 +19,10 @@ import threading
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("glue")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 CRAWLER_RUN_SECONDS = int(os.environ.get("GLUE_CRAWLER_RUN_SECONDS", "5"))
 S3_DATA_DIR = os.environ.get("S3_DATA_DIR", "/tmp/ministack-data/s3")
@@ -77,7 +76,7 @@ if _restored:
 
 
 def _arn(resource_type, name):
-    return f"arn:aws:glue:{REGION}:{ACCOUNT_ID}:{resource_type}/{name}"
+    return f"arn:aws:glue:{REGION}:{get_account_id()}:{resource_type}/{name}"
 
 
 async def handle_request(method, path, headers, body, query_params):
@@ -190,7 +189,7 @@ def _create_database(data):
         "LocationUri": db_input.get("LocationUri", ""),
         "Parameters": db_input.get("Parameters", {}),
         "CreateTime": time.time(),
-        "CatalogId": ACCOUNT_ID,
+        "CatalogId": get_account_id(),
     }
     return json_response({})
 
@@ -254,7 +253,7 @@ def _create_table(data):
         "TableType": table_input.get("TableType", "EXTERNAL_TABLE"),
         "Parameters": table_input.get("Parameters", {}),
         "IsRegisteredWithLakeFormation": False,
-        "CatalogId": ACCOUNT_ID,
+        "CatalogId": get_account_id(),
     }
     return json_response({})
 
@@ -342,7 +341,7 @@ def _create_partition(data):
         "TableName": table_name,
         "CreationTime": time.time(),
         "LastAccessTime": time.time(),
-        "CatalogId": ACCOUNT_ID,
+        "CatalogId": get_account_id(),
     })
     return json_response({})
 
@@ -395,7 +394,7 @@ def _batch_create_partition(data):
                 "DatabaseName": db_name,
                 "TableName": table_name,
                 "CreationTime": time.time(),
-                "CatalogId": ACCOUNT_ID,
+                "CatalogId": get_account_id(),
             })
     return json_response({"Errors": errors})
 

@@ -25,10 +25,10 @@ import string
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
+from ministack.core.responses import get_account_id
 
 logger = logging.getLogger("efs")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ def _create_file_system(body):
             return _json(200, _fs_response(fs))
 
     fs_id = _fs_id()
-    arn = f"arn:aws:elasticfilesystem:{REGION}:{ACCOUNT_ID}:file-system/{fs_id}"
+    arn = f"arn:aws:elasticfilesystem:{REGION}:{get_account_id()}:file-system/{fs_id}"
     now = _now_iso()
 
     record = {
@@ -90,7 +90,7 @@ def _create_file_system(body):
         "Encrypted": encrypted,
         "KmsKeyId": kms_key_id,
         "Tags": tags,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "Name": next((t["Value"] for t in tags if t["Key"] == "Name"), ""),
     }
     if provisioned_throughput:
@@ -158,7 +158,7 @@ def _create_mount_target(body):
         return _error(404, "FileSystemNotFound", f"File system '{fs_id}' does not exist.")
 
     mt_id = _mt_id()
-    arn = f"arn:aws:elasticfilesystem:{REGION}:{ACCOUNT_ID}:file-system/{fs_id}/mount-target/{mt_id}"
+    arn = f"arn:aws:elasticfilesystem:{REGION}:{get_account_id()}:file-system/{fs_id}/mount-target/{mt_id}"
     now = _now_iso()
 
     record = {
@@ -171,7 +171,7 @@ def _create_mount_target(body):
         "LifeCycleState": "available",
         "IpAddress": ip_address,
         "NetworkInterfaceId": f"eni-{random.choices(string.hexdigits[:16], k=17)}",
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "MountTargetArn": arn,
         "SecurityGroups": security_groups,
     }
@@ -238,7 +238,7 @@ def _create_access_point(body):
         return _error(404, "FileSystemNotFound", f"File system '{fs_id}' does not exist.")
 
     ap_id = _ap_id()
-    arn = f"arn:aws:elasticfilesystem:{REGION}:{ACCOUNT_ID}:access-point/{ap_id}"
+    arn = f"arn:aws:elasticfilesystem:{REGION}:{get_account_id()}:access-point/{ap_id}"
     now = _now_iso()
     tags = body.get("Tags", [])
 
@@ -251,7 +251,7 @@ def _create_access_point(body):
         "PosixUser": body.get("PosixUser", {}),
         "RootDirectory": body.get("RootDirectory", {"Path": "/"}),
         "Tags": tags,
-        "OwnerId": ACCOUNT_ID,
+        "OwnerId": get_account_id(),
         "Name": next((t["Value"] for t in tags if t["Key"] == "Name"), ""),
     }
     _access_points[ap_id] = record

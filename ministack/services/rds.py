@@ -32,11 +32,10 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 
 logger = logging.getLogger("rds")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 BASE_PORT = int(os.environ.get("RDS_BASE_PORT", "15432"))
 RDS_TMPFS_SIZE = os.environ.get("RDS_TMPFS_SIZE", "256m")
@@ -167,7 +166,7 @@ def _create_db_instance(p):
     storage_type = _p(p, "StorageType") or "gp2"
     subnet_group_name = _p(p, "DBSubnetGroupName") or "default"
 
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:db:{db_id}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:db:{db_id}"
     dbi_resource_id = f"db-{new_uuid().replace('-', '')[:20].upper()}"
     endpoint_host = "localhost"
     endpoint_port = port
@@ -209,7 +208,7 @@ def _create_db_instance(p):
         "SubnetGroupStatus": "Complete",
         "Subnets": [],
         "VpcId": "vpc-00000000",
-        "DBSubnetGroupArn": f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:subgrp:{subnet_group_name}",
+        "DBSubnetGroupArn": f"arn:aws:rds:{REGION}:{get_account_id()}:subgrp:{subnet_group_name}",
     })
 
     instance = {
@@ -463,7 +462,7 @@ def _create_read_replica(p):
     if replica_id in _instances:
         return _error("DBInstanceAlreadyExistsFault", f"DBInstance {replica_id} already exists.", 400)
 
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:db:{replica_id}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:db:{replica_id}"
     replica = dict(source)
     replica.update({
         "DBInstanceIdentifier": replica_id,
@@ -508,7 +507,7 @@ def _restore_from_snapshot(p):
     if not snap:
         return _error("DBSnapshotNotFound", f"DBSnapshot {snap_id} not found.", 404)
 
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:db:{db_id}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:db:{db_id}"
     instance = {
         "DBInstanceIdentifier": db_id,
         "DBInstanceClass": _p(p, "DBInstanceClass") or snap.get("DBInstanceClass", "db.t3.micro"),
@@ -581,7 +580,7 @@ def _create_db_cluster(p):
     engine_version = _p(p, "EngineVersion") or _default_engine_version(engine)
     port = int(_p(p, "Port") or _default_port(engine))
     master_user = _p(p, "MasterUsername") or "admin"
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster:{cluster_id}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:cluster:{cluster_id}"
     unique_suffix = new_uuid()[:8]
     now_ts = time.time()
 
@@ -728,7 +727,7 @@ def _modify_db_cluster(p):
 
 def _create_snapshot_internal(snap_id, instance):
     """Internal helper — creates a snapshot dict from an instance."""
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:snapshot:{snap_id}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:snapshot:{snap_id}"
     now_ts = time.time()
     snap = {
         "DBSnapshotIdentifier": snap_id,
@@ -830,7 +829,7 @@ def _create_subnet_group(p):
         return _error("MissingParameter", "DBSubnetGroupName is required", 400)
     desc = _p(p, "DBSubnetGroupDescription") or name
     subnet_ids = _parse_member_list(p, "SubnetIds")
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:subgrp:{name}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:subgrp:{name}"
 
     subnets = [{"SubnetIdentifier": sid, "SubnetAvailabilityZone": {"Name": f"{REGION}a"},
                 "SubnetOutpost": {}, "SubnetStatus": "Active"} for sid in subnet_ids]
@@ -890,7 +889,7 @@ def _create_param_group(p):
         return _error("MissingParameter", "DBParameterGroupName is required", 400)
     family = _p(p, "DBParameterGroupFamily") or "postgres15"
     desc = _p(p, "Description") or name
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:pg:{name}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:pg:{name}"
 
     _param_groups[name] = {
         "DBParameterGroupName": name,
@@ -1004,7 +1003,7 @@ def _create_db_cluster_param_group(p):
         return _error("MissingParameter", "DBClusterParameterGroupName is required", 400)
     family = _p(p, "DBParameterGroupFamily") or "aurora-postgresql15"
     desc = _p(p, "Description") or name
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster-pg:{name}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:cluster-pg:{name}"
 
     _db_cluster_param_groups[name] = {
         "DBClusterParameterGroupName": name,
@@ -1104,7 +1103,7 @@ def _create_db_cluster_snapshot(p):
     if not cluster:
         return _error("DBClusterNotFoundFault", f"DBCluster {cluster_id} not found.", 404)
 
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:cluster-snapshot:{snap_id}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:cluster-snapshot:{snap_id}"
     now_ts = time.time()
     snap = {
         "DBClusterSnapshotIdentifier": snap_id,
@@ -1239,7 +1238,7 @@ def _create_option_group(p):
     engine = _p(p, "EngineName") or "postgres"
     major_version = _p(p, "MajorEngineVersion") or "15"
     desc = _p(p, "OptionGroupDescription") or name
-    arn = f"arn:aws:rds:{REGION}:{ACCOUNT_ID}:og:{name}"
+    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:og:{name}"
 
     _option_groups[name] = {
         "OptionGroupName": name,
@@ -1391,7 +1390,7 @@ def _create_global_cluster(p):
     storage_encrypted = _p(p, "StorageEncrypted") == "true"
     deletion_protection = _p(p, "DeletionProtection") == "true"
 
-    arn = f"arn:aws:rds::{ACCOUNT_ID}:global-cluster:{gc_id}"
+    arn = f"arn:aws:rds::{get_account_id()}:global-cluster:{gc_id}"
     resource_id = f"cluster-{new_uuid().replace('-', '')[:20].lower()}"
 
     members = []
@@ -1501,7 +1500,7 @@ def _modify_global_cluster(p):
             return _error("GlobalClusterAlreadyExistsFault",
                 f"Global cluster {new_id} already exists.", 400)
         gc["GlobalClusterIdentifier"] = new_id
-        gc["GlobalClusterArn"] = f"arn:aws:rds::{ACCOUNT_ID}:global-cluster:{new_id}"
+        gc["GlobalClusterArn"] = f"arn:aws:rds::{get_account_id()}:global-cluster:{new_id}"
         _global_clusters[new_id] = gc
         del _global_clusters[gc_id]
 

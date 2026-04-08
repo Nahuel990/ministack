@@ -49,14 +49,13 @@ import time
 import urllib.error
 import urllib.request
 
-from ministack.core.responses import error_response_json, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, new_uuid
 
 _HOST = os.environ.get("MINISTACK_HOST", "localhost")
 _PORT = os.environ.get("GATEWAY_PORT", "4566")
 
 logger = logging.getLogger("apigateway")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---- Module-level state ----
@@ -343,7 +342,7 @@ async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers
         "headers": dict(headers),
         "queryStringParameters": qs,
         "requestContext": {
-            "accountId": ACCOUNT_ID,
+            "accountId": get_account_id(),
             "apiId": api_id,
             "domainName": f"{api_id}.execute-api.{_HOST}",
             "http": {

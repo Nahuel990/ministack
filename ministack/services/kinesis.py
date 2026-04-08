@@ -21,11 +21,10 @@ import logging
 import threading
 import time
 
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("kinesis")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 MAX_HASH_KEY = (2**128) - 1
 ITERATOR_EXPIRY_SECONDS = 300
@@ -199,7 +198,7 @@ def _create_stream(data):
     if shard_count < 1:
         return error_response_json("ValidationException", "ShardCount must be at least 1", 400)
 
-    arn = f"arn:aws:kinesis:{REGION}:{ACCOUNT_ID}:stream/{name}"
+    arn = f"arn:aws:kinesis:{REGION}:{get_account_id()}:stream/{name}"
     mode = data.get("StreamModeDetails", {}).get("StreamMode", "PROVISIONED")
     _streams[name] = {
         "StreamName": name,

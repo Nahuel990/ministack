@@ -23,11 +23,10 @@ import threading
 import time
 from datetime import datetime
 
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("events")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 
@@ -54,7 +53,7 @@ from ministack.core.persistence import load_state, PERSIST_STATE
 _event_buses: dict = {
     "default": {
         "Name": "default",
-        "Arn": f"arn:aws:events:{REGION}:{ACCOUNT_ID}:event-bus/default",
+        "Arn": f"arn:aws:events:{REGION}:{get_account_id()}:event-bus/default",
         "CreationTime": _now_ts(),
         "LastModifiedTime": _now_ts(),
     }
@@ -166,7 +165,7 @@ def _create_event_bus(data):
         return error_response_json("ValidationException", "Name is required", 400)
     if name in _event_buses:
         return error_response_json("ResourceAlreadyExistsException", f"Event bus {name} already exists", 400)
-    arn = f"arn:aws:events:{REGION}:{ACCOUNT_ID}:event-bus/{name}"
+    arn = f"arn:aws:events:{REGION}:{get_account_id()}:event-bus/{name}"
     description = data.get("Description", "")
     _event_buses[name] = {
         "Name": name,
@@ -264,8 +263,8 @@ def _update_event_bus(data):
 
 def _rule_arn(rule_name: str, bus_name: str) -> str:
     if bus_name == "default":
-        return f"arn:aws:events:{REGION}:{ACCOUNT_ID}:rule/{rule_name}"
-    return f"arn:aws:events:{REGION}:{ACCOUNT_ID}:rule/{bus_name}/{rule_name}"
+        return f"arn:aws:events:{REGION}:{get_account_id()}:rule/{rule_name}"
+    return f"arn:aws:events:{REGION}:{get_account_id()}:rule/{bus_name}/{rule_name}"
 
 
 def _rule_key(rule_name: str, bus_name: str) -> str:
@@ -322,7 +321,7 @@ def _put_rule(data):
         "Description": data.get("Description", existing.get("Description", "")),
         "RoleArn": data.get("RoleArn", existing.get("RoleArn", "")),
         "ManagedBy": existing.get("ManagedBy", ""),
-        "CreatedBy": ACCOUNT_ID,
+        "CreatedBy": get_account_id(),
         "CreationTime": existing.get("CreationTime", _now_ts()),
     }
 
@@ -464,7 +463,7 @@ def _put_events(data):
             "EventBusName": bus_name,
             "Time": event_time,
             "Resources": entry.get("Resources", []),
-            "Account": ACCOUNT_ID,
+            "Account": get_account_id(),
             "Region": REGION,
         }
         _events_log.append(event_record)
@@ -519,7 +518,7 @@ def _matches_pattern(pattern_str, event):
             return False
 
     if "account" in pattern:
-        if not _matches_field(event.get("Account", ACCOUNT_ID), pattern["account"]):
+        if not _matches_field(event.get("Account", get_account_id()), pattern["account"]):
             return False
 
     if "region" in pattern:
@@ -612,7 +611,7 @@ def _invoke_target(target, event, rule):
         "version": "0",
         "id": event["EventId"],
         "source": event["Source"],
-        "account": ACCOUNT_ID,
+        "account": get_account_id(),
         "time": event["Time"],
         "region": REGION,
         "resources": event.get("Resources", []),
@@ -663,7 +662,7 @@ def _apply_input_transformer(transformer, event):
         "source": event.get("Source", ""),
         "detail-type": event.get("DetailType", ""),
         "detail": full,
-        "account": ACCOUNT_ID,
+        "account": get_account_id(),
         "region": REGION,
         "time": event.get("Time", ""),
         "id": event.get("EventId", ""),
@@ -806,7 +805,7 @@ def _create_archive(data):
         return error_response_json("ResourceAlreadyExistsException", f"Archive {name} already exists", 400)
 
     source_arn = data.get("EventSourceArn", "")
-    arn = f"arn:aws:events:{REGION}:{ACCOUNT_ID}:archive/{name}"
+    arn = f"arn:aws:events:{REGION}:{get_account_id()}:archive/{name}"
     _archives[name] = {
         "ArchiveName": name,
         "ArchiveArn": arn,
@@ -873,7 +872,7 @@ def _put_permission(data):
         "Effect": "Allow",
         "Principal": data.get("Principal", "*"),
         "Action": data.get("Action", "events:PutEvents"),
-        "Resource": f"arn:aws:events:{REGION}:{ACCOUNT_ID}:event-bus/{bus_name}",
+        "Resource": f"arn:aws:events:{REGION}:{get_account_id()}:event-bus/{bus_name}",
     }
     condition = data.get("Condition")
     if condition:
@@ -913,7 +912,7 @@ def _create_connection(data):
         return error_response_json("ResourceAlreadyExistsException",
                                    f"Connection {name} already exists", 400)
 
-    arn = f"arn:aws:events:{REGION}:{ACCOUNT_ID}:connection/{name}"
+    arn = f"arn:aws:events:{REGION}:{get_account_id()}:connection/{name}"
     now = _now_ts()
     _connections[name] = {
         "Name": name,
@@ -1010,7 +1009,7 @@ def _create_api_destination(data):
         return error_response_json("ResourceAlreadyExistsException",
                                    f"ApiDestination {name} already exists", 400)
 
-    arn = f"arn:aws:events:{REGION}:{ACCOUNT_ID}:api-destination/{name}"
+    arn = f"arn:aws:events:{REGION}:{get_account_id()}:api-destination/{name}"
     now = _now_ts()
     _api_destinations[name] = {
         "Name": name,
@@ -1106,7 +1105,7 @@ def reset():
     _event_buses = {
         "default": {
             "Name": "default",
-            "Arn": f"arn:aws:events:{REGION}:{ACCOUNT_ID}:event-bus/default",
+            "Arn": f"arn:aws:events:{REGION}:{get_account_id()}:event-bus/default",
             "CreationTime": _now_ts(),
             "LastModifiedTime": _now_ts(),
         }

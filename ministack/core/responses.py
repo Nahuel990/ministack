@@ -4,11 +4,40 @@ Handles XML responses (S3, SQS, SNS, IAM, STS, CloudWatch) and
 JSON responses (DynamoDB, Lambda, SecretsManager, CloudWatch Logs).
 """
 
+import contextvars
 import hashlib
 import json
+import os
+import re
 import uuid
 from datetime import datetime, timezone
 from xml.etree.ElementTree import Element, SubElement, tostring
+
+# Request-scoped account ID for multi-tenancy.
+# Set per-request in app.py from the Authorization header.
+_request_account_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_request_account_id",
+    default=os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000"),
+)
+
+_12_DIGIT_RE = re.compile(r"^\d{12}$")
+
+
+def set_request_account_id(access_key_id: str) -> None:
+    """Set the account ID for the current request from the access key.
+    If the access key is a 12-digit number, use it as the account ID.
+    Otherwise fall back to the MINISTACK_ACCOUNT_ID env var or 000000000000."""
+    if access_key_id and _12_DIGIT_RE.match(access_key_id):
+        _request_account_id.set(access_key_id)
+    else:
+        _request_account_id.set(
+            os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
+        )
+
+
+def get_account_id() -> str:
+    """Return the account ID for the current request."""
+    return _request_account_id.get()
 
 
 def xml_response(root_tag: str, namespace: str, children: dict, status: int = 200) -> tuple:

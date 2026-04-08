@@ -15,7 +15,6 @@ from urllib.parse import parse_qs
 
 logger = logging.getLogger("cloudformation")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # In-memory state (shared across all submodules)
@@ -63,3 +62,4 @@ def reset():
 
 # Must be last — handlers imports from this module
 from .handlers import _ACTION_HANDLERS, _validate_template  # noqa: E402
+from ministack.core.responses import get_account_id

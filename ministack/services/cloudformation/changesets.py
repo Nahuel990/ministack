@@ -7,15 +7,15 @@ import copy
 import json
 import logging
 
-from ministack.core.responses import new_uuid, now_iso
+from ministack.core.responses import get_account_id, new_uuid, now_iso
 
 from .engine import (
     _evaluate_conditions, _parse_template, _resolve_parameters,
     _resolve_refs, _NO_VALUE,
 )
 from .stacks import _add_event, _deploy_stack_async, _diff_resources
-from .provisioners import ACCOUNT_ID, REGION
-from .helpers import _xml, _error, _p, _esc, _extract_members, CFN_NS
+from .provisioners import REGION
+from .helpers import _xml, _error, _p, _esc, _extract_members, _resolve_template, CFN_NS
 
 logger = logging.getLogger("cloudformation")
 
@@ -45,10 +45,9 @@ def _create_change_set(params):
     if not cs_name:
         return _error("ValidationError", "ChangeSetName is required")
 
-    template_body = _p(params, "TemplateBody")
-    if _p(params, "TemplateURL"):
-        return _error("ValidationError",
-                      "TemplateURL is not supported; use TemplateBody")
+    template_body, resolve_err = _resolve_template(params)
+    if resolve_err:
+        return resolve_err
 
     provided_params = _extract_members(params, "Parameters")
     tags = _extract_members(params, "Tags")
@@ -62,11 +61,11 @@ def _create_change_set(params):
             return _error("AlreadyExistsException",
                           f"Stack [{stack_name}] already exists")
         if not template_body:
-            return _error("ValidationError", "TemplateBody is required")
+            return _error("ValidationError", "TemplateBody or TemplateURL is required")
 
         # Create a placeholder stack in REVIEW_IN_PROGRESS
         stack_id = (
-            f"arn:aws:cloudformation:{REGION}:{ACCOUNT_ID}:"
+            f"arn:aws:cloudformation:{REGION}:{get_account_id()}:"
             f"stack/{stack_name}/{new_uuid()}"
         )
         stack = {
@@ -112,7 +111,7 @@ def _create_change_set(params):
     changes = _diff_resources(old_template, template)
 
     cs_id = (
-        f"arn:aws:cloudformation:{REGION}:{ACCOUNT_ID}:"
+        f"arn:aws:cloudformation:{REGION}:{get_account_id()}:"
         f"changeSet/{cs_name}/{new_uuid()}"
     )
 

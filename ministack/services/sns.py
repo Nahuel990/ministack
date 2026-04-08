@@ -24,12 +24,11 @@ _HOST = os.environ.get("MINISTACK_HOST", "localhost")
 _PORT = os.environ.get("GATEWAY_PORT", "4566")
 
 import ministack.services.lambda_svc as _lambda_svc
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 from ministack.services import sqs as _sqs
 
 logger = logging.getLogger("sns")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
@@ -102,7 +101,7 @@ def _create_topic(params):
     if not name:
         return _error("InvalidParameterException", "Name is required", 400)
 
-    arn = f"arn:aws:sns:{REGION}:{ACCOUNT_ID}:{name}"
+    arn = f"arn:aws:sns:{REGION}:{get_account_id()}:{name}"
     if arn not in _topics:
         default_policy = json.dumps({
             "Version": "2008-10-17",
@@ -113,7 +112,7 @@ def _create_topic(params):
                 "Principal": {"AWS": "*"},
                 "Action": ["SNS:Publish", "SNS:Subscribe", "SNS:Receive"],
                 "Resource": arn,
-                "Condition": {"StringEquals": {"AWS:SourceOwner": ACCOUNT_ID}},
+                "Condition": {"StringEquals": {"AWS:SourceOwner": get_account_id()}},
             }],
         })
         _topics[arn] = {
@@ -122,7 +121,7 @@ def _create_topic(params):
             "attributes": {
                 "TopicArn": arn,
                 "DisplayName": name,
-                "Owner": ACCOUNT_ID,
+                "Owner": get_account_id(),
                 "Policy": default_policy,
                 "SubscriptionsConfirmed": "0",
                 "SubscriptionsPending": "0",
@@ -238,14 +237,14 @@ def _subscribe(params):
         "endpoint": endpoint,
         "confirmed": not needs_confirmation,
         "topic_arn": topic_arn,
-        "owner": ACCOUNT_ID,
+        "owner": get_account_id(),
         "token": new_uuid() if needs_confirmation else None,
         "attributes": {
             "SubscriptionArn": sub_arn,
             "TopicArn": topic_arn,
             "Protocol": protocol,
             "Endpoint": endpoint,
-            "Owner": ACCOUNT_ID,
+            "Owner": get_account_id(),
             "ConfirmationWasAuthenticated": "true" if not needs_confirmation else "false",
             "PendingConfirmation": "true" if needs_confirmation else "false",
             "RawMessageDelivery": "false",
@@ -327,7 +326,7 @@ def _list_subscriptions(params):
         members += (
             "<member>"
             f"<SubscriptionArn>{sub['arn']}</SubscriptionArn>"
-            f"<Owner>{sub.get('owner', ACCOUNT_ID)}</Owner>"
+            f"<Owner>{sub.get('owner', get_account_id())}</Owner>"
             f"<TopicArn>{sub['topic_arn']}</TopicArn>"
             f"<Protocol>{sub['protocol']}</Protocol>"
             f"<Endpoint>{sub['endpoint']}</Endpoint>"
@@ -350,7 +349,7 @@ def _list_subscriptions_by_topic(params):
         members += (
             "<member>"
             f"<SubscriptionArn>{sub['arn']}</SubscriptionArn>"
-            f"<Owner>{sub.get('owner', ACCOUNT_ID)}</Owner>"
+            f"<Owner>{sub.get('owner', get_account_id())}</Owner>"
             f"<TopicArn>{topic_arn}</TopicArn>"
             f"<Protocol>{sub['protocol']}</Protocol>"
             f"<Endpoint>{sub['endpoint']}</Endpoint>"
@@ -720,7 +719,7 @@ def _create_platform_application(params):
     if not name or not platform:
         return _error("InvalidParameterException", "Name and Platform are required", 400)
 
-    arn = f"arn:aws:sns:{REGION}:{ACCOUNT_ID}:app/{platform}/{name}"
+    arn = f"arn:aws:sns:{REGION}:{get_account_id()}:app/{platform}/{name}"
     attrs = {}
     i = 1
     while _p(params, f"Attributes.entry.{i}.key"):
@@ -996,7 +995,7 @@ def _build_envelope(topic_arn: str, msg_id: str, message: str, subject: str,
         "SignatureVersion": "1",
         "Signature": "FAKE",
         "SigningCertURL": "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-fake.pem",
-        "UnsubscribeURL": f"http://{_HOST}:{_PORT}/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:{REGION}:{ACCOUNT_ID}:example",
+        "UnsubscribeURL": f"http://{_HOST}:{_PORT}/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:{REGION}:{get_account_id()}:example",
     }
 
     if message_attributes:

@@ -21,11 +21,10 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 
 logger = logging.getLogger("cloudwatch")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 TWO_WEEKS_SECONDS = 14 * 24 * 3600
 
@@ -677,7 +676,7 @@ def _put_metric_alarm(params, cbor_data, is_cbor, is_json=False):
         name = cbor_data.get("AlarmName", "")
         alarm = {
             "AlarmName": name,
-            "AlarmArn": f"arn:aws:cloudwatch:{REGION}:{ACCOUNT_ID}:alarm:{name}",
+            "AlarmArn": f"arn:aws:cloudwatch:{REGION}:{get_account_id()}:alarm:{name}",
             "AlarmDescription": cbor_data.get("AlarmDescription", ""),
             "MetricName": cbor_data.get("MetricName"),
             "Namespace": cbor_data.get("Namespace"),
@@ -731,7 +730,7 @@ def _put_metric_alarm(params, cbor_data, is_cbor, is_json=False):
             oi += 1
         alarm = {
             "AlarmName": name,
-            "AlarmArn": f"arn:aws:cloudwatch:{REGION}:{ACCOUNT_ID}:alarm:{name}",
+            "AlarmArn": f"arn:aws:cloudwatch:{REGION}:{get_account_id()}:alarm:{name}",
             "AlarmDescription": _p(params, "AlarmDescription"),
             "MetricName": _p(params, "MetricName"),
             "Namespace": _p(params, "Namespace"),
@@ -815,7 +814,7 @@ def _put_composite_alarm(params, cbor_data, is_cbor, is_json=False):
 
     _composite_alarms[name] = {
         "AlarmName": name,
-        "AlarmArn": f"arn:aws:cloudwatch:{REGION}:{ACCOUNT_ID}:alarm:{name}",
+        "AlarmArn": f"arn:aws:cloudwatch:{REGION}:{get_account_id()}:alarm:{name}",
         "AlarmDescription": desc,
         "AlarmRule": alarm_rule,
         "StateValue": "INSUFFICIENT_DATA",
@@ -1028,7 +1027,7 @@ def _delete_alarms(params, cbor_data, is_cbor, is_json=False):
     for n in names:
         _alarms.pop(n, None)
         _composite_alarms.pop(n, None)
-        _resource_tags.pop(f"arn:aws:cloudwatch:{REGION}:{ACCOUNT_ID}:alarm:{n}", None)
+        _resource_tags.pop(f"arn:aws:cloudwatch:{REGION}:{get_account_id()}:alarm:{n}", None)
 
     if is_cbor:
         return _cbor_ok({})
@@ -1224,7 +1223,7 @@ def _put_dashboard(params, cbor_data, is_cbor, is_json=False):
     _dashboards[name] = {
         "DashboardName": name,
         "DashboardBody": body,
-        "DashboardArn": f"arn:aws:cloudwatch::{ACCOUNT_ID}:dashboard/{name}",
+        "DashboardArn": f"arn:aws:cloudwatch::{get_account_id()}:dashboard/{name}",
         "LastModified": time.time(),
         "Size": len(body),
     }

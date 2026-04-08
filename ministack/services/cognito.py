@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("cognito")
 
@@ -125,7 +125,6 @@ def well_known_openid_configuration(pool_id: str, region: str | None = None):
     }
     return 200, {"Content-Type": "application/json"}, json.dumps(doc).encode()
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---------------------------------------------------------------------------
@@ -196,7 +195,7 @@ def _now_epoch() -> float:
 
 
 def _pool_arn(pool_id: str) -> str:
-    return f"arn:aws:cognito-idp:{REGION}:{ACCOUNT_ID}:userpool/{pool_id}"
+    return f"arn:aws:cognito-idp:{REGION}:{get_account_id()}:userpool/{pool_id}"
 
 
 def _pool_id() -> str:
@@ -1561,7 +1560,7 @@ def _describe_user_pool_domain(data):
     return json_response({
         "DomainDescription": {
             "UserPoolId": pid,
-            "AWSAccountId": ACCOUNT_ID,
+            "AWSAccountId": get_account_id(),
             "Domain": domain,
             "S3Bucket": "",
             "CloudFrontDistribution": f"{domain}.auth.{REGION}.amazoncognito.com",

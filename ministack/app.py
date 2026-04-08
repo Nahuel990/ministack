@@ -38,7 +38,8 @@ _S3_VHOST_RE = re.compile(
 _S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache|s3-control)\.")
 
 from ministack.core.persistence import PERSIST_STATE, load_state, save_all
-from ministack.core.router import detect_service, extract_account_id, extract_region
+from ministack.core.responses import set_request_account_id
+from ministack.core.router import detect_service, extract_access_key_id, extract_account_id, extract_region
 from ministack.services import (
     acm,
     alb,
@@ -250,6 +251,12 @@ async def app(scope, receive, send):
                 headers.pop("content-encoding", None)
 
     request_id = str(uuid.uuid4())
+
+    # Set per-request account ID from credentials (multi-tenancy support).
+    # If the access key is a 12-digit number, it becomes the account ID.
+    _access_key = extract_access_key_id(headers)
+    if _access_key:
+        set_request_account_id(_access_key)
 
     # Lambda layer content download: /_ministack/lambda-layers/{name}/{ver}/content
     if path.startswith("/_ministack/lambda-layers/") and method == "GET":

@@ -15,11 +15,10 @@ import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
 
-from ministack.core.responses import error_response_json, json_response, new_uuid, now_iso
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid, now_iso
 
 logger = logging.getLogger("acm")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 _certificates: dict = {}  # arn -> certificate dict
@@ -43,7 +42,7 @@ def _future_iso(seconds):
 
 
 def _cert_arn():
-    return f"arn:aws:acm:{REGION}:{ACCOUNT_ID}:certificate/{new_uuid()}"
+    return f"arn:aws:acm:{REGION}:{get_account_id()}:certificate/{new_uuid()}"
 
 
 def _validation_options(domain, method):

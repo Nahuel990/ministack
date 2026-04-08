@@ -36,11 +36,10 @@ import time
 from urllib.parse import parse_qs
 from urllib.parse import quote as _url_quote
 
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, json_response, new_uuid
 
 logger = logging.getLogger("iam")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---------------------------------------------------------------------------
@@ -117,7 +116,7 @@ def _create_user(p):
     path = _p(p, "Path") or "/"
     _users[name] = {
         "UserName": name,
-        "Arn": f"arn:aws:iam::{ACCOUNT_ID}:user{path}{name}" if path != "/" else f"arn:aws:iam::{ACCOUNT_ID}:user/{name}",
+        "Arn": f"arn:aws:iam::{get_account_id()}:user{path}{name}" if path != "/" else f"arn:aws:iam::{get_account_id()}:user/{name}",
         "UserId": _gen_id("AIDA"),
         "CreateDate": _now(),
         "Path": path,
@@ -135,8 +134,8 @@ def _get_user(p):
         return _xml(200, "GetUserResponse",
                     "<GetUserResult><User>"
                     f"<UserName>root</UserName>"
-                    f"<UserId>{ACCOUNT_ID}</UserId>"
-                    f"<Arn>arn:aws:iam::{ACCOUNT_ID}:root</Arn>"
+                    f"<UserId>{get_account_id()}</UserId>"
+                    f"<Arn>arn:aws:iam::{get_account_id()}:root</Arn>"
                     "<Path>/</Path>"
                     f"<CreateDate>{_now()}</CreateDate>"
                     "</User></GetUserResult>",
@@ -189,7 +188,7 @@ def _create_role(p):
     path = _p(p, "Path") or "/"
     _roles[name] = {
         "RoleName": name,
-        "Arn": f"arn:aws:iam::{ACCOUNT_ID}:role{path}{name}" if path != "/" else f"arn:aws:iam::{ACCOUNT_ID}:role/{name}",
+        "Arn": f"arn:aws:iam::{get_account_id()}:role{path}{name}" if path != "/" else f"arn:aws:iam::{get_account_id()}:role/{name}",
         "RoleId": _gen_id("AROA"),
         "CreateDate": _now(),
         "Path": path,
@@ -274,7 +273,7 @@ def _update_assume_role_policy(p):
 def _create_policy(p):
     name = _p(p, "PolicyName")
     path = _p(p, "Path") or "/"
-    arn = f"arn:aws:iam::{ACCOUNT_ID}:policy{path}{name}" if path != "/" else f"arn:aws:iam::{ACCOUNT_ID}:policy/{name}"
+    arn = f"arn:aws:iam::{get_account_id()}:policy{path}{name}" if path != "/" else f"arn:aws:iam::{get_account_id()}:policy/{name}"
     if arn in _policies:
         return _error(409, "EntityAlreadyExists",
                       f"A policy called {name} already exists.", ns="iam")
@@ -717,9 +716,9 @@ def _create_instance_profile(p):
                       f"Instance profile {name} already exists.", ns="iam")
     path = _p(p, "Path") or "/"
     ip_id = _gen_id("AIPA")
-    arn = (f"arn:aws:iam::{ACCOUNT_ID}:instance-profile{path}{name}"
+    arn = (f"arn:aws:iam::{get_account_id()}:instance-profile{path}{name}"
            if path != "/" else
-           f"arn:aws:iam::{ACCOUNT_ID}:instance-profile/{name}")
+           f"arn:aws:iam::{get_account_id()}:instance-profile/{name}")
     _instance_profiles[name] = {
         "InstanceProfileName": name,
         "InstanceProfileId": ip_id,
@@ -966,7 +965,7 @@ def _create_group(p):
     _groups[name] = {
         "GroupName": name,
         "GroupId": _gen_id("AGPA"),
-        "Arn": f"arn:aws:iam::{ACCOUNT_ID}:group{path}{name}" if path != "/" else f"arn:aws:iam::{ACCOUNT_ID}:group/{name}",
+        "Arn": f"arn:aws:iam::{get_account_id()}:group{path}{name}" if path != "/" else f"arn:aws:iam::{get_account_id()}:group/{name}",
         "Path": path,
         "CreateDate": _now(),
         "Users": [],
@@ -1153,7 +1152,7 @@ def _create_service_linked_role(p):
 
     _roles[role_name] = {
         "RoleName": role_name,
-        "Arn": f"arn:aws:iam::{ACCOUNT_ID}:role{path}{role_name}",
+        "Arn": f"arn:aws:iam::{get_account_id()}:role{path}{role_name}",
         "RoleId": _gen_id("AROA"),
         "CreateDate": _now(),
         "Path": path,
@@ -1232,7 +1231,7 @@ def _create_oidc_provider(p):
         idx += 1
 
     host = url.replace("https://", "").replace("http://", "").rstrip("/")
-    arn = f"arn:aws:iam::{ACCOUNT_ID}:oidc-provider/{host}"
+    arn = f"arn:aws:iam::{get_account_id()}:oidc-provider/{host}"
 
     if arn in _oidc_providers:
         return _error(409, "EntityAlreadyExists",
@@ -1334,18 +1333,35 @@ def _list_policy_tags(p):
 
 async def handle_sts_request(method, path, headers, body, query_params):
     params = dict(query_params)
-    if method == "POST" and body:
+    content_type = headers.get("content-type", "")
+    target = headers.get("x-amz-target", "")
+
+    # JSON protocol (newer SDKs): X-Amz-Target: AWSSecurityTokenServiceV20110615.ActionName
+    if "amz-json" in content_type and target.startswith("AWSSecurityTokenServiceV20110615."):
+        action_name = target.split(".")[-1]
+        params["Action"] = [action_name]
+        if body:
+            try:
+                json_body = json.loads(body)
+                for k, v in json_body.items():
+                    params[k] = [str(v)] if not isinstance(v, list) else v
+            except (json.JSONDecodeError, TypeError):
+                pass
+    elif method == "POST" and body:
         for k, v in parse_qs(body.decode("utf-8", errors="replace")).items():
             params[k] = v
 
     action = _p(params, "Action")
+    use_json = "amz-json" in content_type
 
     if action == "GetCallerIdentity":
+        if use_json:
+            return json_response({"Account": get_account_id(), "Arn": f"arn:aws:iam::{get_account_id()}:root", "UserId": get_account_id()})
         return _xml(200, "GetCallerIdentityResponse",
                     f"<GetCallerIdentityResult>"
-                    f"<Arn>arn:aws:iam::{ACCOUNT_ID}:root</Arn>"
-                    f"<UserId>{ACCOUNT_ID}</UserId>"
-                    f"<Account>{ACCOUNT_ID}</Account>"
+                    f"<Arn>arn:aws:iam::{get_account_id()}:root</Arn>"
+                    f"<UserId>{get_account_id()}</UserId>"
+                    f"<Account>{get_account_id()}</Account>"
                     f"</GetCallerIdentityResult>",
                     ns="sts")
 
@@ -1361,6 +1377,12 @@ async def handle_sts_request(method, path, headers, body, query_params):
         assumed_arn = role_arn.replace(":role/", ":assumed-role/", 1)
         if not assumed_arn.endswith(f"/{session_name}"):
             assumed_arn = f"{assumed_arn}/{session_name}"
+        if use_json:
+            return json_response({
+                "Credentials": {"AccessKeyId": access_key, "SecretAccessKey": secret_key, "SessionToken": session_token, "Expiration": time.time() + duration},
+                "AssumedRoleUser": {"AssumedRoleId": f"{role_id}:{session_name}", "Arn": assumed_arn},
+                "PackedPolicySize": 0,
+            })
         return _xml(200, "AssumeRoleResponse",
                     f"<AssumeRoleResult>"
                     f"<Credentials>"
@@ -1388,6 +1410,14 @@ async def handle_sts_request(method, path, headers, body, query_params):
         if not assumed_arn.endswith(f"/{session}"):
             assumed_arn = f"{assumed_arn}/{session}"
         role_id = "AROA" + new_uuid().replace("-", "")[:17].upper()
+        if use_json:
+            return json_response({
+                "Credentials": {"AccessKeyId": access_key, "SecretAccessKey": secret_key, "SessionToken": session_token, "Expiration": time.time() + duration},
+                "AssumedRoleUser": {"AssumedRoleId": f"{role_id}:{session}", "Arn": assumed_arn},
+                "SubjectFromWebIdentityToken": "test-subject",
+                "Audience": "sts.amazonaws.com",
+                "Provider": "accounts.google.com",
+            })
         return _xml(200, "AssumeRoleWithWebIdentityResponse",
                     f"<AssumeRoleWithWebIdentityResult>"
                     f"<Credentials>"
@@ -1412,6 +1442,10 @@ async def handle_sts_request(method, path, headers, body, query_params):
         access_key = _gen_session_access_key()
         secret_key = _gen_secret()
         session_token = _gen_session_token()
+        if use_json:
+            return json_response({
+                "Credentials": {"AccessKeyId": access_key, "SecretAccessKey": secret_key, "SessionToken": session_token, "Expiration": time.time() + duration},
+            })
         return _xml(200, "GetSessionTokenResponse",
                     f"<GetSessionTokenResult>"
                     f"<Credentials>"
@@ -1424,10 +1458,11 @@ async def handle_sts_request(method, path, headers, body, query_params):
                     ns="sts")
 
     if action == "GetAccessKeyInfo":
-        access_key = _p(params, "AccessKeyId") or ""
+        if use_json:
+            return json_response({"Account": get_account_id()})
         return _xml(200, "GetAccessKeyInfoResponse",
                     f"<GetAccessKeyInfoResult>"
-                    f"<Account>{ACCOUNT_ID}</Account>"
+                    f"<Account>{get_account_id()}</Account>"
                     f"</GetAccessKeyInfoResult>",
                     ns="sts")
 

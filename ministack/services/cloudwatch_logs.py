@@ -22,11 +22,10 @@ import json
 import logging
 import time
 
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("logs")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
@@ -72,7 +71,7 @@ if _restored:
 # ---------------------------------------------------------------------------
 
 def _make_group_arn(name):
-    return f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:{name}:*"
+    return f"arn:aws:logs:{REGION}:{get_account_id()}:log-group:{name}:*"
 
 
 def _resolve_group_by_arn(arn):
@@ -318,7 +317,7 @@ def _describe_log_streams(data):
             "creationTime": s["creationTime"],
             "storedBytes": sum(len(e.get("message", "")) for e in s["events"]),
             "uploadSequenceToken": s["uploadSequenceToken"],
-            "arn": f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:log-group:{group}:log-stream:{n}",
+            "arn": f"arn:aws:logs:{REGION}:{get_account_id()}:log-group:{group}:log-stream:{n}",
         }
         if s.get("firstEventTimestamp") is not None:
             entry["firstEventTimestamp"] = s["firstEventTimestamp"]
@@ -702,7 +701,7 @@ def _put_destination(data):
     name = data.get("destinationName")
     if not name:
         return error_response_json("InvalidParameterException", "destinationName is required.", 400)
-    dest_arn = f"arn:aws:logs:{REGION}:{ACCOUNT_ID}:destination:{name}"
+    dest_arn = f"arn:aws:logs:{REGION}:{get_account_id()}:destination:{name}"
     _destinations[name] = {
         "destinationName": name,
         "targetArn": data.get("targetArn", ""),

@@ -12,11 +12,10 @@ import os
 import time
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("ecr")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 _repositories: dict = {}
@@ -50,15 +49,15 @@ if _restored:
 
 
 def _repo_arn(name):
-    return f"arn:aws:ecr:{REGION}:{ACCOUNT_ID}:repository/{name}"
+    return f"arn:aws:ecr:{REGION}:{get_account_id()}:repository/{name}"
 
 
 def _registry_id():
-    return ACCOUNT_ID
+    return get_account_id()
 
 
 def _repo_uri(name):
-    return f"{ACCOUNT_ID}.dkr.ecr.{REGION}.amazonaws.com/{name}"
+    return f"{get_account_id()}.dkr.ecr.{REGION}.amazonaws.com/{name}"
 
 
 def _image_digest(manifest):
@@ -346,7 +345,7 @@ def _get_authorization_token(data):
         "authorizationData": [{
             "authorizationToken": token,
             "expiresAt": time.time() + 43200,
-            "proxyEndpoint": f"https://{ACCOUNT_ID}.dkr.ecr.{REGION}.amazonaws.com",
+            "proxyEndpoint": f"https://{get_account_id()}.dkr.ecr.{REGION}.amazonaws.com",
         }]
     })
 
@@ -516,7 +515,7 @@ def _get_download_url_for_layer(data):
                                    f"The repository with name '{name}' does not exist", 400)
     layer_digest = data.get("layerDigest", "")
     return json_response({
-        "downloadUrl": f"https://{ACCOUNT_ID}.dkr.ecr.{REGION}.amazonaws.com/v2/{name}/blobs/{layer_digest}",
+        "downloadUrl": f"https://{get_account_id()}.dkr.ecr.{REGION}.amazonaws.com/v2/{name}/blobs/{layer_digest}",
         "layerDigest": layer_digest,
     })
 

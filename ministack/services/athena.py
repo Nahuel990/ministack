@@ -22,11 +22,10 @@ import threading
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("athena")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 S3_DATA_DIR = os.environ.get("S3_DATA_DIR", "/tmp/ministack-data/s3")
 ATHENA_ENGINE = os.environ.get("ATHENA_ENGINE", "auto")  # "auto" | "duckdb" | "mock"
@@ -133,11 +132,11 @@ _DUCKDB_TYPE_MAP = {
 
 
 def _arn_workgroup(name):
-    return f"arn:aws:athena:{REGION}:{ACCOUNT_ID}:workgroup/{name}"
+    return f"arn:aws:athena:{REGION}:{get_account_id()}:workgroup/{name}"
 
 
 def _arn_datacatalog(name):
-    return f"arn:aws:athena:{REGION}:{ACCOUNT_ID}:datacatalog/{name}"
+    return f"arn:aws:athena:{REGION}:{get_account_id()}:datacatalog/{name}"
 
 
 async def handle_request(method, path, headers, body, query_params):

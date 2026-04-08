@@ -77,7 +77,7 @@ import time
 import urllib.error
 import urllib.request
 
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 
 
 def _now_unix():
@@ -88,7 +88,6 @@ def _now_unix():
 
 logger = logging.getLogger("apigateway_v1")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---- Module-level state ----
@@ -637,7 +636,7 @@ async def _invoke_lambda_proxy_v1(integration, api_id, stage_name, stage, resour
         "pathParameters": path_params or None,
         "stageVariables": stage.get("variables") or None,
         "requestContext": {
-            "accountId": ACCOUNT_ID,
+            "accountId": get_account_id(),
             "resourceId": resource["id"],
             "stage": stage_name,
             "requestId": request_id,

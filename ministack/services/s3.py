@@ -38,6 +38,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 from ministack.core.responses import (
+    get_account_id,
     md5_hash,
     sha256_hash,
     now_iso,
@@ -47,7 +48,6 @@ from ministack.core.responses import (
 
 logger = logging.getLogger("s3")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 S3_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 XML_DECL = b'<?xml version="1.0" encoding="UTF-8"?>'
 
@@ -1241,14 +1241,14 @@ def _fire_s3_event(
                         "bucket": {"name": bucket_name},
                         "object": {"key": key, "size": size, "etag": clean_etag, "sequencer": "0"},
                         "request-id": request_id,
-                        "requester": ACCOUNT_ID,
+                        "requester": get_account_id(),
                         "source-ip-address": "127.0.0.1",
                         "reason": "PutObject",
                     }),
                     "EventBusName": "default",
                     "Time": event_time,
                     "Resources": [f"arn:aws:s3:::{bucket_name}"],
-                    "Account": ACCOUNT_ID,
+                    "Account": get_account_id(),
                     "Region": os.environ.get("MINISTACK_REGION", "us-east-1"),
                 }
                 _eb._dispatch_event(eb_event)

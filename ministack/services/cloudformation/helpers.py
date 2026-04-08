@@ -2,9 +2,13 @@
 CloudFormation helpers — XML response formatting and parameter extraction utilities.
 """
 
+import logging
 from html import escape as _esc
+from urllib.parse import urlparse
 
 from ministack.core.responses import new_uuid
+
+logger = logging.getLogger("cloudformation")
 
 CFN_NS = "http://cloudformation.amazonaws.com/doc/2010-05-08/"
 
@@ -53,6 +57,43 @@ def _extract_members(params, prefix):
         result.append({"Key": key, "Value": value or ""})
         i += 1
     return result
+
+
+def _resolve_template(params):
+    """Resolve TemplateBody or TemplateURL to a template string.
+    If TemplateURL is provided, fetch the template from S3.
+    Returns (template_body, error_tuple) — error_tuple is None on success."""
+    template_body = _p(params, "TemplateBody")
+    template_url = _p(params, "TemplateURL")
+
+    if template_body:
+        return template_body, None
+
+    if template_url:
+        try:
+            from ministack.services import s3 as _s3
+            parsed = urlparse(template_url)
+            # Support formats:
+            #   http://localhost:4566/bucket/key
+            #   https://s3.amazonaws.com/bucket/key
+            #   https://bucket.s3.amazonaws.com/key
+            path = parsed.path.lstrip("/")
+            parts = path.split("/", 1)
+            if len(parts) < 2:
+                return None, _error("ValidationError",
+                                    f"Invalid TemplateURL: {template_url}")
+            bucket_name, key = parts[0], parts[1]
+            obj_data = _s3._get_object_data(bucket_name, key)
+            if obj_data is None:
+                return None, _error("ValidationError",
+                                    f"Template not found at {template_url}")
+            return obj_data.decode("utf-8"), None
+        except Exception as e:
+            logger.warning("Failed to fetch TemplateURL %s: %s", template_url, e)
+            return None, _error("ValidationError",
+                                f"Error fetching TemplateURL: {e}")
+
+    return None, None  # neither provided
 
 
 def _extract_stack_status_filters(params):

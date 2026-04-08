@@ -19,11 +19,10 @@ import secrets as stdlib_secrets
 import string
 import time
 
-from ministack.core.responses import error_response_json, json_response, new_uuid
+from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("secretsmanager")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
@@ -200,7 +199,7 @@ def _create_secret(data):
             f"The operation failed because the secret {name} already exists.", 400,
         )
 
-    arn = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT_ID}:secret:{name}-{new_uuid()[:6]}"
+    arn = f"arn:aws:secretsmanager:{REGION}:{get_account_id()}:secret:{name}-{new_uuid()[:6]}"
     vid = new_uuid()
     now = time.time()
 

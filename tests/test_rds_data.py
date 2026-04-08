@@ -193,3 +193,55 @@ def test_execute_invalid_json():
         body = json.loads(e.read())
     assert status == 400
     assert "Invalid JSON" in body.get("message", body.get("Message", ""))
+
+
+# ── Parameter conversion (unit tests) ─────────────────────
+
+def test_convert_parameters_all_types():
+    """_convert_parameters handles all RDS Data API value types."""
+    from ministack.services.rds_data import _convert_parameters
+
+    params = [
+        {"name": "s", "value": {"stringValue": "hello"}},
+        {"name": "n", "value": {"longValue": 42}},
+        {"name": "d", "value": {"doubleValue": 3.14}},
+        {"name": "b", "value": {"booleanValue": True}},
+        {"name": "null_val", "value": {"isNull": True}},
+        {"name": "blob", "value": {"blobValue": "AQID"}},  # base64 of b'\x01\x02\x03'
+    ]
+    result = _convert_parameters(params)
+    assert result["s"] == "hello"
+    assert result["n"] == 42
+    assert result["d"] == 3.14
+    assert result["b"] is True
+    assert result["null_val"] is None
+    assert result["blob"] == b"\x01\x02\x03"
+
+
+def test_convert_parameters_empty():
+    """_convert_parameters returns empty dict for empty/None input."""
+    from ministack.services.rds_data import _convert_parameters
+
+    assert _convert_parameters([]) == {}
+    assert _convert_parameters(None) == {}
+
+
+def test_convert_parameters_missing_name_skipped():
+    """Parameters without a name are skipped."""
+    from ministack.services.rds_data import _convert_parameters
+
+    params = [
+        {"value": {"stringValue": "no-name"}},
+        {"name": "valid", "value": {"stringValue": "ok"}},
+    ]
+    result = _convert_parameters(params)
+    assert len(result) == 1
+    assert result["valid"] == "ok"
+
+
+def test_convert_parameters_empty_value():
+    """Parameter with empty value object returns None."""
+    from ministack.services.rds_data import _convert_parameters
+
+    result = _convert_parameters([{"name": "x", "value": {}}])
+    assert result["x"] is None

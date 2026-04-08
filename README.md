@@ -90,6 +90,54 @@ curl http://localhost:4566/health
 
 ---
 
+## Multi-Tenancy
+
+MiniStack supports lightweight multi-tenancy without any configuration. If the `AWS_ACCESS_KEY_ID` is a **12-digit number**, it is used as the **Account ID** for all ARN generation. Non-numeric keys (like `test`) fall back to the `MINISTACK_ACCOUNT_ID` env var or `000000000000`.
+
+```bash
+# Team A — gets account 111111111111
+export AWS_ACCESS_KEY_ID=111111111111
+export AWS_SECRET_ACCESS_KEY=anything
+aws --endpoint-url=http://localhost:4566 sts get-caller-identity
+# → { "Account": "111111111111", ... }
+
+# Team B — gets account 222222222222
+export AWS_ACCESS_KEY_ID=222222222222
+export AWS_SECRET_ACCESS_KEY=anything
+aws --endpoint-url=http://localhost:4566 sts get-caller-identity
+# → { "Account": "222222222222", ... }
+```
+
+All ARNs (SQS queues, Lambda functions, IAM roles, etc.) reflect the caller's account ID. This allows multiple developers or CI pipelines to share a single MiniStack endpoint with isolated namespaces — no extra setup needed.
+
+| Access Key | Account ID Used |
+|---|---|
+| `111111111111` | `111111111111` |
+| `048408301323` | `048408301323` |
+| `test` | `000000000000` (default) |
+| `AKIAIOSFODNN7EXAMPLE` | `000000000000` (default) |
+
+**Terraform** — set `access_key` in your provider block:
+```hcl
+provider "aws" {
+  access_key = "048408301323"
+  secret_key = "test"
+  region     = "us-east-1"
+  endpoints { ... }
+}
+```
+
+**boto3** — pass `aws_access_key_id`:
+```python
+boto3.client("s3",
+    endpoint_url="http://localhost:4566",
+    aws_access_key_id="048408301323",
+    aws_secret_access_key="test",
+)
+```
+
+---
+
 ## Using with AWS CLI
 
 ```bash
@@ -519,6 +567,7 @@ ecs.stop_task(cluster="dev", task=task_arn)
 |----------|---------|-------------|
 | `GATEWAY_PORT` | `4566` | Port to listen on. Also accepts `EDGE_PORT` (LocalStack compatibility alias) |
 | `MINISTACK_HOST` | `localhost` | Hostname used in response URLs (SQS queues, SNS subscriptions, API Gateway endpoints, Lambda layers) |
+| `MINISTACK_ACCOUNT_ID` | `000000000000` | Default AWS account ID. Overridden per-request when `AWS_ACCESS_KEY_ID` is a 12-digit number (see [Multi-Tenancy](#multi-tenancy)) |
 | `MINISTACK_REGION` | `us-east-1` | AWS region reported in ARNs and service responses across all services |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `S3_PERSIST` | `0` | Set `1` to persist S3 objects to disk |

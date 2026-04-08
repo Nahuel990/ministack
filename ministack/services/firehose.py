@@ -25,6 +25,7 @@ import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
 from ministack.core.responses import (
+    get_account_id,
     error_response_json,
     json_response,
     new_uuid,
@@ -33,7 +34,6 @@ from ministack.core.responses import (
 
 logger = logging.getLogger("firehose")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ─── in-memory state ──────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ if _restored:
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _stream_arn(name: str) -> str:
-    return f"arn:aws:firehose:{REGION}:{ACCOUNT_ID}:deliverystream/{name}"
+    return f"arn:aws:firehose:{REGION}:{get_account_id()}:deliverystream/{name}"
 
 
 def _next_dest_id() -> str:
@@ -81,7 +81,7 @@ def _next_dest_id() -> str:
 def _not_found(name: str):
     return error_response_json(
         "ResourceNotFoundException",
-        f"Firehose {name} under account {ACCOUNT_ID} not found.",
+        f"Firehose {name} under account {get_account_id()} not found.",
         400,
     )
 

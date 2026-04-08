@@ -39,11 +39,10 @@ from email.policy import default as default_policy
 from urllib.parse import parse_qs, unquote
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 
 logger = logging.getLogger("ses")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 _identities: dict = {}

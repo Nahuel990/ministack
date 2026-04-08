@@ -7,6 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.54] — 2026-04-08
+
+### Added
+- **Multi-tenancy via dynamic Account ID** — When `AWS_ACCESS_KEY_ID` is a 12-digit number (e.g. `048408301323`), MiniStack uses it as the Account ID for all ARN generation. Non-numeric keys fall back to `MINISTACK_ACCOUNT_ID` env var or `000000000000`. Enables lightweight tenant isolation on shared endpoints without configuration changes.
+- **CloudFormation `TemplateURL` support** — `CreateStack`, `UpdateStack`, `CreateChangeSet`, and `GetTemplateSummary` now fetch templates from S3 when `TemplateURL` is provided instead of `TemplateBody`. This unblocks `cdk deploy` which publishes templates to S3 and passes a URL.
+- **CloudFormation `AWS::CDK::Metadata` support** — CDK metadata resources are now handled as no-ops instead of failing with "Unsupported resource type".
+- **STS JSON protocol support** — STS now handles `AwsJson1_1` protocol requests (used by newer AWS SDK versions and CDK CLI). Previously, STS only accepted Query/form-encoded requests, causing CDK to fail with "The security token included in the request is invalid" when it tried to AssumeRole using the JSON protocol.
+
+### Fixed
+- **Test coverage for v1.1.53 fixes** — added unit tests for `_convert_parameters` (RDS Data API parameter binding) and SSM epoch timestamp in CloudFormation provisioner.
+
+---
+
 ## [1.1.53] — 2026-04-08
 
 ### Added

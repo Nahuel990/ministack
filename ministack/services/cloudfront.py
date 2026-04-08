@@ -20,11 +20,10 @@ from defusedxml.ElementTree import fromstring
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import new_uuid
+from ministack.core.responses import get_account_id, new_uuid
 
 logger = logging.getLogger("cloudfront")
 
-ACCOUNT_ID = os.environ.get("MINISTACK_ACCOUNT_ID", "000000000000")
 NS = "http://cloudfront.amazonaws.com/doc/2020-05-31/"
 
 # ---------------------------------------------------------------------------
@@ -251,7 +250,7 @@ def _create_distribution(headers, body):
 
     dist = {
         "Id": dist_id,
-        "ARN": f"arn:aws:cloudfront::{ACCOUNT_ID}:distribution/{dist_id}",
+        "ARN": f"arn:aws:cloudfront::{get_account_id()}:distribution/{dist_id}",
         "Status": "Deployed",
         "DomainName": f"{dist_id}.cloudfront.net",
         "LastModifiedTime": now,
