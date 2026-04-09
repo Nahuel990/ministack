@@ -378,6 +378,52 @@ def test_eventbridge_archive(eb):
     assert not any(a["ArchiveName"] == archive_name for a in archives2["Archives"])
 
 
+def test_eventbridge_endpoints_and_partner_stubs(eb):
+    eb.create_endpoint(
+        Name="my-global-endpoint",
+        Description="stub",
+        RoleArn="arn:aws:iam::000000000000:role/r",
+        RoutingConfig={
+            "FailoverConfig": {
+                "Primary": {"HealthCheck": "arn:aws:route53:::healthcheck/primary"},
+                "Secondary": {"Route": "secondary-route"},
+            }
+        },
+        EventBuses=[
+            {"EventBusArn": "arn:aws:events:us-east-1:000000000000:event-bus/default"},
+            {"EventBusArn": "arn:aws:events:us-east-1:000000000000:event-bus/backup"},
+        ],
+    )
+    d = eb.describe_endpoint(Name="my-global-endpoint")
+    assert d["State"] == "ACTIVE"
+    assert "Arn" in d
+    lst = eb.list_endpoints()
+    assert any(e["Name"] == "my-global-endpoint" for e in lst["Endpoints"])
+    eb.update_endpoint(Name="my-global-endpoint", Description="updated")
+    eb.delete_endpoint(Name="my-global-endpoint")
+
+    eb.activate_event_source(Name="aws.partner/saas/foo")
+    eb.deactivate_event_source(Name="aws.partner/saas/foo")
+    src = eb.describe_event_source(Name="aws.partner/saas/foo")
+    assert src["State"] == "ENABLED"
+
+    r = eb.create_partner_event_source(Name="saas.src", Account="111111111111")
+    assert "EventSourceArn" in r
+    eb.describe_partner_event_source(Name="saas.src")
+    pl = eb.list_partner_event_sources(NamePrefix="saas")
+    assert len(pl["PartnerEventSources"]) >= 1
+    eb.delete_partner_event_source(Name="saas.src", Account="111111111111")
+
+    acc = eb.list_partner_event_source_accounts(EventSourceName="x")
+    assert acc["PartnerEventSourceAccounts"] == []
+
+    es = eb.list_event_sources()
+    assert es["EventSources"] == []
+
+    pe = eb.put_partner_events(Entries=[{"Source": "p", "DetailType": "t", "Detail": "{}"}])
+    assert pe["FailedEntryCount"] == 0
+
+
 def test_eventbridge_replay_lifecycle(eb):
     arch = f"replay-arch-{_uuid_mod.uuid4().hex[:8]}"
     eb.create_archive(
