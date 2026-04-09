@@ -7,6 +7,17 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.56] — 2026-04-09
+
+### Added
+- **Multi-tenancy state isolation** — resources with the same name in different accounts no longer collide. All service state dicts use `AccountScopedDict` which namespaces by account ID automatically. Previously, multi-tenancy (v1.1.54) only changed ARN generation — the underlying state was shared. Now IAM roles, S3 buckets, SQS queues, DynamoDB tables, and all other resources are fully isolated per account. Reported by community feedback.
+- **Graceful Docker container cleanup on shutdown** — RDS, ECS, and ElastiCache Docker containers are now stopped and removed when MiniStack shuts down, using Docker labels (`ministack=rds`, `ministack=ecs`, `ministack=elasticache`). Previously containers were orphaned unless `/_ministack/reset` was called explicitly.
+
+### Fixed
+- **PERSIST_STATE compatibility with AccountScopedDict** — state serialization and deserialization now handle the new scoped dict format correctly. All 37 service state files save and restore across restarts.
+
+---
+
 ## [1.1.55] — 2026-04-09
 
 ### Fixed

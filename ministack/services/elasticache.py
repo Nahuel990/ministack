@@ -27,7 +27,7 @@ import time
 from urllib.parse import parse_qs
 
 from ministack.core.persistence import load_state
-from ministack.core.responses import get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
 
 logger = logging.getLogger("elasticache")
 
@@ -36,15 +36,15 @@ REDIS_DEFAULT_HOST = os.environ.get("REDIS_HOST", "redis")
 REDIS_DEFAULT_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 BASE_PORT = int(os.environ.get("ELASTICACHE_BASE_PORT", "16379"))
 
-_clusters: dict = {}
-_replication_groups: dict = {}
-_subnet_groups: dict = {}
-_param_groups: dict = {}
-_param_group_params: dict = {}  # group_name -> {param_name -> param_dict}
-_tags: dict = {}  # arn -> [{"Key": ..., "Value": ...}, ...]
-_snapshots: dict = {}
-_users: dict = {}
-_user_groups: dict = {}
+_clusters = AccountScopedDict()
+_replication_groups = AccountScopedDict()
+_subnet_groups = AccountScopedDict()
+_param_groups = AccountScopedDict()
+_param_group_params = AccountScopedDict()  # group_name -> {param_name -> param_dict}
+_tags = AccountScopedDict()  # arn -> [{"Key": ..., "Value": ...}, ...]
+_snapshots = AccountScopedDict()
+_users = AccountScopedDict()
+_user_groups = AccountScopedDict()
 _events: list = []
 _port_counter = [BASE_PORT]
 

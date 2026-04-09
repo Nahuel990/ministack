@@ -19,7 +19,7 @@ import secrets as stdlib_secrets
 import string
 import time
 
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("secretsmanager")
 
@@ -27,8 +27,8 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_secrets: dict = {}
-_resource_policies: dict = {}
+_secrets = AccountScopedDict()
+_resource_policies = AccountScopedDict()
 # name -> {
 #   ARN, Name, Description, Tags: [{Key, Value}],
 #   CreatedDate, LastChangedDate, LastAccessedDate,

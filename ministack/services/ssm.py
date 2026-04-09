@@ -15,7 +15,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("ssm")
 
@@ -24,9 +24,9 @@ DEFAULT_PAGE_SIZE = 10
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_parameters: dict = {}
-_parameter_history: dict = {}
-_tags: dict = {}
+_parameters = AccountScopedDict()
+_parameter_history = AccountScopedDict()
+_tags = AccountScopedDict()
 
 
 # ── Persistence ────────────────────────────────────────────

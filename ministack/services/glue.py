@@ -19,7 +19,7 @@ import threading
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("glue")
 
@@ -27,20 +27,20 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 CRAWLER_RUN_SECONDS = int(os.environ.get("GLUE_CRAWLER_RUN_SECONDS", "5"))
 S3_DATA_DIR = os.environ.get("S3_DATA_DIR", "/tmp/ministack-data/s3")
 
-_databases: dict = {}
-_tables: dict = {}       # "db_name/table_name" -> table dict
-_partitions: dict = {}   # "db_name/table_name" -> [partition, ...]
-_partition_indexes: dict = {}  # "db_name/table_name" -> [index, ...]
-_connections: dict = {}
-_crawlers: dict = {}
-_jobs: dict = {}
-_job_runs: dict = {}     # job_name -> [run, ...]
-_tags: dict = {}         # arn -> {key: value, ...}
-_security_configs: dict = {}
-_classifiers: dict = {}
-_triggers: dict = {}     # trigger_name -> trigger dict
-_workflows: dict = {}    # workflow_name -> workflow dict
-_workflow_runs: dict = {} # workflow_name -> [run, ...]
+_databases = AccountScopedDict()
+_tables = AccountScopedDict()       # "db_name/table_name" -> table dict
+_partitions = AccountScopedDict()   # "db_name/table_name" -> [partition, ...]
+_partition_indexes = AccountScopedDict()  # "db_name/table_name" -> [index, ...]
+_connections = AccountScopedDict()
+_crawlers = AccountScopedDict()
+_jobs = AccountScopedDict()
+_job_runs = AccountScopedDict()     # job_name -> [run, ...]
+_tags = AccountScopedDict()         # arn -> {key: value, ...}
+_security_configs = AccountScopedDict()
+_classifiers = AccountScopedDict()
+_triggers = AccountScopedDict()     # trigger_name -> trigger dict
+_workflows = AccountScopedDict()    # workflow_name -> workflow dict
+_workflow_runs = AccountScopedDict() # workflow_name -> [run, ...]
 
 _ALL_STATE = {
     "databases": _databases,

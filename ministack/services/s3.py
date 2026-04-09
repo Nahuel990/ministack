@@ -38,6 +38,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 from ministack.core.responses import (
+    AccountScopedDict,
     get_account_id,
     md5_hash,
     sha256_hash,
@@ -54,29 +55,29 @@ XML_DECL = b'<?xml version="1.0" encoding="UTF-8"?>'
 # ---------------------------------------------------------------------------
 # In-memory storage
 # ---------------------------------------------------------------------------
-_buckets: dict = {}
+_buckets = AccountScopedDict()
 
-_bucket_policies: dict = {}
-_bucket_notifications: dict = {}
-_bucket_tags: dict = {}
-_bucket_versioning: dict = {}
-_bucket_encryption: dict = {}
-_bucket_lifecycle: dict = {}
-_bucket_cors: dict = {}
-_bucket_acl: dict = {}
-_bucket_websites: dict = {}
-_bucket_logging_config: dict = {}
-_bucket_accelerate_config: dict = {}
-_bucket_request_payment_config: dict = {}
+_bucket_policies = AccountScopedDict()
+_bucket_notifications = AccountScopedDict()
+_bucket_tags = AccountScopedDict()
+_bucket_versioning = AccountScopedDict()
+_bucket_encryption = AccountScopedDict()
+_bucket_lifecycle = AccountScopedDict()
+_bucket_cors = AccountScopedDict()
+_bucket_acl = AccountScopedDict()
+_bucket_websites = AccountScopedDict()
+_bucket_logging_config = AccountScopedDict()
+_bucket_accelerate_config = AccountScopedDict()
+_bucket_request_payment_config = AccountScopedDict()
 
-_object_tags: dict = {}
+_object_tags = AccountScopedDict()
 
-_bucket_object_lock: dict = {}
-_bucket_replication: dict = {}
-_object_retention: dict = {}
-_object_legal_hold: dict = {}
+_bucket_object_lock = AccountScopedDict()
+_bucket_replication = AccountScopedDict()
+_object_retention = AccountScopedDict()
+_object_legal_hold = AccountScopedDict()
 
-_multipart_uploads: dict = {}
+_multipart_uploads = AccountScopedDict()
 
 # ── Persistence (metadata only — object bodies are NOT persisted here) ────
 

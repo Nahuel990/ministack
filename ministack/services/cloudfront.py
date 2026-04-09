@@ -20,7 +20,7 @@ from defusedxml.ElementTree import fromstring
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
 
 logger = logging.getLogger("cloudfront")
 
@@ -39,9 +39,9 @@ _TAG_RE      = re.compile(r"^/2020-05-31/tagging/?$")
 # ---------------------------------------------------------------------------
 # In-memory state
 # ---------------------------------------------------------------------------
-_distributions: dict = {}   # Id -> distribution record
-_invalidations: dict = {}   # distribution_id -> [invalidation record, ...]
-_tags: dict = {}            # arn -> [{"Key": ..., "Value": ...}]
+_distributions = AccountScopedDict()   # Id -> distribution record
+_invalidations = AccountScopedDict()   # distribution_id -> [invalidation record, ...]
+_tags = AccountScopedDict()            # arn -> [{"Key": ..., "Value": ...}]
 
 
 def reset():

@@ -64,7 +64,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
 
 logger = logging.getLogger("ec2")
 
@@ -74,29 +74,29 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 # State
 # ---------------------------------------------------------------------------
 
-_instances: dict = {}
-_security_groups: dict = {}
-_key_pairs: dict = {}
-_vpcs: dict = {}
-_subnets: dict = {}
-_internet_gateways: dict = {}
-_addresses: dict = {}       # allocation_id -> address record
-_tags: dict = {}            # resource_id -> [{"Key": ..., "Value": ...}]
-_route_tables: dict = {}    # rtb_id -> route table record
-_network_interfaces: dict = {}  # eni_id -> ENI record
-_vpc_endpoints: dict = {}   # vpce_id -> endpoint record
-_volumes: dict = {}         # vol_id -> volume record
-_snapshots: dict = {}       # snap_id -> snapshot record
-_nat_gateways: dict = {}    # nat_id -> NAT gateway record
-_network_acls: dict = {}    # acl_id -> network ACL record
-_flow_logs: dict = {}       # flow_log_id -> flow log record
-_vpc_peering: dict = {}     # pcx_id -> peering connection record
-_dhcp_options: dict = {}    # dopt_id -> DHCP options record
-_egress_igws: dict = {}     # eigw_id -> egress-only internet gateway record
-_prefix_lists: dict = {}    # pl_id -> managed prefix list record
-_vpn_gateways: dict = {}    # vgw_id -> VPN gateway record
-_customer_gateways: dict = {}  # cgw_id -> customer gateway record
-_launch_templates: dict = {}   # lt_id -> launch template record (includes versions list)
+_instances = AccountScopedDict()
+_security_groups = AccountScopedDict()
+_key_pairs = AccountScopedDict()
+_vpcs = AccountScopedDict()
+_subnets = AccountScopedDict()
+_internet_gateways = AccountScopedDict()
+_addresses = AccountScopedDict()       # allocation_id -> address record
+_tags = AccountScopedDict()            # resource_id -> [{"Key": ..., "Value": ...}]
+_route_tables = AccountScopedDict()    # rtb_id -> route table record
+_network_interfaces = AccountScopedDict()  # eni_id -> ENI record
+_vpc_endpoints = AccountScopedDict()   # vpce_id -> endpoint record
+_volumes = AccountScopedDict()         # vol_id -> volume record
+_snapshots = AccountScopedDict()       # snap_id -> snapshot record
+_nat_gateways = AccountScopedDict()    # nat_id -> NAT gateway record
+_network_acls = AccountScopedDict()    # acl_id -> network ACL record
+_flow_logs = AccountScopedDict()       # flow_log_id -> flow log record
+_vpc_peering = AccountScopedDict()     # pcx_id -> peering connection record
+_dhcp_options = AccountScopedDict()    # dopt_id -> DHCP options record
+_egress_igws = AccountScopedDict()     # eigw_id -> egress-only internet gateway record
+_prefix_lists = AccountScopedDict()    # pl_id -> managed prefix list record
+_vpn_gateways = AccountScopedDict()    # vgw_id -> VPN gateway record
+_customer_gateways = AccountScopedDict()  # cgw_id -> customer gateway record
+_launch_templates = AccountScopedDict()   # lt_id -> launch template record (includes versions list)
 
 
 # ── Persistence ────────────────────────────────────────────

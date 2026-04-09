@@ -49,7 +49,7 @@ import time
 import urllib.error
 import urllib.request
 
-from ministack.core.responses import get_account_id, error_response_json, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, new_uuid
 
 _HOST = os.environ.get("MINISTACK_HOST", "localhost")
 _PORT = os.environ.get("GATEWAY_PORT", "4566")
@@ -59,13 +59,13 @@ logger = logging.getLogger("apigateway")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---- Module-level state ----
-_apis: dict = {}          # api_id -> api object
-_routes: dict = {}        # api_id -> {route_id -> route object}
-_integrations: dict = {}  # api_id -> {integration_id -> integration object}
-_stages: dict = {}        # api_id -> {stage_name -> stage object}
-_deployments: dict = {}   # api_id -> {deployment_id -> deployment object}
-_authorizers: dict = {}   # api_id -> {authorizer_id -> authorizer object}
-_api_tags: dict = {}      # resource_arn -> {key -> value}
+_apis = AccountScopedDict()          # api_id -> api object
+_routes = AccountScopedDict()        # api_id -> {route_id -> route object}
+_integrations = AccountScopedDict()  # api_id -> {integration_id -> integration object}
+_stages = AccountScopedDict()        # api_id -> {stage_name -> stage object}
+_deployments = AccountScopedDict()   # api_id -> {deployment_id -> deployment object}
+_authorizers = AccountScopedDict()   # api_id -> {authorizer_id -> authorizer object}
+_api_tags = AccountScopedDict()      # resource_arn -> {key -> value}
 
 
 # ---- Response helpers ----

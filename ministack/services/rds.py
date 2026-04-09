@@ -32,7 +32,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state
-from ministack.core.responses import get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
 
 logger = logging.getLogger("rds")
 
@@ -40,16 +40,16 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 BASE_PORT = int(os.environ.get("RDS_BASE_PORT", "15432"))
 RDS_TMPFS_SIZE = os.environ.get("RDS_TMPFS_SIZE", "256m")
 
-_instances: dict = {}
-_clusters: dict = {}
-_subnet_groups: dict = {}
-_param_groups: dict = {}
-_snapshots: dict = {}
-_db_cluster_param_groups: dict = {}
-_db_cluster_snapshots: dict = {}
-_option_groups: dict = {}
-_global_clusters: dict = {}
-_tags: dict = {}
+_instances = AccountScopedDict()
+_clusters = AccountScopedDict()
+_subnet_groups = AccountScopedDict()
+_param_groups = AccountScopedDict()
+_snapshots = AccountScopedDict()
+_db_cluster_param_groups = AccountScopedDict()
+_db_cluster_snapshots = AccountScopedDict()
+_option_groups = AccountScopedDict()
+_global_clusters = AccountScopedDict()
+_tags = AccountScopedDict()
 _port_counter = [BASE_PORT]
 
 _docker = None

@@ -9,10 +9,40 @@ import logging
 import os
 import tempfile
 
+from ministack.core.responses import AccountScopedDict
+
 logger = logging.getLogger("persistence")
 
 PERSIST_STATE = os.environ.get("PERSIST_STATE", "0") == "1"
 STATE_DIR = os.environ.get("STATE_DIR", "/tmp/ministack-state")
+
+
+def _json_default(obj):
+    """JSON encoder fallback for AccountScopedDict and tuple keys."""
+    if isinstance(obj, AccountScopedDict):
+        # Serialize all accounts' data with string keys
+        result = {}
+        for k, v in obj._data.items():
+            # k is (account_id, original_key) tuple
+            result[f"{k[0]}\x00{k[1]!r}"] = v
+        return {"__scoped__": True, "data": result}
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _json_object_hook(obj):
+    """JSON decoder hook to restore AccountScopedDict from serialized form."""
+    if obj.get("__scoped__"):
+        asd = AccountScopedDict()
+        for k, v in obj["data"].items():
+            account_id, key_repr = k.split("\x00", 1)
+            # Restore the original key (was serialized with repr())
+            try:
+                original_key = eval(key_repr)  # noqa: S307
+            except Exception:
+                original_key = key_repr
+            asd._data[(account_id, original_key)] = v
+        return asd
+    return obj
 
 
 def save_state(service: str, data: dict) -> None:
@@ -24,7 +54,7 @@ def save_state(service: str, data: dict) -> None:
         tmp = path + ".tmp"
         try:
             with open(tmp, "w") as f:
-                json.dump(data, f)
+                json.dump(data, f, default=_json_default)
             os.replace(tmp, path)
         except BaseException:
             # Clean up temp file on any failure to avoid stale partial writes
@@ -46,7 +76,7 @@ def load_state(service: str) -> dict | None:
         return None
     try:
         with open(path) as f:
-            data = json.load(f)
+            data = json.load(f, object_hook=_json_object_hook)
         logger.info("Persistence: loaded %s state from %s", service, path)
         return data
     except (json.JSONDecodeError, OSError) as e:

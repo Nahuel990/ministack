@@ -23,7 +23,7 @@ import threading
 import time
 from datetime import datetime
 
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("events")
 
@@ -58,14 +58,14 @@ _event_buses: dict = {
         "LastModifiedTime": _now_ts(),
     }
 }
-_rules: dict = {}
-_targets: dict = {}
+_rules = AccountScopedDict()
+_targets = AccountScopedDict()
 _events_log: list = []
-_tags: dict = {}
-_archives: dict = {}
-_event_bus_policies: dict = {}  # bus_name -> {Statement: [...]}
-_connections: dict = {}         # connection_name -> {...}
-_api_destinations: dict = {}    # destination_name -> {...}
+_tags = AccountScopedDict()
+_archives = AccountScopedDict()
+_event_bus_policies = AccountScopedDict()  # bus_name -> {Statement: [...]}
+_connections = AccountScopedDict()         # connection_name -> {...}
+_api_destinations = AccountScopedDict()    # destination_name -> {...}
 
 
 # ── Persistence ────────────────────────────────────────────

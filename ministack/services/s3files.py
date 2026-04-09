@@ -19,18 +19,18 @@ import os
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("s3files")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-_file_systems: dict = {}
-_mount_targets: dict = {}
-_access_points: dict = {}
-_policies: dict = {}
-_sync_configs: dict = {}
-_tags: dict = {}
+_file_systems = AccountScopedDict()
+_mount_targets = AccountScopedDict()
+_access_points = AccountScopedDict()
+_policies = AccountScopedDict()
+_sync_configs = AccountScopedDict()
+_tags = AccountScopedDict()
 
 
 def get_state():

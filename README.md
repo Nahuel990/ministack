@@ -108,7 +108,7 @@ aws --endpoint-url=http://localhost:4566 sts get-caller-identity
 # → { "Account": "222222222222", ... }
 ```
 
-All ARNs (SQS queues, Lambda functions, IAM roles, etc.) reflect the caller's account ID. This allows multiple developers or CI pipelines to share a single MiniStack endpoint with isolated namespaces — no extra setup needed.
+All ARNs and resource state (SQS queues, Lambda functions, IAM roles, S3 buckets, DynamoDB tables, etc.) are fully isolated per account. Resources with the same name in different accounts never collide. This allows multiple developers or CI pipelines to share a single MiniStack endpoint with complete tenant isolation — no extra setup needed.
 
 | Access Key | Account ID Used |
 |---|---|

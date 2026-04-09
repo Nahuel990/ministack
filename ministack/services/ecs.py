@@ -31,6 +31,7 @@ import time
 
 from ministack.core.persistence import load_state
 from ministack.core.responses import (
+    AccountScopedDict,
     get_account_id,
     error_response_json,
     json_response,
@@ -42,14 +43,14 @@ logger = logging.getLogger("ecs")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-_clusters: dict = {}
-_task_defs: dict = {}
-_task_def_latest: dict = {}
-_services: dict = {}
-_tasks: dict = {}
-_tags: dict = {}
-_account_settings: dict = {}
-_capacity_providers: dict = {}
+_clusters = AccountScopedDict()
+_task_defs = AccountScopedDict()
+_task_def_latest = AccountScopedDict()
+_services = AccountScopedDict()
+_tasks = AccountScopedDict()
+_tags = AccountScopedDict()
+_account_settings = AccountScopedDict()
+_capacity_providers = AccountScopedDict()
 
 _docker = None
 
@@ -1352,7 +1353,7 @@ def _delete_account_setting(data):
 # Attributes (PutAttributes / DeleteAttributes / ListAttributes)
 # ---------------------------------------------------------------------------
 
-_attributes: dict = {}
+_attributes = AccountScopedDict()
 
 def _put_attributes(data):
     attrs = data.get("attributes", [])

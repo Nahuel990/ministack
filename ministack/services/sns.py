@@ -24,7 +24,7 @@ _HOST = os.environ.get("MINISTACK_HOST", "localhost")
 _PORT = os.environ.get("GATEWAY_PORT", "4566")
 
 import ministack.services.lambda_svc as _lambda_svc
-from ministack.core.responses import get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
 from ministack.services import sqs as _sqs
 
 logger = logging.getLogger("sns")
@@ -33,10 +33,10 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_topics: dict = {}
-_sub_arn_to_topic: dict = {}
-_platform_applications: dict = {}
-_platform_endpoints: dict = {}
+_topics = AccountScopedDict()
+_sub_arn_to_topic = AccountScopedDict()
+_platform_applications = AccountScopedDict()
+_platform_endpoints = AccountScopedDict()
 
 
 # ── Persistence ────────────────────────────────────────────

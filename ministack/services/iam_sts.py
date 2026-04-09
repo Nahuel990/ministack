@@ -36,7 +36,7 @@ import time
 from urllib.parse import parse_qs
 from urllib.parse import quote as _url_quote
 
-from ministack.core.responses import get_account_id, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, json_response, new_uuid
 
 logger = logging.getLogger("iam")
 
@@ -47,15 +47,15 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 # ---------------------------------------------------------------------------
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_users: dict = {}
-_roles: dict = {}
-_policies: dict = {}
-_access_keys: dict = {}
-_instance_profiles: dict = {}
-_groups: dict = {}
-_user_inline_policies: dict = {}
-_oidc_providers: dict = {}
-_service_linked_role_deletion_tasks: dict = {}
+_users = AccountScopedDict()
+_roles = AccountScopedDict()
+_policies = AccountScopedDict()
+_access_keys = AccountScopedDict()
+_instance_profiles = AccountScopedDict()
+_groups = AccountScopedDict()
+_user_inline_policies = AccountScopedDict()
+_oidc_providers = AccountScopedDict()
+_service_linked_role_deletion_tasks = AccountScopedDict()
 
 
 # ── Persistence ────────────────────────────────────────────

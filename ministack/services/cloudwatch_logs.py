@@ -22,7 +22,7 @@ import json
 import logging
 import time
 
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("logs")
 
@@ -30,7 +30,7 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_log_groups: dict = {}
+_log_groups = AccountScopedDict()
 # group_name -> {
 #   arn, creationTime, retentionInDays (int|None), tags: {str: str},
 #   subscriptionFilters: {filterName: {filterName, logGroupName, filterPattern,
@@ -40,13 +40,13 @@ _log_groups: dict = {}
 #             firstEventTimestamp, lastEventTimestamp, lastIngestionTime}},
 # }
 
-_destinations: dict = {}
+_destinations = AccountScopedDict()
 # dest_name -> {destinationName, targetArn, roleArn, accessPolicy, arn, creationTime}
 
-_metric_filters: dict = {}
+_metric_filters = AccountScopedDict()
 # (log_group_name, filter_name) -> {filterName, logGroupName, filterPattern, metricTransformations, creationTime}
 
-_queries: dict = {}
+_queries = AccountScopedDict()
 # query_id -> {queryId, logGroupName, startTime, endTime, queryString, status}
 
 

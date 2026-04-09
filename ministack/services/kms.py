@@ -13,7 +13,7 @@ import logging
 import os
 import time
 
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("kms")
 
@@ -35,7 +35,7 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_keys: dict = {}
+_keys = AccountScopedDict()
 # key_id -> {
 #     KeyId, Arn, KeyState, KeyUsage, KeySpec, Description,
 #     CreationDate, Enabled, Origin,
@@ -43,7 +43,7 @@ _keys: dict = {}
 #     _public_key_der (bytes, RSA only),
 #     _symmetric_key (bytes, SYMMETRIC_DEFAULT only),
 # }
-_aliases: dict = {}  # alias_name -> key_id (e.g. "alias/my-key" -> "uuid")
+_aliases = AccountScopedDict()  # alias_name -> key_id (e.g. "alias/my-key" -> "uuid")
 
 
 # ── Persistence ────────────────────────────────────────────

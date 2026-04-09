@@ -12,16 +12,16 @@ import os
 import time
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("ecr")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-_repositories: dict = {}
-_images: dict = {}
-_lifecycle_policies: dict = {}
-_repo_policies: dict = {}
+_repositories = AccountScopedDict()
+_images = AccountScopedDict()
+_lifecycle_policies = AccountScopedDict()
+_repo_policies = AccountScopedDict()
 
 
 # ── Persistence ────────────────────────────────────────────

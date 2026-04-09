@@ -29,7 +29,7 @@ from defusedxml.ElementTree import fromstring
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import new_uuid
+from ministack.core.responses import AccountScopedDict, new_uuid
 
 logger = logging.getLogger("route53")
 
@@ -38,13 +38,13 @@ API_VERSION = "2013-04-01"
 
 # ─── in-memory state ──────────────────────────────────────────────────────────
 
-_zones: dict = {}           # zone_id -> zone dict
-_records: dict = {}         # zone_id -> list of record-set dicts
-_changes: dict = {}         # change_id -> change dict
-_health_checks: dict = {}   # hc_id -> health check dict
-_tags: dict = {}            # (resource_type, resource_id) -> {key: value}
-_caller_refs: dict = {}     # caller_reference -> zone_id (idempotency)
-_hc_caller_refs: dict = {}  # caller_reference -> hc_id
+_zones = AccountScopedDict()           # zone_id -> zone dict
+_records = AccountScopedDict()         # zone_id -> list of record-set dicts
+_changes = AccountScopedDict()         # change_id -> change dict
+_health_checks = AccountScopedDict()   # hc_id -> health check dict
+_tags = AccountScopedDict()            # (resource_type, resource_id) -> {key: value}
+_caller_refs = AccountScopedDict()     # caller_reference -> zone_id (idempotency)
+_hc_caller_refs = AccountScopedDict()  # caller_reference -> hc_id
 _lock = threading.Lock()
 
 

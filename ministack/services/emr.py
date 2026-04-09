@@ -23,7 +23,7 @@ import string
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("emr")
 
@@ -33,8 +33,8 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 # State
 # ---------------------------------------------------------------------------
 
-_clusters: dict = {}   # cluster_id -> cluster record
-_steps: dict = {}      # cluster_id -> [step records]
+_clusters = AccountScopedDict()   # cluster_id -> cluster record
+_steps = AccountScopedDict()      # cluster_id -> [step records]
 _block_public_access: dict = {
     "BlockPublicSecurityGroupRules": False,
     "PermittedPublicSecurityGroupRuleRanges": [],

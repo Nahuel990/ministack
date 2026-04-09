@@ -15,17 +15,17 @@ import os
 import logging
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid, now_iso
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, now_iso
 
 logger = logging.getLogger("wafv2")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-_web_acls: dict = {}       # id -> webacl
-_ip_sets: dict = {}        # id -> ipset
-_rule_groups: dict = {}    # id -> rulegroup
-_associations: dict = {}   # resource_arn -> webacl_arn
-_waf_tags: dict = {}       # resource_arn -> [tags]
+_web_acls = AccountScopedDict()       # id -> webacl
+_ip_sets = AccountScopedDict()        # id -> ipset
+_rule_groups = AccountScopedDict()    # id -> rulegroup
+_associations = AccountScopedDict()   # resource_arn -> webacl_arn
+_waf_tags = AccountScopedDict()       # resource_arn -> [tags]
 
 
 def get_state():

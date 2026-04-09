@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
 
 logger = logging.getLogger("cloudwatch")
 
@@ -29,11 +29,11 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 TWO_WEEKS_SECONDS = 14 * 24 * 3600
 
 _metrics: dict = defaultdict(list)
-_alarms: dict = {}
-_composite_alarms: dict = {}
+_alarms = AccountScopedDict()
+_composite_alarms = AccountScopedDict()
 _alarm_history: list = []
-_resource_tags: dict = {}
-_dashboards: dict = {}  # dashboard_name -> {DashboardName, DashboardBody, LastModified}
+_resource_tags = AccountScopedDict()
+_dashboards = AccountScopedDict()  # dashboard_name -> {DashboardName, DashboardBody, LastModified}
 
 
 # ── Persistence ────────────────────────────────────────────

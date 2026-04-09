@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 
 from ministack.core.persistence import PERSIST_STATE, load_state
 from ministack.core.responses import (
+    AccountScopedDict,
     get_account_id,
     error_response_json,
     json_response,
@@ -44,7 +45,7 @@ logger = logging.getLogger("states")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # SFN mock config — compatible with LocalStack's SFN_MOCK_CONFIG / LOCALSTACK_SFN_MOCK_CONFIG
-_sfn_mock_config: dict = {}
+_sfn_mock_config = AccountScopedDict()
 _sfn_mock_config_path = (
     os.environ.get("SFN_MOCK_CONFIG")
     or os.environ.get("LOCALSTACK_SFN_MOCK_CONFIG")
@@ -91,12 +92,12 @@ def _get_mock_response(sm_name: str, test_case: str, state_name: str, attempt: i
                 continue
     return None
 
-_state_machines: dict = {}
-_executions: dict = {}
-_task_tokens: dict = {}
-_tags: dict = {}
-_activities: dict = {}
-_activity_tasks: dict = {}
+_state_machines = AccountScopedDict()
+_executions = AccountScopedDict()
+_task_tokens = AccountScopedDict()
+_tags = AccountScopedDict()
+_activities = AccountScopedDict()
+_activity_tasks = AccountScopedDict()
 
 # ── Persistence ────────────────────────────────────────────
 

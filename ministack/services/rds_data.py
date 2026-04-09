@@ -10,7 +10,7 @@ import os
 import threading
 import uuid
 
-from ministack.core.responses import get_account_id, error_response_json, json_response
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response
 
 logger = logging.getLogger("rds-data")
 

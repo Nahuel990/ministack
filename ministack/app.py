@@ -625,8 +625,29 @@ async def _handle_lifespan(scope, receive, send):
                     "servicediscovery": servicediscovery.get_state,
                     "s3files": s3files.get_state,
                 })
+            _stop_docker_containers()
             await send({"type": "lifespan.shutdown.complete"})
             return
+
+
+def _stop_docker_containers():
+    """Stop all Docker containers managed by MiniStack (RDS, ECS, ElastiCache).
+    Uses container labels to find them — does not touch service state."""
+    try:
+        import docker
+        client = docker.from_env()
+    except Exception:
+        return
+    for label in ("ministack=rds", "ministack=ecs", "ministack=elasticache"):
+        try:
+            for c in client.containers.list(filters={"label": label}):
+                try:
+                    c.stop(timeout=5)
+                    c.remove(v=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 def _load_persisted_state():

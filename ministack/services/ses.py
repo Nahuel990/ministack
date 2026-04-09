@@ -39,16 +39,16 @@ from email.policy import default as default_policy
 from urllib.parse import parse_qs, unquote
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
 
 logger = logging.getLogger("ses")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-_identities: dict = {}
+_identities = AccountScopedDict()
 _sent_emails: list = []
-_templates: dict = {}
-_configuration_sets: dict = {}
+_templates = AccountScopedDict()
+_configuration_sets = AccountScopedDict()
 
 
 # ---------------------------------------------------------------------------

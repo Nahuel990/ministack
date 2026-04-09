@@ -22,7 +22,7 @@ import threading
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("athena")
 
@@ -41,7 +41,7 @@ def get_athena_engine():
     return engine
 
 
-_executions: dict = {}
+_executions = AccountScopedDict()
 _workgroups: dict = {
     "primary": {
         "Name": "primary",
@@ -53,7 +53,7 @@ _workgroups: dict = {
         },
     }
 }
-_named_queries: dict = {}
+_named_queries = AccountScopedDict()
 _data_catalogs: dict = {
     "AwsDataCatalog": {
         "Name": "AwsDataCatalog",
@@ -62,8 +62,8 @@ _data_catalogs: dict = {
         "Parameters": {},
     }
 }
-_prepared_statements: dict = {}  # "workgroup/name" -> statement dict
-_tags: dict = {}  # arn -> {key: value, ...}
+_prepared_statements = AccountScopedDict()  # "workgroup/name" -> statement dict
+_tags = AccountScopedDict()  # arn -> {key: value, ...}
 
 
 def get_state():

@@ -20,6 +20,7 @@ from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 
 from ministack.core.responses import (
+    AccountScopedDict,
     get_account_id,
     error_response_json,
     json_response,
@@ -33,10 +34,10 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_tables: dict = {}
-_tags: dict = {}
-_ttl_settings: dict = {}
-_pitr_settings: dict = {}
+_tables = AccountScopedDict()
+_tags = AccountScopedDict()
+_ttl_settings = AccountScopedDict()
+_pitr_settings = AccountScopedDict()
 _lock = threading.Lock()
 
 
@@ -64,7 +65,7 @@ if _restored:
 
 # DynamoDB Streams: table_name -> list of stream records
 # Each record follows the DynamoDB Streams event format consumed by Lambda ESMs.
-_stream_records: dict = {}
+_stream_records = AccountScopedDict()
 _stream_seq_counter = 0
 _stream_seq_lock = threading.Lock()
 

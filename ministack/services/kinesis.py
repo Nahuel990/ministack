@@ -21,7 +21,7 @@ import logging
 import threading
 import time
 
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 
 logger = logging.getLogger("kinesis")
 
@@ -31,9 +31,9 @@ ITERATOR_EXPIRY_SECONDS = 300
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_streams: dict = {}
-_shard_iterators: dict = {}
-_consumers: dict = {}
+_streams = AccountScopedDict()
+_shard_iterators = AccountScopedDict()
+_consumers = AccountScopedDict()
 _sequence_counter = 0
 _sequence_lock = threading.Lock()
 

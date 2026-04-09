@@ -40,6 +40,107 @@ def get_account_id() -> str:
     return _request_account_id.get()
 
 
+class AccountScopedDict:
+    """A dict-like container that namespaces keys by the current request's account ID.
+
+    Stores data as ``{account_id}\\x00{key}`` internally so that identical
+    resource names in different accounts never collide. All standard dict
+    operations (get, set, delete, iteration, ``in``, ``len``) are scoped to the
+    caller's account automatically via ``get_account_id()``.
+
+    This is a drop-in replacement for ``dict`` in service module-level state,
+    e.g. ``_roles = AccountScopedDict()`` instead of ``_roles: dict = {}``.
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self):
+        self._data: dict = {}
+
+    # -- internal helpers --------------------------------------------------
+
+    def _scoped(self, key):
+        return (get_account_id(), key)
+
+    def _unscope(self, scoped_key):
+        return scoped_key[1]
+
+    def _prefix(self):
+        return get_account_id()
+
+    def _is_mine(self, scoped_key):
+        return scoped_key[0] == get_account_id()
+
+    # -- dict interface ----------------------------------------------------
+
+    def __setitem__(self, key, value):
+        self._data[self._scoped(key)] = value
+
+    def __getitem__(self, key):
+        return self._data[self._scoped(key)]
+
+    def __delitem__(self, key):
+        del self._data[self._scoped(key)]
+
+    def __contains__(self, key):
+        return self._scoped(key) in self._data
+
+    def __len__(self):
+        return sum(1 for k in self._data if self._is_mine(k))
+
+    def __bool__(self):
+        return any(self._is_mine(k) for k in self._data)
+
+    def __iter__(self):
+        for k in self._data:
+            if self._is_mine(k):
+                yield self._unscope(k)
+
+    def get(self, key, default=None):
+        return self._data.get(self._scoped(key), default)
+
+    def pop(self, key, *args):
+        return self._data.pop(self._scoped(key), *args)
+
+    def setdefault(self, key, default=None):
+        return self._data.setdefault(self._scoped(key), default)
+
+    def keys(self):
+        return [self._unscope(k) for k in self._data if self._is_mine(k)]
+
+    def values(self):
+        return [v for k, v in self._data.items() if self._is_mine(k)]
+
+    def items(self):
+        return [(self._unscope(k), v) for k, v in self._data.items() if self._is_mine(k)]
+
+    def update(self, other):
+        if isinstance(other, AccountScopedDict):
+            self._data.update(other._data)
+        elif isinstance(other, dict):
+            for k, v in other.items():
+                self[k] = v
+
+    def clear(self):
+        """Clear ALL accounts' data (used by reset)."""
+        self._data.clear()
+
+    def to_dict(self):
+        """Convert ALL accounts' data to a plain dict for serialization.
+        Keys are stored as (account_id, original_key) tuples."""
+        return dict(self._data)
+
+    @classmethod
+    def from_dict(cls, data):
+        """Restore from a plain dict produced by to_dict()."""
+        obj = cls()
+        obj._data = dict(data)
+        return obj
+
+    def __repr__(self):
+        return f"AccountScopedDict({dict(self.items())})"
+
+
 def xml_response(root_tag: str, namespace: str, children: dict, status: int = 200) -> tuple:
     """Build an AWS-style XML response."""
     root = Element(root_tag, xmlns=namespace)

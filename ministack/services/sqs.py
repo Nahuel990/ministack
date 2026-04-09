@@ -35,14 +35,14 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import get_account_id, md5_hash, new_uuid, now_iso
+from ministack.core.responses import AccountScopedDict, get_account_id, md5_hash, new_uuid, now_iso
 
 logger = logging.getLogger("sqs")
 
 # ── Module-level state ──────────────────────────────────────
 
-_queues: dict = {}
-_queue_name_to_url: dict = {}
+_queues = AccountScopedDict()
+_queue_name_to_url = AccountScopedDict()
 _queues_lock = threading.Lock()
 
 

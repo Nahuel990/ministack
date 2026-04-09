@@ -43,7 +43,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
 from ministack.core.lambda_runtime import get_or_create_worker, invalidate_worker
 
 logger = logging.getLogger("lambda")
@@ -60,10 +60,10 @@ except ImportError:
     docker_lib = None
     _docker_available = False
 
-_functions: dict = {}  # function_name -> FunctionRecord
-_layers: dict = {}  # layer_name -> {"versions": [...], "next_version": int}
-_esms: dict = {}  # uuid -> esm dict
-_function_urls: dict = {}  # function_name -> FunctionUrlConfig dict
+_functions = AccountScopedDict()  # function_name -> FunctionRecord
+_layers = AccountScopedDict()  # layer_name -> {"versions": [...], "next_version": int}
+_esms = AccountScopedDict()  # uuid -> esm dict
+_function_urls = AccountScopedDict()  # function_name -> FunctionUrlConfig dict
 _poller_started = False
 _poller_lock = threading.Lock()
 
@@ -2455,9 +2455,9 @@ def _delete_esm(esm_id: str):
 # ---------------------------------------------------------------------------
 
 # Per-ESM Kinesis iterator tracking: esm_uuid -> {shard_id: position}
-_kinesis_positions: dict = {}
+_kinesis_positions = AccountScopedDict()
 # Per-ESM DynamoDB stream tracking: esm_uuid -> {shard_id: position}
-_dynamodb_stream_positions: dict = {}
+_dynamodb_stream_positions = AccountScopedDict()
 _dynamodb_stream_positions_lock = threading.Lock()
 
 

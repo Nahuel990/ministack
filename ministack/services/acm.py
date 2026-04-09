@@ -15,13 +15,13 @@ import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
 
-from ministack.core.responses import get_account_id, error_response_json, json_response, new_uuid, now_iso
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, now_iso
 
 logger = logging.getLogger("acm")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-_certificates: dict = {}  # arn -> certificate dict
+_certificates = AccountScopedDict()  # arn -> certificate dict
 
 
 def get_state():
