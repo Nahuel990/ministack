@@ -51,8 +51,10 @@ _aliases = AccountScopedDict()  # alias_name -> key_id (e.g. "alias/my-key" -> "
 def get_state():
     """Return JSON-serializable state. Symmetric keys are base64-encoded;
     RSA private keys are PEM-encoded if cryptography is available."""
-    serializable_keys = {}
-    for kid, rec in _keys.items():
+    from ministack.core.responses import AccountScopedDict
+    serializable_keys = AccountScopedDict()
+    # Iterate _data directly to capture ALL accounts
+    for scoped_key, rec in _keys._data.items():
         entry = {k: v for k, v in rec.items()
                  if k not in ("_private_key", "_public_key_der", "_symmetric_key")}
         if "_symmetric_key" in rec:
@@ -69,13 +71,15 @@ def get_state():
                 entry["_private_key_pem"] = base64.b64encode(pem).decode()
             except Exception:
                 pass
-        serializable_keys[kid] = entry
+        serializable_keys._data[scoped_key] = entry
     return {"keys": serializable_keys, "aliases": _aliases}
 
 
 def restore_state(data):
     if data:
-        for kid, entry in data.get("keys", {}).items():
+        from ministack.core.responses import AccountScopedDict
+        keys_data = data.get("keys", {})
+        def _restore_key_entry(entry):
             if "_symmetric_key_b64" in entry:
                 entry["_symmetric_key"] = base64.b64decode(entry.pop("_symmetric_key_b64"))
             if "_public_key_der_b64" in entry:
@@ -86,7 +90,14 @@ def restore_state(data):
                     entry["_private_key"] = serialization.load_pem_private_key(pem_bytes, password=None)
                 except Exception:
                     pass
-            _keys[kid] = entry
+        if isinstance(keys_data, AccountScopedDict):
+            for scoped_key, entry in keys_data._data.items():
+                _restore_key_entry(entry)
+                _keys._data[scoped_key] = entry
+        else:
+            for kid, entry in keys_data.items():
+                _restore_key_entry(entry)
+                _keys[kid] = entry
         _aliases.update(data.get("aliases", {}))
 
 

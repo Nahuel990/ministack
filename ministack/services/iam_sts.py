@@ -135,7 +135,7 @@ def _create_user(p):
         "CreateDate": _now(),
         "Path": path,
         "AttachedPolicies": [],
-        "Tags": [],
+        "Tags": _extract_tags(p),
     }
     return _xml(200, "CreateUserResponse",
                 f"<CreateUserResult><User>{_user_xml(name)}</User></CreateUserResult>",
@@ -211,7 +211,7 @@ def _create_role(p):
         "MaxSessionDuration": int(_p(p, "MaxSessionDuration") or 3600),
         "AttachedPolicies": [],
         "InlinePolicies": {},
-        "Tags": [],
+        "Tags": _extract_tags(p),
     }
     return _xml(200, "CreateRoleResponse",
                 f"<CreateRoleResult><Role>{_role_xml(name)}</Role></CreateRoleResult>",

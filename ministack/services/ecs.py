@@ -67,12 +67,14 @@ def get_state():
         "account_settings": copy.deepcopy(_account_settings),
         "capacity_providers": copy.deepcopy(_capacity_providers),
     }
-    # Save tasks but strip Docker container IDs
-    tasks = {}
-    for arn, task in _tasks.items():
+    # Save tasks but strip Docker container IDs.
+    # Iterate _data directly to capture ALL accounts.
+    from ministack.core.responses import AccountScopedDict
+    tasks = AccountScopedDict()
+    for scoped_key, task in _tasks._data.items():
         t = copy.deepcopy(task)
         t.pop("_docker_ids", None)
-        tasks[arn] = t
+        tasks._data[scoped_key] = t
     state["tasks"] = tasks
     return state
 
@@ -87,10 +89,18 @@ def restore_state(data):
     _tags.update(data.get("tags", {}))
     _account_settings.update(data.get("account_settings", {}))
     _capacity_providers.update(data.get("capacity_providers", {}))
-    for arn, task in data.get("tasks", {}).items():
-        task["_docker_ids"] = []
-        task["lastStatus"] = "STOPPED"
-        _tasks[arn] = task
+    from ministack.core.responses import AccountScopedDict
+    tasks_data = data.get("tasks", {})
+    if isinstance(tasks_data, AccountScopedDict):
+        for scoped_key, task in tasks_data._data.items():
+            task["_docker_ids"] = []
+            task["lastStatus"] = "STOPPED"
+            _tasks._data[scoped_key] = task
+    else:
+        for arn, task in tasks_data.items():
+            task["_docker_ids"] = []
+            task["lastStatus"] = "STOPPED"
+            _tasks[arn] = task
 
 
 _restored = load_state("ecs")

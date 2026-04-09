@@ -72,15 +72,17 @@ _poller_lock = threading.Lock()
 
 def get_state():
     """Return JSON-serializable state. code_zip bytes are base64-encoded."""
-    funcs = {}
-    for name, func in _functions.items():
+    from ministack.core.responses import AccountScopedDict
+    funcs = AccountScopedDict()
+    # Iterate _data directly to capture ALL accounts, not just current request context
+    for scoped_key, func in _functions._data.items():
         f = copy.deepcopy(func)
         if f.get("code_zip") and isinstance(f["code_zip"], bytes):
             f["code_zip"] = base64.b64encode(f["code_zip"]).decode()
         for ver in f.get("versions", {}).values():
             if ver.get("code_zip") and isinstance(ver["code_zip"], bytes):
                 ver["code_zip"] = base64.b64encode(ver["code_zip"]).decode()
-        funcs[name] = f
+        funcs._data[scoped_key] = f
     return {
         "functions": funcs,
         "layers": copy.deepcopy(_layers),
@@ -91,13 +93,24 @@ def get_state():
 
 def restore_state(data):
     if data:
-        for name, func in data.get("functions", {}).items():
-            if func.get("code_zip") and isinstance(func["code_zip"], str):
-                func["code_zip"] = base64.b64decode(func["code_zip"])
-            for ver in func.get("versions", {}).values():
-                if ver.get("code_zip") and isinstance(ver["code_zip"], str):
-                    ver["code_zip"] = base64.b64decode(ver["code_zip"])
-            _functions[name] = func
+        from ministack.core.responses import AccountScopedDict
+        funcs = data.get("functions", {})
+        if isinstance(funcs, AccountScopedDict):
+            for scoped_key, func in funcs._data.items():
+                if func.get("code_zip") and isinstance(func["code_zip"], str):
+                    func["code_zip"] = base64.b64decode(func["code_zip"])
+                for ver in func.get("versions", {}).values():
+                    if ver.get("code_zip") and isinstance(ver["code_zip"], str):
+                        ver["code_zip"] = base64.b64decode(ver["code_zip"])
+                _functions._data[scoped_key] = func
+        else:
+            for name, func in funcs.items():
+                if func.get("code_zip") and isinstance(func["code_zip"], str):
+                    func["code_zip"] = base64.b64decode(func["code_zip"])
+                for ver in func.get("versions", {}).values():
+                    if ver.get("code_zip") and isinstance(ver["code_zip"], str):
+                        ver["code_zip"] = base64.b64decode(ver["code_zip"])
+                _functions[name] = func
         _layers.update(data.get("layers", {}))
         _esms.update(data.get("esms", {}))
         _function_urls.update(data.get("function_urls", {}))

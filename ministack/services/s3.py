@@ -82,11 +82,12 @@ _multipart_uploads = AccountScopedDict()
 # ── Persistence (metadata only — object bodies are NOT persisted here) ────
 
 def get_state():
-    # Persist bucket metadata without object bodies
-    buckets_meta = {}
-    for name, bkt in _buckets.items():
+    # Persist bucket metadata without object bodies.
+    # Use _data directly to capture ALL accounts, not just the current one.
+    buckets_meta = AccountScopedDict()
+    for scoped_key, bkt in _buckets._data.items():
         meta = {k: v for k, v in bkt.items() if k != "objects"}
-        buckets_meta[name] = meta
+        buckets_meta._data[scoped_key] = meta
     return {
         "buckets_meta": copy.deepcopy(buckets_meta),
         "bucket_versioning": copy.deepcopy(_bucket_versioning),
@@ -105,9 +106,17 @@ def get_state():
 
 def restore_state(data):
     if data:
-        for name, meta in data.get("buckets_meta", {}).items():
-            if name not in _buckets:
-                _buckets[name] = {**meta, "objects": {}}
+        bm = data.get("buckets_meta", {})
+        if isinstance(bm, AccountScopedDict):
+            # Restore all accounts' buckets directly via _data
+            for scoped_key, meta in bm._data.items():
+                if scoped_key not in _buckets._data:
+                    _buckets._data[scoped_key] = {**meta, "objects": {}}
+        else:
+            # Legacy plain-dict format (pre-multi-tenancy)
+            for name, meta in bm.items():
+                if name not in _buckets:
+                    _buckets[name] = {**meta, "objects": {}}
         _bucket_versioning.update(data.get("bucket_versioning", {}))
         _bucket_notifications.update(data.get("bucket_notifications", {}))
         _bucket_tags.update(data.get("bucket_tags", {}))
@@ -2740,7 +2749,8 @@ def _list_parts(bucket_name: str, key: str, query_params: dict):
 
 def _persist_object(bucket: str, key: str, obj):
     try:
-        fpath = os.path.realpath(os.path.join(DATA_DIR, bucket, key))
+        account_id = get_account_id()
+        fpath = os.path.realpath(os.path.join(DATA_DIR, account_id, bucket, key))
         if not fpath.startswith(os.path.realpath(DATA_DIR)):
             logger.warning("S3 persist: path traversal blocked for %s/%s", bucket, key)
             return
@@ -2768,48 +2778,75 @@ def _load_persisted_data():
     if not PERSIST or not os.path.isdir(DATA_DIR):
         return
     try:
-        for bucket_name in os.listdir(DATA_DIR):
-            bucket_path = os.path.join(DATA_DIR, bucket_name)
-            if not os.path.isdir(bucket_path):
+        # Support both layouts:
+        #   New: DATA_DIR/<account_id>/<bucket>/<key>
+        #   Legacy: DATA_DIR/<bucket>/<key>
+        for entry in os.listdir(DATA_DIR):
+            entry_path = os.path.join(DATA_DIR, entry)
+            if not os.path.isdir(entry_path):
                 continue
-            if bucket_name not in _buckets:
-                _buckets[bucket_name] = {
-                    "created": now_iso(),
-                    "objects": {},
-                    "region": None,
-                }
-            bucket = _buckets[bucket_name]
-            for dirpath, _dirnames, filenames in os.walk(bucket_path):
-                for fname in filenames:
-                    if fname.endswith(".meta.json"):
-                        continue
-                    abs_path = os.path.join(dirpath, fname)
-                    key = os.path.relpath(abs_path, bucket_path)
-                    meta_path = abs_path + ".meta.json"
-                    with open(abs_path, "rb") as f:
-                        data = f.read()
-                    meta = {}
-                    if os.path.exists(meta_path):
-                        try:
-                            with open(meta_path) as mf:
-                                meta = json.load(mf)
-                        except Exception:
-                            pass
-                    bucket["objects"][key] = {
-                        "body": data,
-                        "content_type": meta.get(
-                            "content_type", "application/octet-stream"
-                        ),
-                        "content_encoding": meta.get("content_encoding"),
-                        "etag": meta.get("etag") or f'"{md5_hash(data)}"',
-                        "last_modified": meta.get("last_modified") or now_iso(),
-                        "size": len(data),
-                        "metadata": meta.get("metadata", {}),
-                        "preserved_headers": meta.get("preserved_headers", {}),
-                    }
+            # Detect if this entry is an account ID directory (12-digit or has bucket subdirs)
+            if entry.isdigit() and len(entry) == 12:
+                # New layout: entry is an account ID
+                _load_persisted_account(entry, entry_path)
+            else:
+                # Legacy layout: entry is a bucket name under default account
+                _load_persisted_bucket("000000000000", entry, entry_path)
         logger.info("Loaded persisted S3 data from %s", DATA_DIR)
     except Exception as e:
         logger.warning("Failed to load persisted S3 data: %s", e)
+
+
+def _load_persisted_account(account_id, account_path):
+    """Load all buckets for a given account from disk."""
+    for bucket_name in os.listdir(account_path):
+        bucket_path = os.path.join(account_path, bucket_name)
+        if os.path.isdir(bucket_path):
+            _load_persisted_bucket(account_id, bucket_name, bucket_path)
+
+
+def _load_persisted_bucket(account_id, bucket_name, bucket_path):
+    """Load a single bucket's objects from disk into the correct account scope."""
+    # Skip empty directories (may be leftover from layout migration)
+    has_files = any(
+        not f.endswith(".meta.json") for _, _, files in os.walk(bucket_path) for f in files
+    )
+    if not has_files and not os.listdir(bucket_path):
+        return
+    scoped_key = (account_id, bucket_name)
+    if scoped_key not in _buckets._data:
+        _buckets._data[scoped_key] = {
+            "created": now_iso(),
+            "objects": {},
+            "region": None,
+        }
+    bucket = _buckets._data[scoped_key]
+    for dirpath, _dirnames, filenames in os.walk(bucket_path):
+        for fname in filenames:
+            if fname.endswith(".meta.json"):
+                continue
+            abs_path = os.path.join(dirpath, fname)
+            key = os.path.relpath(abs_path, bucket_path)
+            meta_path = abs_path + ".meta.json"
+            with open(abs_path, "rb") as f:
+                data = f.read()
+            meta = {}
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path) as mf:
+                        meta = json.load(mf)
+                except Exception:
+                    pass
+            bucket["objects"][key] = {
+                "body": data,
+                "content_type": meta.get("content_type", "application/octet-stream"),
+                "content_encoding": meta.get("content_encoding"),
+                "etag": meta.get("etag") or f'"{md5_hash(data)}"',
+                "last_modified": meta.get("last_modified") or now_iso(),
+                "size": len(data),
+                "metadata": meta.get("metadata", {}),
+                "preserved_headers": meta.get("preserved_headers", {}),
+            }
 
 
 _load_persisted_data()
