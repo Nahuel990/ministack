@@ -2313,11 +2313,17 @@ def _api_name_to_sfn_key(name):
 
 
 def _convert_keys_to_sfn_convention(obj):
-    """Recursively convert dict keys from botocore naming to SFN/Java SDK V2 naming."""
+    """Recursively convert dict keys from botocore naming to SFN/Java SDK V2 naming.
+
+    Also converts datetime objects to epoch seconds (AWS SFN convention).
+    """
+    import datetime
     if isinstance(obj, dict):
         return {_api_name_to_sfn_key(k): _convert_keys_to_sfn_convention(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_convert_keys_to_sfn_convention(item) for item in obj]
+    if isinstance(obj, datetime.datetime):
+        return obj.timestamp()
     return obj
 
 
