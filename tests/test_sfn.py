@@ -547,14 +547,15 @@ def test_sfn_aws_sdk_rds_create_and_describe_cluster(sfn, sfn_sync):
     assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
     output = json.loads(resp["output"])
 
-    # Verify create result contains the cluster
-    create_cluster = output["createResult"]["DBCluster"]
-    assert create_cluster["DBClusterIdentifier"] == cluster_id
+    # Verify create result contains the cluster (SFN SDK convention keys)
+    create_cluster = output["createResult"]["DbCluster"]
+    assert create_cluster["DbClusterIdentifier"] == cluster_id
     assert create_cluster["Engine"] == "aurora-postgresql"
 
-    # Verify describe result
-    describe_clusters = output["describeResult"]["DBClusters"]
-    assert "DBCluster" in describe_clusters
+    # Verify describe result returns a list
+    describe_clusters = output["describeResult"]["DbClusters"]
+    assert isinstance(describe_clusters, list)
+    assert len(describe_clusters) >= 1
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
@@ -602,8 +603,8 @@ def test_sfn_aws_sdk_rds_create_and_describe_instance(sfn, sfn_sync):
     assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
     output = json.loads(resp["output"])
 
-    create_inst = output["createResult"]["DBInstance"]
-    assert create_inst["DBInstanceIdentifier"] == instance_id
+    create_inst = output["createResult"]["DbInstance"]
+    assert create_inst["DbInstanceIdentifier"] == instance_id
     assert create_inst["Engine"] == "postgres"
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
@@ -649,7 +650,7 @@ def test_sfn_aws_sdk_rds_modify_cluster(sfn, sfn_sync, rds):
     resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
     assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
     output = json.loads(resp["output"])
-    assert output["modifyResult"]["DBCluster"]["BackupRetentionPeriod"] == "7"
+    assert output["modifyResult"]["DbCluster"]["BackupRetentionPeriod"] == 7
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
