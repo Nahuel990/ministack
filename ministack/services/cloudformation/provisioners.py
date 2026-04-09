@@ -351,14 +351,15 @@ def _ddb_delete(physical_id, props):
 
 # --- Lambda Function ---
 
-def _zip_inline(source: str | None, handler: str) -> bytes | None:
+def _zip_inline(source: str | None, handler: str, runtime: str = "python3.9") -> bytes | None:
     """Wrap inline ZipFile source code into a real zip archive."""
     if not source:
         return None
     module = handler.split(".")[0] if handler and "." in handler else "index"
+    ext = ".js" if runtime.startswith("nodejs") else ".py"
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(f"{module}.py", source)
+        zf.writestr(f"{module}{ext}", source)
     return buf.getvalue()
 
 
@@ -398,7 +399,7 @@ def _lambda_create(logical_id, props, stack_name):
             "TracingConfig": props.get("TracingConfig", {"Mode": "PassThrough"}),
             "RevisionId": new_uuid(),
         },
-        "code_zip": _zip_inline(code.get("ZipFile"), handler),
+        "code_zip": _zip_inline(code.get("ZipFile"), handler, runtime),
         "code_s3_bucket": code.get("S3Bucket"),
         "code_s3_key": code.get("S3Key"),
         "versions": {},

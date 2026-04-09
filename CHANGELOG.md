@@ -17,6 +17,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **CloudFormation `AWS::ElasticLoadBalancingV2::LoadBalancer` and `::Listener` provisioners** — create/delete with full ALB lifecycle, including default rules, tag propagation, and cascading cleanup. `Fn::GetAtt` for `Arn`, `DNSName`, `LoadBalancerFullName`, `CanonicalHostedZoneID`. Contributed by @aldokimi (#217).
 
 ### Fixed
+- **EventBridge ARN-as-bus-name in PutEvents** — events published with a full ARN as `EventBusName` (e.g. `arn:aws:events:us-east-1:000000000000:event-bus/my-bus`) were silently dropped because the bus name comparison against rules failed. `PutEvents` now normalizes ARN-style values to the plain bus name before dispatch. Contributed by @ctnnguyen (#208).
+- **CloudFormation EventBridge rule composite key** — `_eb_rule_create` and `_eb_rule_delete` used reversed key order (`name|bus` instead of `bus|name`), making CFN-provisioned rules invisible to the EventBridge API (`DescribeRule`, `ListTargetsByRule`) and event dispatch. Now uses `_eb._rule_key()` for consistent key construction. Contributed by @ctnnguyen (#208).
+- **CloudFormation EventBridge target storage** — CFN rule provisioner cherry-picked only `Id`, `Arn`, `RoleArn`, `Input`, `InputPath` from targets, dropping `InputTransformer`, `SqsParameters`, `EcsParameters`, and other properties. Now stores the full target dict. Contributed by @ctnnguyen (#208).
 - **Step Functions aws-sdk action casing** — SFN ARNs use camelCase (e.g. `createDBSubnetGroup`) but query-protocol and JSON-protocol services expect PascalCase (`CreateDBSubnetGroup`). Both dispatch paths now capitalize the first letter. Contributed by @jayjanssen (#204, #215).
 - **RDS `_parse_member_list` botocore format** — list parameters dispatched via Step Functions aws-sdk integrations use `Prefix.MemberName.N` format instead of `Prefix.member.N`. The parser now handles both formats.
 

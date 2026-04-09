@@ -1205,3 +1205,36 @@ def test_cfn_ssm_parameter_timestamp_is_epoch(cfn, ssm):
     finally:
         cfn.delete_stack(StackName="cfn-ssm-epoch")
         _wait_stack(cfn, "cfn-ssm-epoch")
+
+
+def test_cfn_lambda_nodejs_inline_zip(cfn, lam):
+    """CFN inline ZipFile with Node.js runtime should write index.js, not index.py."""
+    template = json.dumps({
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "Fn": {
+                "Type": "AWS::Lambda::Function",
+                "Properties": {
+                    "FunctionName": "cfn-nodejs-inline",
+                    "Runtime": "nodejs20.x",
+                    "Handler": "index.handler",
+                    "Role": "arn:aws:iam::000000000000:role/r",
+                    "Code": {
+                        "ZipFile": 'exports.handler = async () => { return "hello"; };',
+                    },
+                },
+            },
+        },
+    })
+    cfn.create_stack(StackName="cfn-nodejs-inline", TemplateBody=template)
+    stack = _wait_stack(cfn, "cfn-nodejs-inline")
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    resp = lam.invoke(FunctionName="cfn-nodejs-inline",
+                      Payload=b'{}')
+    assert resp["StatusCode"] == 200
+    payload = resp["Payload"].read().decode()
+    assert "hello" in payload
+
+    cfn.delete_stack(StackName="cfn-nodejs-inline")
+    _wait_stack(cfn, "cfn-nodejs-inline")
