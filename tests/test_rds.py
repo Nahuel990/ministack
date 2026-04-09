@@ -444,3 +444,28 @@ def test_rds_global_cluster_modify(rds):
             rds.delete_global_cluster(GlobalClusterIdentifier="test-global-renamed")
         except Exception:
             pass
+
+
+def test_rds_parse_member_list_both_formats():
+    """_parse_member_list handles both Prefix.member.N and Prefix.MemberName.N formats."""
+    from ministack.services.rds import _parse_member_list
+
+    # Standard member.N format (direct API calls)
+    params_standard = {
+        "SubnetIds.member.1": "subnet-aaa",
+        "SubnetIds.member.2": "subnet-bbb",
+    }
+    result = _parse_member_list(params_standard, "SubnetIds")
+    assert result == ["subnet-aaa", "subnet-bbb"]
+
+    # Botocore serializer format: Prefix.MemberName.N (via SFN aws-sdk)
+    params_botocore = {
+        "SubnetIds.SubnetIdentifier.1": "subnet-xxx",
+        "SubnetIds.SubnetIdentifier.2": "subnet-yyy",
+        "SubnetIds.SubnetIdentifier.3": "subnet-zzz",
+    }
+    result2 = _parse_member_list(params_botocore, "SubnetIds")
+    assert result2 == ["subnet-xxx", "subnet-yyy", "subnet-zzz"]
+
+    # Empty case
+    assert _parse_member_list({}, "SubnetIds") == []
