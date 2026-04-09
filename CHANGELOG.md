@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **CloudFormation `ListStackResources` action** — Serverless Framework calls `ListStackResources` during deploy to check provisioned resources. Without this action the deploy fails with `Unknown action: ListStackResources`. Response uses the correct AWS XML shape (`StackResourceSummaries` wrapper with `LastUpdatedTimestamp`). Accepts stack name or stack ID.
+
+---
+
 ## [1.1.58] — 2026-04-09
 
 ### Fixed
