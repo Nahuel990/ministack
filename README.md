@@ -324,14 +324,14 @@ subnet = ec2.create_subnet(
 | Service | Operations | Notes |
 |---------|-----------|-------|
 | **SSM Parameter Store** | PutParameter, GetParameter, GetParameters, GetParametersByPath, DeleteParameter, DeleteParameters, DescribeParameters, GetParameterHistory, LabelParameterVersion, AddTagsToResource, RemoveTagsFromResource, ListTagsForResource | Supports String, SecureString, StringList |
-| **EventBridge** | CreateEventBus, DeleteEventBus, ListEventBuses, DescribeEventBus, PutRule, DeleteRule, ListRules, DescribeRule, EnableRule, DisableRule, PutTargets, RemoveTargets, ListTargetsByRule, PutEvents, TagResource, UntagResource, ListTagsForResource, CreateArchive, DeleteArchive, DescribeArchive, ListArchives, PutPermission, RemovePermission, CreateConnection, DescribeConnection, DeleteConnection, UpdateConnection, ListConnections, CreateApiDestination, DescribeApiDestination, DeleteApiDestination, UpdateApiDestination, ListApiDestinations | Lambda target dispatch on PutEvents; S3 EventBridge notifications |
+| **EventBridge** | CreateEventBus, UpdateEventBus, DeleteEventBus, ListEventBuses, DescribeEventBus, PutRule, DeleteRule, ListRules, DescribeRule, EnableRule, DisableRule, PutTargets, RemoveTargets, ListTargetsByRule, ListRuleNamesByTarget, PutEvents, TestEventPattern, TagResource, UntagResource, ListTagsForResource, CreateArchive, DeleteArchive, DescribeArchive, UpdateArchive, ListArchives, PutPermission, RemovePermission, CreateConnection, DescribeConnection, DeleteConnection, UpdateConnection, DeauthorizeConnection, ListConnections, CreateApiDestination, DescribeApiDestination, DeleteApiDestination, UpdateApiDestination, ListApiDestinations, StartReplay, DescribeReplay, ListReplays, CancelReplay, CreateEndpoint, DeleteEndpoint, DescribeEndpoint, ListEndpoints, UpdateEndpoint, ActivateEventSource, DeactivateEventSource, DescribeEventSource, CreatePartnerEventSource, DeletePartnerEventSource, DescribePartnerEventSource, ListPartnerEventSources, ListPartnerEventSourceAccounts, ListEventSources, PutPartnerEvents | Lambda target dispatch on PutEvents; S3 EventBridge notifications; replays and SaaS/partner APIs are control-plane stubs |
 | **Kinesis** | CreateStream, DeleteStream, DescribeStream, DescribeStreamSummary, ListStreams, ListShards, PutRecord, PutRecords, GetShardIterator, GetRecords, IncreaseStreamRetentionPeriod, DecreaseStreamRetentionPeriod, MergeShards, SplitShard, UpdateShardCount, StartStreamEncryption, StopStreamEncryption, EnableEnhancedMonitoring, DisableEnhancedMonitoring, RegisterStreamConsumer, DeregisterStreamConsumer, ListStreamConsumers, DescribeStreamConsumer, AddTagsToStream, RemoveTagsFromStream, ListTagsForStream | Partition key → shard routing; AWS limits enforced (1 MB/record, 500 records/batch, 5 MB payload, 256-char partition key) |
 | **CloudWatch Metrics** | PutMetricData, GetMetricStatistics, GetMetricData, ListMetrics, PutMetricAlarm, PutCompositeAlarm, DescribeAlarms, DescribeAlarmsForMetric, DescribeAlarmHistory, DeleteAlarms, SetAlarmState, EnableAlarmActions, DisableAlarmActions, TagResource, UntagResource, ListTagsForResource, PutDashboard, GetDashboard, DeleteDashboards, ListDashboards | CBOR and JSON protocol |
 | **SES** | SendEmail, SendRawEmail, SendTemplatedEmail, SendBulkTemplatedEmail, VerifyEmailIdentity, VerifyEmailAddress, VerifyDomainIdentity, VerifyDomainDkim, ListIdentities, ListVerifiedEmailAddresses, GetIdentityVerificationAttributes, GetIdentityDkimAttributes, DeleteIdentity, GetSendQuota, GetSendStatistics, SetIdentityNotificationTopic, SetIdentityFeedbackForwardingEnabled, CreateConfigurationSet, DeleteConfigurationSet, DescribeConfigurationSet, ListConfigurationSets, CreateTemplate, GetTemplate, UpdateTemplate, DeleteTemplate, ListTemplates | Emails stored in-memory, not sent |
 | **SES v2** | SendEmail, CreateEmailIdentity, GetEmailIdentity, DeleteEmailIdentity, ListEmailIdentities, CreateConfigurationSet, GetConfigurationSet, DeleteConfigurationSet, ListConfigurationSets, GetAccount, PutAccountSuppressionAttributes, ListSuppressedDestinations | REST API (`/v2/email/`); identities auto-verified; emails stored in-memory, not sent |
 | **ACM** | RequestCertificate, DescribeCertificate, ListCertificates, DeleteCertificate, GetCertificate, ImportCertificate, AddTagsToCertificate, RemoveTagsFromCertificate, ListTagsForCertificate, UpdateCertificateOptions, RenewCertificate, ResendValidationEmail | Certificates auto-issued; DNS validation records generated; supports SANs |
 | **WAF v2** | CreateWebACL, GetWebACL, UpdateWebACL, DeleteWebACL, ListWebACLs, AssociateWebACL, DisassociateWebACL, GetWebACLForResource, ListResourcesForWebACL, CreateIPSet, GetIPSet, UpdateIPSet, DeleteIPSet, ListIPSets, CreateRuleGroup, GetRuleGroup, UpdateRuleGroup, DeleteRuleGroup, ListRuleGroups, TagResource, UntagResource, ListTagsForResource, CheckCapacity, DescribeManagedRuleGroup | LockToken enforced on Update/Delete; resource associations tracked |
-| **Step Functions** | CreateStateMachine, DeleteStateMachine, DescribeStateMachine, UpdateStateMachine, ListStateMachines, StartExecution, StartSyncExecution, StopExecution, DescribeExecution, DescribeStateMachineForExecution, ListExecutions, GetExecutionHistory, SendTaskSuccess, SendTaskFailure, SendTaskHeartbeat, CreateActivity, DeleteActivity, DescribeActivity, ListActivities, GetActivityTask, TestState, TagResource, UntagResource, ListTagsForResource | Full ASL interpreter; Retry/Catch; waitForTaskToken; Activities (worker pattern); Pass/Task/Choice/Wait/Succeed/Fail/Map/Parallel; TestState API with mock and inspectionLevel support; SFN_MOCK_CONFIG for AWS SFN Local compatible mock testing; intrinsic functions (States.StringToJson, States.JsonMerge, States.Format); nested startExecution.sync |
+| **Step Functions** | CreateStateMachine, DeleteStateMachine, DescribeStateMachine, UpdateStateMachine, ListStateMachines, StartExecution, StartSyncExecution, StopExecution, DescribeExecution, DescribeStateMachineForExecution, ListExecutions, GetExecutionHistory, SendTaskSuccess, SendTaskFailure, SendTaskHeartbeat, CreateActivity, DeleteActivity, DescribeActivity, ListActivities, GetActivityTask, TestState, TagResource, UntagResource, ListTagsForResource | Full ASL interpreter; Retry/Catch; waitForTaskToken; Activities (worker pattern); Pass/Task/Choice/Wait/Succeed/Fail/Map/Parallel; TestState API with mock and inspectionLevel support; SFN_MOCK_CONFIG for AWS SFN Local compatible mock testing; intrinsic functions (States.StringToJson, States.JsonToString, States.JsonMerge, States.Format); nested startExecution.sync |
 | **API Gateway v2** | CreateApi, GetApi, GetApis, UpdateApi, DeleteApi, CreateRoute, GetRoute, GetRoutes, UpdateRoute, DeleteRoute, CreateIntegration, GetIntegration, GetIntegrations, UpdateIntegration, DeleteIntegration, CreateStage, GetStage, GetStages, UpdateStage, DeleteStage, CreateDeployment, GetDeployment, GetDeployments, DeleteDeployment, CreateAuthorizer, GetAuthorizer, GetAuthorizers, UpdateAuthorizer, DeleteAuthorizer, TagResource, UntagResource, GetTags | HTTP API (v2) protocol; Lambda proxy (AWS_PROXY) and HTTP proxy (HTTP_PROXY) integrations; data plane via `{apiId}.execute-api.localhost`; `{param}` and `{proxy+}` path matching; JWT/Lambda authorizer CRUD |
 | **API Gateway v1** | CreateRestApi, GetRestApi, GetRestApis, UpdateRestApi, DeleteRestApi, CreateResource, GetResource, GetResources, UpdateResource, DeleteResource, PutMethod, GetMethod, DeleteMethod, UpdateMethod, PutMethodResponse, GetMethodResponse, DeleteMethodResponse, PutIntegration, GetIntegration, DeleteIntegration, UpdateIntegration, PutIntegrationResponse, GetIntegrationResponse, DeleteIntegrationResponse, CreateDeployment, GetDeployment, GetDeployments, UpdateDeployment, DeleteDeployment, CreateStage, GetStage, GetStages, UpdateStage, DeleteStage, CreateAuthorizer, GetAuthorizer, GetAuthorizers, UpdateAuthorizer, DeleteAuthorizer, CreateModel, GetModel, GetModels, DeleteModel, CreateApiKey, GetApiKey, GetApiKeys, UpdateApiKey, DeleteApiKey, CreateUsagePlan, GetUsagePlan, GetUsagePlans, UpdateUsagePlan, DeleteUsagePlan, CreateUsagePlanKey, GetUsagePlanKeys, DeleteUsagePlanKey, CreateDomainName, GetDomainName, GetDomainNames, DeleteDomainName, CreateBasePathMapping, GetBasePathMapping, GetBasePathMappings, DeleteBasePathMapping, TagResource, UntagResource, GetTags | REST API (v1) protocol; Lambda proxy format 1.0 (AWS_PROXY), HTTP proxy (HTTP_PROXY), MOCK integration; data plane via `{apiId}.execute-api.localhost`; resource tree with `{param}` and `{proxy+}` path matching; JSON Patch for all PATCH operations; state persistence |
 | **ELBv2 / ALB** | CreateLoadBalancer, DescribeLoadBalancers, DeleteLoadBalancer, DescribeLoadBalancerAttributes, ModifyLoadBalancerAttributes, CreateTargetGroup, DescribeTargetGroups, ModifyTargetGroup, DeleteTargetGroup, DescribeTargetGroupAttributes, ModifyTargetGroupAttributes, CreateListener, DescribeListeners, ModifyListener, DeleteListener, CreateRule, DescribeRules, ModifyRule, DeleteRule, SetRulePriorities, RegisterTargets, DeregisterTargets, DescribeTargetHealth, AddTags, RemoveTags, DescribeTags | Control plane + data plane; ALB→Lambda live traffic routing; `path-pattern`, `host-header`, `http-method`, `query-string`, `http-header` rule conditions; `forward`, `redirect`, `fixed-response` actions; data plane via `{lb-name}.alb.localhost` Host header or `/_alb/{lb-name}/` path prefix |
@@ -368,6 +368,7 @@ subnet = ec2.create_subnet(
 | `AWS::SSM::Parameter` | Parameter name | Type, Value |
 | `AWS::Logs::LogGroup` | Log group name | Arn |
 | `AWS::Events::Rule` | Rule name | Arn |
+| `AWS::Kinesis::Stream` | Stream name | Arn, StreamId |
 | `AWS::Lambda::Permission` | Statement ID | — |
 | `AWS::Lambda::Version` | Version ARN | Version |
 | `AWS::Lambda::Alias` | Alias ARN | — |
@@ -406,6 +407,8 @@ subnet = ec2.create_subnet(
 | `AWS::ECS::Cluster` | Cluster name | Arn, ClusterName |
 | `AWS::ECS::TaskDefinition` | Task def ARN | TaskDefinitionArn |
 | `AWS::ECS::Service` | Service ARN | ServiceArn, Name |
+| `AWS::ElasticLoadBalancingV2::LoadBalancer` | LB ARN | Arn, DNSName, LoadBalancerFullName, CanonicalHostedZoneID, SecurityGroups |
+| `AWS::ElasticLoadBalancingV2::Listener` | Listener ARN | ListenerArn, Arn |
 | `AWS::CloudFormation::WaitCondition` | Condition ID | — |
 | `AWS::CloudFormation::WaitConditionHandle` | Handle URL | — |
 
@@ -814,11 +817,28 @@ Creates VPC with per-VPC default network ACL, security group, and main route tab
 
 ### AWS CDK
 
-```typescript
-// cdk.json or in your app
-const app = new cdk.App();
-// Set endpoint override via environment
-process.env.AWS_ENDPOINT_URL = "http://localhost:4566";
+Set `AWS_ENDPOINT_URL` to route all CDK requests to MiniStack:
+
+```bash
+export AWS_ENDPOINT_URL=http://localhost:4566
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
+
+cdk bootstrap aws://000000000000/us-east-1
+cdk deploy --require-approval never
+```
+
+> **Important:** Running `cdk deploy` without `AWS_ENDPOINT_URL` will send requests to **real AWS**, not MiniStack. If you see "The security token included in the request is invalid", your requests are hitting AWS — set the endpoint.
+
+To reset the bootstrap stack or delete all state:
+
+```bash
+# Delete a specific stack
+aws --endpoint-url=http://localhost:4566 cloudformation delete-stack --stack-name CDKToolkit
+
+# Or reset all MiniStack state
+curl -X POST http://localhost:4566/_ministack/reset
 ```
 
 ### Pulumi

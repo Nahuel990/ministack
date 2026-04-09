@@ -1781,6 +1781,8 @@ def _exec_intrinsic(node, data, ctx):
 
     if name == "States.StringToJson":
         return json.loads(args[0])
+    elif name == "States.JsonToString":
+        return json.dumps(args[0], separators=(",", ":"))
     elif name == "States.JsonMerge":
         merged = {}
         merged.update(args[0])
@@ -2141,7 +2143,10 @@ def _dispatch_aws_sdk_json(service_info, service_name, action, input_data):
     from ministack import app
 
     target_prefix = service_info["target_prefix"]
-    target = f"{target_prefix}.{action}"
+    # SFN ARNs use camelCase (e.g. getRandomPassword) but service handlers
+    # expect PascalCase (GetRandomPassword).
+    pascal_action = action[0].upper() + action[1:] if action else action
+    target = f"{target_prefix}.{pascal_action}"
     service_key = service_info.get("service_key", service_name)
 
     handler = app.SERVICE_HANDLERS.get(service_key)

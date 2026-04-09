@@ -164,6 +164,8 @@ if _restored:
 # Default VPC / subnet created at import time so DescribeVpcs always returns something
 _DEFAULT_VPC_ID = "vpc-00000001"
 _DEFAULT_SUBNET_ID = "subnet-00000001"
+_DEFAULT_SUBNET_ID_B = "subnet-00000002"
+_DEFAULT_SUBNET_ID_C = "subnet-00000003"
 _DEFAULT_SG_ID = "sg-00000001"
 _DEFAULT_RTB_ID = "rtb-00000001"
 _DEFAULT_ACL_ID = "acl-00000001"
@@ -184,18 +186,24 @@ def _init_defaults():
             "DefaultSecurityGroupId": _DEFAULT_SG_ID,
             "MainRouteTableId": _DEFAULT_RTB_ID,
         }
-    if _DEFAULT_SUBNET_ID not in _subnets:
-        _subnets[_DEFAULT_SUBNET_ID] = {
-            "SubnetId": _DEFAULT_SUBNET_ID,
-            "VpcId": _DEFAULT_VPC_ID,
-            "CidrBlock": "172.31.0.0/20",
-            "AvailabilityZone": f"{REGION}a",
-            "AvailableIpAddressCount": 4091,
-            "State": "available",
-            "DefaultForAz": True,
-            "MapPublicIpOnLaunch": True,
-            "OwnerId": get_account_id(),
-        }
+    _default_subnets = [
+        (_DEFAULT_SUBNET_ID, "172.31.0.0/20", f"{REGION}a"),
+        (_DEFAULT_SUBNET_ID_B, "172.31.16.0/20", f"{REGION}b"),
+        (_DEFAULT_SUBNET_ID_C, "172.31.32.0/20", f"{REGION}c"),
+    ]
+    for subnet_id, cidr, az in _default_subnets:
+        if subnet_id not in _subnets:
+            _subnets[subnet_id] = {
+                "SubnetId": subnet_id,
+                "VpcId": _DEFAULT_VPC_ID,
+                "CidrBlock": cidr,
+                "AvailabilityZone": az,
+                "AvailableIpAddressCount": 4091,
+                "State": "available",
+                "DefaultForAz": True,
+                "MapPublicIpOnLaunch": True,
+                "OwnerId": get_account_id(),
+            }
     if _DEFAULT_SG_ID not in _security_groups:
         _security_groups[_DEFAULT_SG_ID] = {
             "GroupId": _DEFAULT_SG_ID,
@@ -679,10 +687,22 @@ def _delete_vpc(p):
 
 def _describe_subnets(p):
     filter_ids = _parse_member_list(p, "SubnetId")
+    filters = _parse_filters(p)
     items = ""
     for subnet in _subnets.values():
         if filter_ids and subnet["SubnetId"] not in filter_ids:
             continue
+        if filters:
+            if "vpc-id" in filters and subnet["VpcId"] not in filters["vpc-id"]:
+                continue
+            if "availability-zone" in filters and subnet["AvailabilityZone"] not in filters["availability-zone"]:
+                continue
+            if "subnet-id" in filters and subnet["SubnetId"] not in filters["subnet-id"]:
+                continue
+            if "default-for-az" in filters:
+                val = "true" if subnet.get("DefaultForAz") else "false"
+                if val not in filters["default-for-az"]:
+                    continue
         items += _subnet_xml(subnet)
     return _xml(200, "DescribeSubnetsResponse", f"<subnetSet>{items}</subnetSet>")
 
