@@ -203,6 +203,11 @@ def _act_create_queue(data: dict, _u: str) -> dict:
     for k, v in attrs.items():
         q["attributes"][k] = str(v)
 
+    # Apply tags passed at creation time
+    create_tags = data.get("Tags") or data.get("tags") or {}
+    if create_tags:
+        q["tags"].update(create_tags)
+
     _queues[url] = q
     _queue_name_to_url[name] = url
     return {"QueueUrl": url}

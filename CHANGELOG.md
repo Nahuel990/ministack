@@ -14,6 +14,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Graceful Docker container cleanup on shutdown** — RDS, ECS, and ElastiCache Docker containers are now stopped and removed when MiniStack shuts down, using Docker labels (`ministack=rds`, `ministack=ecs`, `ministack=elasticache`). Previously containers were orphaned unless `/_ministack/reset` was called explicitly.
 
 ### Fixed
+- **SQS queue tags not saved on CreateQueue** — tags passed at queue creation time were silently ignored. `ListQueueTags` now returns tags set during `CreateQueue` for both JSON and Query API protocols. Reported by @jfisbein
 - **PERSIST_STATE compatibility with AccountScopedDict** — state serialization and deserialization now handle the new scoped dict format correctly. All 37 service state files save and restore across restarts.
 
 ---
