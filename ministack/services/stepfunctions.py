@@ -2245,6 +2245,36 @@ def _xml_element_to_dict(element):
     return tag, result
 
 
+def _serialize_query_via_botocore(service_name, action, input_data):
+    """Use botocore's serializer to properly map SDK model param names to wire-format names.
+
+    SFN aws-sdk integrations send parameters using SDK model names (e.g. DbSubnetGroupName)
+    but query-protocol services expect wire-format names (e.g. DBSubnetGroupName). botocore's
+    serializer has the full service model metadata to do this mapping correctly.
+
+    The mapping uses case-insensitive matching because SFN SDK names differ only in casing
+    from botocore model names (e.g. DbSubnetGroupName vs DBSubnetGroupName).
+    """
+    import botocore.session
+    from botocore.serialize import create_serializer
+
+    session = botocore.session.get_session()
+    service_model = session.get_service_model(service_name)
+    pascal_action = action[0].upper() + action[1:] if action else action
+    operation_model = service_model.operation_model(pascal_action)
+
+    # Map SFN SDK-style param names to botocore model names via case-insensitive lookup
+    params = input_data or {}
+    if operation_model.input_shape:
+        members = operation_model.input_shape.members
+        lower_to_model = {name.lower(): name for name in members}
+        params = {lower_to_model.get(k.lower(), k): v for k, v in params.items()}
+
+    serializer = create_serializer(service_model.protocol, include_validation=False)
+    request = serializer.serialize_to_request(params, operation_model)
+    return request.get("body", {}), pascal_action
+
+
 def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
     """Dispatch an aws-sdk integration call to a query-protocol MiniStack service."""
     import xml.etree.ElementTree as ET
@@ -2259,10 +2289,19 @@ def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
             f"Service '{service_key}' is not available in MiniStack",
         )
 
-    # Build form-encoded body with Action param
-    form_params = {"Action": action}
-    form_params.update(_flatten_query_params(input_data))
-    body = urlencode(form_params)
+    # Use botocore to serialize params with correct wire-format names.
+    try:
+        serialized_body, pascal_action = _serialize_query_via_botocore(service_name, action, input_data)
+        if isinstance(serialized_body, dict):
+            body = urlencode(serialized_body, doseq=True)
+        else:
+            body = serialized_body
+    except Exception:
+        # Fall back to naive flattening if botocore can't handle this service
+        pascal_action = action[0].upper() + action[1:] if action else action
+        form_params = {"Action": pascal_action}
+        form_params.update(_flatten_query_params(input_data))
+        body = urlencode(form_params)
 
     headers = {
         "content-type": "application/x-www-form-urlencoded",
@@ -2318,7 +2357,7 @@ def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
         _, result = _xml_element_to_dict(root)
         if isinstance(result, dict):
             # Unwrap the <ActionResult> wrapper if present
-            result_key = f"{action}Result"
+            result_key = f"{pascal_action}Result"
             if result_key in result:
                 result = result[result_key]
             # Drop ResponseMetadata
