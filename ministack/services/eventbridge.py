@@ -146,6 +146,7 @@ async def handle_request(method, path, headers, body, query_params):
         "DeleteConnection": _delete_connection,
         "ListConnections": _list_connections,
         "UpdateConnection": _update_connection,
+        "DeauthorizeConnection": _deauthorize_connection,
         "CreateApiDestination": _create_api_destination,
         "DescribeApiDestination": _describe_api_destination,
         "DeleteApiDestination": _delete_api_destination,
@@ -1110,6 +1111,25 @@ def _update_connection(data):
     conn["ConnectionState"] = "AUTHORIZED"
     conn["LastAuthorizedTime"] = now
 
+    return json_response({
+        "ConnectionArn": conn["ConnectionArn"],
+        "ConnectionState": conn["ConnectionState"],
+        "LastModifiedTime": now,
+    })
+
+
+def _deauthorize_connection(data):
+    name = data.get("Name")
+    if not name:
+        return error_response_json("ValidationException", "Name is required", 400)
+    conn = _connections.get(name)
+    if not conn:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Connection {name} does not exist.", 400)
+    now = _now_ts()
+    conn["ConnectionState"] = "DEAUTHORIZED"
+    conn["LastModifiedTime"] = now
+    conn.pop("LastAuthorizedTime", None)
     return json_response({
         "ConnectionArn": conn["ConnectionArn"],
         "ConnectionState": conn["ConnectionState"],

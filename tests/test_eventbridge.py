@@ -145,6 +145,20 @@ def test_eventbridge_connection(eb):
     assert desc["Name"] == "test-conn"
     eb.delete_connection(Name="test-conn")
 
+
+def test_eventbridge_deauthorize_connection(eb):
+    eb.create_connection(
+        Name="deauth-conn",
+        AuthorizationType="API_KEY",
+        AuthParameters={"ApiKeyAuthParameters": {"ApiKeyName": "k", "ApiKeyValue": "v"}},
+    )
+    out = eb.deauthorize_connection(Name="deauth-conn")
+    assert out["ConnectionState"] == "DEAUTHORIZED"
+    desc = eb.describe_connection(Name="deauth-conn")
+    assert desc["ConnectionState"] == "DEAUTHORIZED"
+    eb.delete_connection(Name="deauth-conn")
+
+
 def test_eventbridge_api_destination(eb):
     eb.create_connection(
         Name="apid-conn",
