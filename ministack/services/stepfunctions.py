@@ -1863,7 +1863,7 @@ def _find_matching_retrier(retriers, error, retry_counts):
         max_attempts = retrier.get("MaxAttempts", 3)
         if retry_counts.get(idx, 0) >= max_attempts:
             continue
-        if "States.ALL" in equals or error in equals:
+        if "States.ALL" in equals or "States.TaskFailed" in equals or error in equals:
             return retrier, idx
     return None, -1
 
@@ -1871,7 +1871,7 @@ def _find_matching_retrier(retriers, error, retry_counts):
 def _find_matching_catcher(catchers, error):
     for catcher in catchers:
         equals = catcher.get("ErrorEquals", [])
-        if "States.ALL" in equals or error in equals:
+        if "States.ALL" in equals or "States.TaskFailed" in equals or error in equals:
             return catcher
     return None
 
