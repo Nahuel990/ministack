@@ -164,6 +164,8 @@ if _restored:
 # Default VPC / subnet created at import time so DescribeVpcs always returns something
 _DEFAULT_VPC_ID = "vpc-00000001"
 _DEFAULT_SUBNET_ID = "subnet-00000001"
+_DEFAULT_SUBNET_ID_B = "subnet-00000002"
+_DEFAULT_SUBNET_ID_C = "subnet-00000003"
 _DEFAULT_SG_ID = "sg-00000001"
 _DEFAULT_RTB_ID = "rtb-00000001"
 _DEFAULT_ACL_ID = "acl-00000001"
@@ -186,8 +188,8 @@ def _init_defaults():
         }
     _default_subnets = [
         (_DEFAULT_SUBNET_ID, "172.31.0.0/20", f"{REGION}a"),
-        ("subnet-00000002", "172.31.16.0/20", f"{REGION}b"),
-        ("subnet-00000003", "172.31.32.0/20", f"{REGION}c"),
+        (_DEFAULT_SUBNET_ID_B, "172.31.16.0/20", f"{REGION}b"),
+        (_DEFAULT_SUBNET_ID_C, "172.31.32.0/20", f"{REGION}c"),
     ]
     for subnet_id, cidr, az in _default_subnets:
         if subnet_id not in _subnets:

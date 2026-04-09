@@ -1110,3 +1110,23 @@ def test_ec2_launch_template_not_found(ec2):
     with pytest.raises(ClientError) as exc:
         ec2.describe_launch_template_versions(LaunchTemplateId="lt-nonexistent")
     assert "NotFound" in exc.value.response["Error"]["Code"]
+
+
+def test_ec2_default_subnets_three_azs(ec2):
+    """Default VPC should have 3 subnets, one per AZ (a/b/c) with correct CIDRs."""
+    resp = ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": ["vpc-00000001"]}])
+    subnets = resp["Subnets"]
+    assert len(subnets) >= 3
+
+    by_az = {s["AvailabilityZone"]: s for s in subnets}
+    assert "us-east-1a" in by_az
+    assert "us-east-1b" in by_az
+    assert "us-east-1c" in by_az
+
+    assert by_az["us-east-1a"]["CidrBlock"] == "172.31.0.0/20"
+    assert by_az["us-east-1b"]["CidrBlock"] == "172.31.16.0/20"
+    assert by_az["us-east-1c"]["CidrBlock"] == "172.31.32.0/20"
+
+    for s in subnets:
+        assert s["DefaultForAz"] is True
+        assert s["MapPublicIpOnLaunch"] is True

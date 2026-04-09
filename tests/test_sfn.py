@@ -1962,3 +1962,118 @@ def test_sfn_start_execution_not_found(sfn):
         sfn.start_execution(stateMachineArn="arn:aws:states:us-east-1:000000000000:stateMachine:nonexistent-99")
     err = exc.value.response["Error"]["Code"]
     assert "StateMachineDoesNotExist" in err or "NotFound" in err or "ResourceNotFound" in err
+
+
+def test_sfn_intrinsic_json_to_string(sfn, sfn_sync):
+    """States.JsonToString serializes structured data to a compact JSON string."""
+    definition = json.dumps({
+        "StartAt": "Serialize",
+        "States": {
+            "Serialize": {
+                "Type": "Pass",
+                "Parameters": {
+                    "serialized.$": "States.JsonToString($.obj)"
+                },
+                "End": True,
+            }
+        },
+    })
+    sm = sfn.create_state_machine(
+        name="sfn-intrinsic-j2s",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=sm["stateMachineArn"],
+        input=json.dumps({"obj": {"a": 1, "b": [2, 3]}}),
+    )
+    assert resp["status"] == "SUCCEEDED"
+    output = json.loads(resp["output"])
+    # Should be compact JSON (no spaces)
+    parsed = json.loads(output["serialized"])
+    assert parsed == {"a": 1, "b": [2, 3]}
+    assert " " not in output["serialized"]
+
+
+def test_sfn_aws_sdk_query_pascal_case(sfn, sfn_sync, ssm):
+    """SFN aws-sdk integration converts camelCase action to PascalCase for query-protocol services."""
+    definition = json.dumps({
+        "StartAt": "PutParam",
+        "States": {
+            "PutParam": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:ssm:putParameter",
+                "Parameters": {
+                    "Name": "sfn-pascal-test-param",
+                    "Value": "hello-from-sfn",
+                    "Type": "String",
+                    "Overwrite": True,
+                },
+                "ResultPath": "$.putResult",
+                "Next": "GetParam",
+            },
+            "GetParam": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:ssm:getParameter",
+                "Parameters": {
+                    "Name": "sfn-pascal-test-param",
+                },
+                "End": True,
+            },
+        },
+    })
+    sm = sfn.create_state_machine(
+        name="sfn-pascal-query",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=sm["stateMachineArn"],
+        input="{}",
+    )
+    assert resp["status"] == "SUCCEEDED"
+    output = json.loads(resp["output"])
+    assert output["Parameter"]["Value"] == "hello-from-sfn"
+    # Cleanup
+    ssm.delete_parameter(Name="sfn-pascal-test-param")
+
+
+def test_sfn_aws_sdk_json_pascal_case(sfn, sfn_sync, sm):
+    """SFN aws-sdk integration converts camelCase action to PascalCase for JSON-protocol services."""
+    definition = json.dumps({
+        "StartAt": "CreateSecret",
+        "States": {
+            "CreateSecret": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:secretsmanager:createSecret",
+                "Parameters": {
+                    "Name": "sfn-pascal-json-secret",
+                    "SecretString": "my-secret-value",
+                },
+                "ResultPath": "$.createResult",
+                "Next": "GetSecret",
+            },
+            "GetSecret": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:secretsmanager:getSecretValue",
+                "Parameters": {
+                    "SecretId": "sfn-pascal-json-secret",
+                },
+                "End": True,
+            },
+        },
+    })
+    sm_resp = sfn.create_state_machine(
+        name="sfn-pascal-json",
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=sm_resp["stateMachineArn"],
+        input="{}",
+    )
+    assert resp["status"] == "SUCCEEDED"
+    output = json.loads(resp["output"])
+    assert output["SecretString"] == "my-secret-value"
+    # Cleanup
+    sm.delete_secret(SecretId="sfn-pascal-json-secret", ForceDeleteWithoutRecovery=True)
