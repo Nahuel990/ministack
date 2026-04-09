@@ -2198,7 +2198,7 @@ def _dispatch_aws_sdk_json(service_info, service_name, action, input_data):
         error_msg = result.get("message", result.get("Message", str(result)))
         raise _ExecutionError(error_type, error_msg)
 
-    return result
+    return _convert_keys_to_sfn_convention(result)
 
 
 def _flatten_query_params(data, prefix=""):
