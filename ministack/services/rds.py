@@ -1969,7 +1969,12 @@ def _parse_tags(params):
 
 
 def _parse_member_list(params, prefix):
-    """Parse Prefix.member.N style lists from query params."""
+    """Parse list params in either Prefix.member.N or Prefix.<MemberName>.N format.
+
+    The member.N format is used by direct AWS CLI/SDK calls. The <MemberName>.N
+    format is produced by botocore's serializer when dispatched via Step Functions
+    aws-sdk integrations (e.g. SubnetIds.SubnetIdentifier.N).
+    """
     items = []
     i = 1
     while True:
@@ -1978,7 +1983,18 @@ def _parse_member_list(params, prefix):
             break
         items.append(val)
         i += 1
-    return items
+    if items:
+        return items
+    # Fall back to Prefix.<AnyMemberName>.N (botocore serializer format)
+    import re
+    pattern = re.compile(rf"^{re.escape(prefix)}\.([^.]+)\.(\d+)$")
+    numbered = {}
+    for key in params:
+        m = pattern.match(key)
+        if m:
+            idx = int(m.group(2))
+            numbered[idx] = _p(params, key)
+    return [numbered[k] for k in sorted(numbered)] if numbered else []
 
 
 def _parse_filters(params):

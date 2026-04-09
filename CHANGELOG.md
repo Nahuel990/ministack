@@ -7,17 +7,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.1.59] — 2026-04-09
 
 ### Added
-- **Native `provided` / `provided.al2023` Lambda runtime** — Lambda functions using custom runtimes (Go, Rust, C++ compiled binaries) now execute natively. MiniStack implements the Lambda Runtime API (`GET /invocation/next`, `POST /invocation/{id}/response`) as a minimal HTTP server, extracts the bootstrap binary from the deployment package, and manages the invocation lifecycle. Handles Go's default chunked `Transfer-Encoding` by parsing chunk framing rather than relying on `Content-Length`.
+- **EventBridge expanded API coverage** — 20 new actions: `ListRuleNamesByTarget`, `TestEventPattern`, `UpdateArchive`, `StartReplay`, `DescribeReplay`, `ListReplays`, `CancelReplay`, `CreateEndpoint`, `DeleteEndpoint`, `DescribeEndpoint`, `ListEndpoints`, `UpdateEndpoint`, `DeauthorizeConnection`, `ActivateEventSource`, `DeactivateEventSource`, `DescribeEventSource`, `CreatePartnerEventSource`, `DeletePartnerEventSource`, `DescribePartnerEventSource`, `ListPartnerEventSources`, `ListPartnerEventSourceAccounts`, `ListEventSources`, `PutPartnerEvents`. Contributed by @aldokimi (#210).
+- **CloudFormation `AWS::Kinesis::Stream` provisioner** — create/delete with `ShardCount`, `Name`, `RetentionPeriodHours`, `StreamModeDetails` (ON_DEMAND/PROVISIONED); `Fn::GetAtt` for `Arn`, `StreamId`. Also registered `rds-data` in service handler routing. Contributed by @aldokimi (#207).
+- **EC2 default subnets** — default VPC now creates 3 subnets (one per AZ: a/b/c) matching real AWS behavior instead of a single subnet. Contributed by @jayjanssen (#205).
+- **Step Functions `States.JsonToString` intrinsic** — counterpart to `States.StringToJson`. Contributed by @jayjanssen (#215).
+- **CloudFormation `AWS::ElasticLoadBalancingV2::LoadBalancer` and `::Listener` provisioners** — create/delete with full ALB lifecycle, including default rules, tag propagation, and cascading cleanup. `Fn::GetAtt` for `Arn`, `DNSName`, `LoadBalancerFullName`, `CanonicalHostedZoneID`. Contributed by @aldokimi (#217).
+
+### Fixed
+- **EventBridge ARN-as-bus-name in PutEvents** — events published with a full ARN as `EventBusName` (e.g. `arn:aws:events:us-east-1:000000000000:event-bus/my-bus`) were silently dropped because the bus name comparison against rules failed. `PutEvents` now normalizes ARN-style values to the plain bus name before dispatch. Contributed by @ctnnguyen (#208).
+- **CloudFormation EventBridge rule composite key** — `_eb_rule_create` and `_eb_rule_delete` used reversed key order (`name|bus` instead of `bus|name`), making CFN-provisioned rules invisible to the EventBridge API (`DescribeRule`, `ListTargetsByRule`) and event dispatch. Now uses `_eb._rule_key()` for consistent key construction. Contributed by @ctnnguyen (#208).
+- **CloudFormation EventBridge target storage** — CFN rule provisioner cherry-picked only `Id`, `Arn`, `RoleArn`, `Input`, `InputPath` from targets, dropping `InputTransformer`, `SqsParameters`, `EcsParameters`, and other properties. Now stores the full target dict. Contributed by @ctnnguyen (#208).
+- **Step Functions aws-sdk action casing** — SFN ARNs use camelCase (e.g. `createDBSubnetGroup`) but query-protocol and JSON-protocol services expect PascalCase (`CreateDBSubnetGroup`). Both dispatch paths now capitalize the first letter. Contributed by @jayjanssen (#204, #215).
+- **RDS `_parse_member_list` botocore format** — list parameters dispatched via Step Functions aws-sdk integrations use `Prefix.MemberName.N` format instead of `Prefix.member.N`. The parser now handles both formats.
 
 ---
 
 ## [1.1.58] — 2026-04-09
 
 ### Fixed
-- **Kinesis CBOR protocol support** — `PutRecord` and `PutRecords` from the AWS Java SDK v2 failed with `'utf-8' codec can't decode byte 0xbf`. The Java SDK sends Kinesis requests as CBOR (`application/x-amz-cbor-1.1`) by default, but the handler only accepted JSON. Kinesis now detects CBOR content-type, decodes with `cbor2`, and returns CBOR-encoded responses. Reported by community.
+- **Kinesis CBOR protocol support** — `PutRecord` and `PutRecords` from the AWS Java SDK v2 failed with `'utf-8' codec can't decode byte 0xbf`. The Java SDK sends Kinesis requests as CBOR (`application/x-amz-cbor-1.1`) by default, but the handler only accepted JSON. Kinesis now detects CBOR content-type, decodes with `cbor2`, and returns CBOR-encoded responses. Reported by @markwimpory.
 
 ---
 
