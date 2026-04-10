@@ -1453,3 +1453,104 @@ def test_apigwv2_nodejs_lambda_proxy(lam, apigw):
             lam.delete_function(FunctionName=fname)
         except ClientError:
             pass
+
+
+def test_lambda_nodejs_esm_mjs_handler(lam):
+    """Node.js .mjs (ESM) handlers should be loaded via dynamic import() fallback.
+
+    Creates a ZIP with two .mjs files:
+      - utils.mjs: exports a helper function using ESM `export` syntax
+      - index.mjs: imports utils.mjs via ESM `import` statement and uses it
+
+    This verifies that:
+      1. .mjs files are loaded via import() instead of require()
+      2. ESM import/export syntax works between modules
+      3. The handler's return value is correctly propagated
+    """
+    fname = f"lam-esm-{_uuid_mod.uuid4().hex[:8]}"
+
+    utils_code = (
+        "export function greet(name) {\n"
+        "  return `Hello, ${name} from ESM!`;\n"
+        "}\n"
+        "\n"
+        "export const VERSION = '1.0.0';\n"
+    )
+
+    handler_code = (
+        "import { greet, VERSION } from './utils.mjs';\n"
+        "\n"
+        "export const handler = async (event) => {\n"
+        "  const name = event.name || 'World';\n"
+        "  return {\n"
+        "    statusCode: 200,\n"
+        "    body: JSON.stringify({\n"
+        "      message: greet(name),\n"
+        "      version: VERSION,\n"
+        "      esm: true,\n"
+        "    }),\n"
+        "  };\n"
+        "};\n"
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("index.mjs", handler_code)
+        z.writestr("utils.mjs", utils_code)
+
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="nodejs20.x",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": buf.getvalue()},
+    )
+    try:
+        resp = lam.invoke(
+            FunctionName=fname,
+            Payload=json.dumps({"name": "MiniStack"}),
+        )
+        assert resp["StatusCode"] == 200
+        assert "FunctionError" not in resp, f"Lambda error: {resp['Payload'].read().decode()}"
+        payload = json.loads(resp["Payload"].read())
+        assert payload["statusCode"] == 200
+        body = json.loads(payload["body"])
+        assert body["message"] == "Hello, MiniStack from ESM!"
+        assert body["version"] == "1.0.0"
+        assert body["esm"] is True
+    finally:
+        lam.delete_function(FunctionName=fname)
+
+
+def test_lambda_nodejs_esm_type_module(lam):
+    """Node.js ESM via package.json type:module should trigger ERR_REQUIRE_ESM fallback."""
+    fname = f"lam-esm-type-{_uuid_mod.uuid4().hex[:8]}"
+
+    handler_code = (
+        "export const handler = async (event) => ({\n"
+        "  statusCode: 200,\n"
+        "  body: 'type-module-works',\n"
+        "});\n"
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("index.js", handler_code)
+        z.writestr("package.json", '{"type": "module"}')
+
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="nodejs20.x",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": buf.getvalue()},
+    )
+    try:
+        resp = lam.invoke(FunctionName=fname, Payload=b"{}")
+        assert resp["StatusCode"] == 200
+        assert "FunctionError" not in resp, f"Lambda error: {resp['Payload'].read().decode()}"
+        payload = json.loads(resp["Payload"].read())
+        assert payload["statusCode"] == 200
+        assert payload["body"] == "type-module-works"
+    finally:
+        lam.delete_function(FunctionName=fname)

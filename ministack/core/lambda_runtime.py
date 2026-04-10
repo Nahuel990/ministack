@@ -189,8 +189,34 @@ rl.on("line", async (line) => {
       patchAwsSdk();
       try {
         const fullPath = path.resolve(code_dir, modPath);
-        const mod = require(fullPath);
-        handlerFn = mod[handlerName];
+        let mod;
+        let resolvedPath;
+        try {
+          resolvedPath = require.resolve(fullPath);
+        } catch (resolveErr) {
+          if (resolveErr.code === "MODULE_NOT_FOUND") {
+            const fs = require("fs");
+            const mjsPath = fullPath + ".mjs";
+            if (fs.existsSync(mjsPath)) {
+              resolvedPath = mjsPath;
+            } else {
+              throw resolveErr;
+            }
+          } else {
+            throw resolveErr;
+          }
+        }
+        try {
+          mod = require(resolvedPath);
+        } catch (reqErr) {
+          if (reqErr.code === "ERR_REQUIRE_ESM") {
+            const { pathToFileURL } = require("url");
+            mod = await import(pathToFileURL(resolvedPath).href);
+          } else {
+            throw reqErr;
+          }
+        }
+        handlerFn = mod[handlerName] || (mod.default && mod.default[handlerName]) || mod.default;
         if (typeof handlerFn !== "function") {
           process.stdout.write(JSON.stringify({
             status: "error",
