@@ -334,6 +334,7 @@ def _fetch_code_from_s3(bucket: str, key: str) -> bytes | None:
 def _build_config(name: str, data: dict, code_zip: bytes | None = None) -> dict:
     code_size = len(code_zip) if code_zip else 0
     code_sha = base64.b64encode(hashlib.sha256(code_zip).digest()).decode() if code_zip else ""
+    is_image = data.get("PackageType", "Zip") == "Image"
 
     layers_cfg = []
     for layer in data.get("Layers", []):
@@ -351,9 +352,9 @@ def _build_config(name: str, data: dict, code_zip: bytes | None = None) -> dict:
     return {
         "FunctionName": name,
         "FunctionArn": _func_arn(name),
-        "Runtime": data.get("Runtime", "python3.9"),
+        "Runtime": data.get("Runtime", "" if is_image else "python3.9"),
         "Role": data.get("Role", f"arn:aws:iam::{get_account_id()}:role/lambda-role"),
-        "Handler": data.get("Handler", "index.handler"),
+        "Handler": data.get("Handler", "" if is_image else "index.handler"),
         "CodeSize": code_size,
         "CodeSha256": code_sha,
         "Description": data.get("Description", ""),
@@ -380,7 +381,7 @@ def _build_config(name: str, data: dict, code_zip: bytes | None = None) -> dict:
                 "VpcId": "",
             },
         ),
-        "DeadLetterConfig": data.get("DeadLetterConfig", {"TargetArn": ""}),
+        "DeadLetterConfig": data.get("DeadLetterConfig", {}),
         "KMSKeyArn": data.get("KMSKeyArn", ""),
         "RevisionId": new_uuid(),
         "EphemeralStorage": data.get("EphemeralStorage", {"Size": 512}),
@@ -680,6 +681,8 @@ def _create_function(data: dict):
     if image_uri:
         config["ImageUri"] = image_uri
         config["PackageType"] = "Image"
+        if "ImageConfig" in data:
+            config["ImageConfig"] = data["ImageConfig"]
 
     _functions[name] = {
         "config": config,
@@ -2550,13 +2553,19 @@ def _delete_provisioned_concurrency(func_name: str, qualifier: str):
 # ---------------------------------------------------------------------------
 
 
+def _esm_response(esm: dict) -> dict:
+    """Return ESM dict without internal-only fields."""
+    return {k: v for k, v in esm.items() if k != "FunctionName"}
+
+
 def _create_esm(data: dict):
     esm_id = new_uuid()
     func_name = _resolve_name(data.get("FunctionName", ""))
+    event_source_arn = data.get("EventSourceArn", "")
 
     esm = {
         "UUID": esm_id,
-        "EventSourceArn": data.get("EventSourceArn", ""),
+        "EventSourceArn": event_source_arn,
         "FunctionArn": _func_arn(func_name),
         "FunctionName": func_name,
         "State": "Enabled",
@@ -2565,13 +2574,14 @@ def _create_esm(data: dict):
         "MaximumBatchingWindowInSeconds": data.get("MaximumBatchingWindowInSeconds", 0),
         "LastModified": time.time(),
         "LastProcessingResult": "No records processed",
-        "StartingPosition": data.get("StartingPosition", "LATEST"),
         "Enabled": True,
         "FunctionResponseTypes": data.get("FunctionResponseTypes", []),
     }
+    if ":sqs:" not in event_source_arn:
+        esm["StartingPosition"] = data.get("StartingPosition", "LATEST")
     _esms[esm_id] = esm
     _ensure_poller()
-    return json_response(esm, 202)
+    return json_response(_esm_response(esm), 202)
 
 
 def _get_esm(esm_id: str):
@@ -2582,7 +2592,7 @@ def _get_esm(esm_id: str):
             f"The resource you requested does not exist. (Service: Lambda, Status Code: 404, Request ID: {new_uuid()})",
             404,
         )
-    return json_response(esm)
+    return json_response(_esm_response(esm))
 
 
 def _list_esms(query_params: dict):
@@ -2605,7 +2615,7 @@ def _list_esms(query_params: dict):
                 break
 
     page = result[start : start + max_items]
-    resp: dict = {"EventSourceMappings": page}
+    resp: dict = {"EventSourceMappings": [_esm_response(e) for e in page]}
     if start + max_items < len(result):
         resp["NextMarker"] = page[-1]["UUID"] if page else ""
     return json_response(resp)
@@ -2640,7 +2650,7 @@ def _update_esm(esm_id: str, data: dict):
         esm["FunctionName"] = new_name
         esm["FunctionArn"] = _func_arn(new_name)
     esm["LastModified"] = time.time()
-    return json_response(esm)
+    return json_response(_esm_response(esm))
 
 
 def _delete_esm(esm_id: str):
@@ -2652,7 +2662,7 @@ def _delete_esm(esm_id: str):
             404,
         )
     esm["State"] = "Deleting"
-    return json_response(esm, 202)
+    return json_response(_esm_response(esm), 202)
 
 
 # ---------------------------------------------------------------------------
