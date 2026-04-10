@@ -1293,7 +1293,7 @@ def _execute_function_warm(func: dict, event: dict) -> dict:
         worker = get_or_create_worker(func_name, config, code_zip)
         result = worker.invoke(event, new_uuid())
         if result.get("status") == "ok":
-            return {"body": result.get("result"), "log": ""}
+            return {"body": result.get("result"), "log": result.get("log", "")}
         else:
             return {
                 "body": {
@@ -2756,6 +2756,9 @@ def _poll_sqs():
             receipt_handles = {msg["receipt_handle"] for msg in batch if msg.get("receipt_handle")}
             _sqs._delete_messages_for_esm(queue_url, receipt_handles)
             esm["LastProcessingResult"] = f"OK - {len(batch)} records"
+            log_output = result.get("log", "")
+            if log_output:
+                logger.info("ESM: Lambda %s output:\n%s", func_name, log_output)
             logger.info("ESM: Lambda %s processed %d SQS messages from %s", func_name, len(batch), queue_name)
 
 
@@ -2847,6 +2850,9 @@ def _poll_kinesis():
             else:
                 positions[shard_id] = pos + len(raw_records)
                 esm["LastProcessingResult"] = f"OK - {len(raw_records)} records"
+                log_output = result.get("log", "")
+                if log_output:
+                    logger.info("ESM: Lambda %s output:\n%s", func_name, log_output)
                 logger.info(
                     "ESM: Lambda %s processed %d Kinesis records from %s/%s",
                     func_name, len(raw_records), stream_name, shard_id,
@@ -2908,6 +2914,9 @@ def _poll_dynamodb_streams():
             with _dynamodb_stream_positions_lock:
                 _dynamodb_stream_positions[esm_id] = pos + len(batch)
             esm["LastProcessingResult"] = f"OK - {len(batch)} records"
+            log_output = result.get("log", "")
+            if log_output:
+                logger.info("ESM: Lambda %s output:\n%s", func_name, log_output)
             logger.info(
                 "ESM: Lambda %s processed %d DynamoDB stream records from %s",
                 func_name, len(batch), table_name,
