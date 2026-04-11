@@ -1410,6 +1410,34 @@ def _error(code, message, status, use_json=False):
     return status, {"Content-Type": "application/xml"}, body
 
 
+# ---------------------------------------------------------------------------
+# CloudFormation integration
+# ---------------------------------------------------------------------------
+
+
+def cloudformation_put_metric_alarm(alarm: dict) -> None:
+    """Store a PutMetricAlarm-shaped alarm dict (CloudFormation create/update)."""
+    name = alarm["AlarmName"]
+    is_new = name not in _alarms
+    _alarms[name] = alarm
+    if is_new:
+        _record_history(
+            name,
+            "INSUFFICIENT_DATA",
+            "INSUFFICIENT_DATA",
+            "Unchecked: Initial alarm creation",
+        )
+    _evaluate_alarm(alarm)
+
+
+def cloudformation_delete_metric_alarm(name: str) -> None:
+    """Remove a metric alarm created from a template (not composite alarms)."""
+    _alarms.pop(name, None)
+    _resource_tags.pop(
+        f"arn:aws:cloudwatch:{REGION}:{get_account_id()}:alarm:{name}", None
+    )
+
+
 def reset():
     _alarms.clear()
     _composite_alarms.clear()

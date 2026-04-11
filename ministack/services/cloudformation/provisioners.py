@@ -20,6 +20,7 @@ import ministack.services.sns as _sns
 import ministack.services.dynamodb as _dynamodb
 import ministack.services.lambda_svc as _lambda_svc
 import ministack.services.ssm as _ssm
+import ministack.services.cloudwatch as _cw
 import ministack.services.cloudwatch_logs as _cw_logs
 import ministack.services.eventbridge as _eb
 import ministack.services.iam_sts as _iam_sts
@@ -2033,6 +2034,96 @@ def _r53_hosted_zone_delete(physical_id, props):
 
 
 # ---------------------------------------------------------------------------
+# CloudWatch Alarm (standard metric alarms)
+# ---------------------------------------------------------------------------
+
+
+def _cw_metric_alarm_create(logical_id, props, stack_name):
+    if props.get("Metrics"):
+        raise ValueError(
+            "AWS::CloudWatch::Alarm Properties.Metrics (metric math) is not supported; "
+            "use MetricName and Namespace."
+        )
+    name = props.get("AlarmName") or _physical_name(stack_name, logical_id, max_len=255)
+    metric_name = props.get("MetricName")
+    namespace = props.get("Namespace")
+    if not metric_name or not namespace:
+        raise ValueError("MetricName and Namespace are required for AWS::CloudWatch::Alarm")
+    comparison = props.get("ComparisonOperator")
+    if not comparison:
+        raise ValueError("ComparisonOperator is required for AWS::CloudWatch::Alarm")
+    if props.get("Threshold") is None:
+        raise ValueError("Threshold is required for AWS::CloudWatch::Alarm")
+
+    period = int(props.get("Period", 60))
+    eval_periods = int(props.get("EvaluationPeriods", 1))
+    dta = props.get("DatapointsToAlarm")
+    datapoints = int(dta if dta is not None else eval_periods)
+    ext_stat = props.get("ExtendedStatistic") or None
+    if isinstance(ext_stat, str) and not ext_stat.strip():
+        ext_stat = None
+    statistic = props.get("Statistic") or "Average"
+
+    dims = props.get("Dimensions") or []
+    if not isinstance(dims, list):
+        dims = []
+
+    ae = props.get("ActionsEnabled", True)
+    if isinstance(ae, str):
+        ae = ae.lower() not in ("false", "0", "no")
+
+    def _as_str_list(key):
+        v = props.get(key) or []
+        if isinstance(v, list):
+            return [str(x) for x in v]
+        if v in (None, ""):
+            return []
+        return [str(v)]
+
+    alarm_actions = _as_str_list("AlarmActions")
+    ok_actions = _as_str_list("OKActions")
+    insuff_actions = _as_str_list("InsufficientDataActions")
+    treat = props.get("TreatMissingData", "missing") or "missing"
+
+    alarm = {
+        "AlarmName": name,
+        "AlarmArn": f"arn:aws:cloudwatch:{REGION}:{get_account_id()}:alarm:{name}",
+        "AlarmDescription": props.get("AlarmDescription", "") or "",
+        "MetricName": metric_name,
+        "Namespace": namespace,
+        "Statistic": statistic,
+        "ExtendedStatistic": ext_stat,
+        "Period": period,
+        "EvaluationPeriods": eval_periods,
+        "DatapointsToAlarm": datapoints,
+        "Threshold": float(props["Threshold"]),
+        "ComparisonOperator": comparison,
+        "TreatMissingData": treat,
+        "StateValue": _cw._alarms[name]["StateValue"]
+        if name in _cw._alarms
+        else "INSUFFICIENT_DATA",
+        "StateReason": _cw._alarms[name]["StateReason"]
+        if name in _cw._alarms
+        else "Unchecked: Initial alarm creation",
+        "StateUpdatedTimestamp": time.time(),
+        "ActionsEnabled": ae,
+        "AlarmActions": alarm_actions,
+        "OKActions": ok_actions,
+        "InsufficientDataActions": insuff_actions,
+        "Dimensions": dims,
+        "Unit": props.get("Unit"),
+        "AlarmConfigurationUpdatedTimestamp": time.time(),
+    }
+    _cw.cloudformation_put_metric_alarm(alarm)
+    arn = alarm["AlarmArn"]
+    return name, {"Arn": arn}
+
+
+def _cw_metric_alarm_delete(physical_id, props):
+    _cw.cloudformation_delete_metric_alarm(physical_id)
+
+
+# ---------------------------------------------------------------------------
 # ApiGatewayV2 Api
 # ---------------------------------------------------------------------------
 
@@ -2433,6 +2524,7 @@ _RESOURCE_HANDLERS = {
     "AWS::SES::EmailIdentity": {"create": _ses_email_identity_create, "delete": _ses_email_identity_delete},
     "AWS::WAFv2::WebACL": {"create": _waf_web_acl_create, "delete": _waf_web_acl_delete},
     "AWS::CloudFront::Distribution": {"create": _cf_distribution_create, "delete": _cf_distribution_delete},
+    "AWS::CloudWatch::Alarm": {"create": _cw_metric_alarm_create, "delete": _cw_metric_alarm_delete},
     "AWS::RDS::DBCluster": {"create": _rds_db_cluster_create, "delete": _rds_db_cluster_delete},
     # CDK metadata — safe to ignore
     "AWS::CDK::Metadata": {"create": lambda lid, props, sn: (f"CDKMetadata-{lid}", {}), "delete": lambda pid, props: None},
