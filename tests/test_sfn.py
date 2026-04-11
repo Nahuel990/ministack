@@ -2301,3 +2301,33 @@ def test_sfn_aws_sdk_rdsdata_path_mapping():
     assert rds_data_paths["BeginTransaction"] == "/BeginTransaction"
     assert rds_data_paths["CommitTransaction"] == "/CommitTransaction"
     assert rds_data_paths["RollbackTransaction"] == "/RollbackTransaction"
+# ---------------------------------------------------------------------------
+# Terraform compatibility tests
+# ---------------------------------------------------------------------------
+
+
+def test_sfn_validate_state_machine_definition(sfn):
+    """ValidateStateMachineDefinition must return OK (required by Terraform v5.42.0+)."""
+    definition = json.dumps({
+        "StartAt": "Pass",
+        "States": {"Pass": {"Type": "Succeed"}},
+    })
+    resp = sfn.validate_state_machine_definition(definition=definition)
+    assert resp["result"] == "OK"
+    assert resp["diagnostics"] == []
+
+
+def test_sfn_validate_state_machine_definition_with_type(sfn):
+    """ValidateStateMachineDefinition should accept optional type parameter."""
+    definition = json.dumps({
+        "StartAt": "Hello",
+        "States": {
+            "Hello": {"Type": "Pass", "Result": "world", "End": True},
+        },
+    })
+    resp = sfn.validate_state_machine_definition(
+        definition=definition,
+        type="STANDARD",
+    )
+    assert resp["result"] == "OK"
+    assert isinstance(resp["diagnostics"], list)
