@@ -216,6 +216,7 @@ if _result is not None:
 _NODE_WRAPPER_SCRIPT = """\
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const codeDir = process.env._LAMBDA_CODE_DIR || '/var/task';
 const modPath  = process.env._LAMBDA_HANDLER_MODULE;
@@ -240,10 +241,38 @@ const context = {
 
 let input = '';
 process.stdin.on('data', d => input += d);
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
   const event = JSON.parse(input);
-  const mod = require(path.resolve(codeDir, modPath));
-  const handler = mod[fnName];
+  const fullPath = path.resolve(codeDir, modPath);
+  let mod;
+  let resolvedPath;
+  try {
+    resolvedPath = require.resolve(fullPath);
+    mod = require(resolvedPath);
+  } catch (reqErr) {
+    if (reqErr.code === 'ERR_REQUIRE_ESM' && resolvedPath) {
+      mod = await import(pathToFileURL(resolvedPath).href);
+    } else if (reqErr.code === 'MODULE_NOT_FOUND') {
+      const mjsPath = fullPath + '.mjs';
+      const missingHandlerEntry =
+        (reqErr.message && reqErr.message.includes("'" + fullPath + "'")) ||
+        (resolvedPath && reqErr.message && reqErr.message.includes("'" + resolvedPath + "'"));
+      if (missingHandlerEntry && fs.existsSync(mjsPath)) {
+        mod = await import(pathToFileURL(mjsPath).href);
+      } else {
+        throw reqErr;
+      }
+    } else {
+      throw reqErr;
+    }
+  }
+  const handler = mod[fnName] || (mod.default && mod.default[fnName]) || mod.default;
+  if (typeof handler !== 'function') {
+    process.stderr.write(
+      "Handler '" + fnName + "' in module '" + modPath + "' is undefined or not a function"
+    );
+    process.exit(1);
+  }
   Promise.resolve(handler(event, context)).then(result => {
     if (result !== undefined) process.stdout.write(JSON.stringify(result));
   }).catch(err => {
