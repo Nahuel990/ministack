@@ -412,6 +412,7 @@ subnet = ec2.create_subnet(
 | `AWS::Lambda::LayerVersion` | Layer version ARN | LayerVersionArn, Arn |
 | `AWS::StepFunctions::StateMachine` | State machine ARN | Arn, Name |
 | `AWS::Route53::HostedZone` | Zone ID | Id, NameServers |
+| `AWS::Route53::RecordSet` | Record FQDN (trailing dot) | Name |
 | `AWS::ApiGatewayV2::Api` | API ID | ApiId, ApiEndpoint |
 | `AWS::ApiGatewayV2::Stage` | Stage ID | StageName |
 | `AWS::SES::EmailIdentity` | Identity | EmailIdentity |
