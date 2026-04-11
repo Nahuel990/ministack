@@ -161,6 +161,55 @@ def test_ssm_add_remove_tags(ssm):
     assert "team" not in tag_map2
     assert tag_map2.get("env") == "prod"
 
+def test_ssm_put_parameter_with_tags_then_list(ssm):
+    """PutParameter with Tags must be readable via ListTagsForResource (GH-249)."""
+    import uuid as _uuid
+
+    pname = f"/intg/put-tags/{_uuid.uuid4().hex[:8]}"
+    ssm.put_parameter(
+        Name=pname,
+        Value="tagged-value",
+        Type="String",
+        Tags=[{"Key": "env", "Value": "prod"}, {"Key": "team", "Value": "backend"}],
+    )
+    tags = ssm.list_tags_for_resource(ResourceType="Parameter", ResourceId=pname)
+    tag_map = {t["Key"]: t["Value"] for t in tags["TagList"]}
+    assert tag_map.get("env") == "prod"
+    assert tag_map.get("team") == "backend"
+
+
+def test_ssm_put_parameter_tags_work_with_add_and_remove(ssm):
+    """Tags set via PutParameter must be compatible with AddTags/RemoveTags (GH-249)."""
+    import uuid as _uuid
+
+    pname = f"/intg/put-tags-compat/{_uuid.uuid4().hex[:8]}"
+    ssm.put_parameter(
+        Name=pname,
+        Value="v1",
+        Type="String",
+        Tags=[{"Key": "env", "Value": "dev"}],
+    )
+    # AddTagsToResource on top of PutParameter tags
+    ssm.add_tags_to_resource(
+        ResourceType="Parameter",
+        ResourceId=pname,
+        Tags=[{"Key": "team", "Value": "platform"}],
+    )
+    tags = ssm.list_tags_for_resource(ResourceType="Parameter", ResourceId=pname)
+    tag_map = {t["Key"]: t["Value"] for t in tags["TagList"]}
+    assert tag_map.get("env") == "dev"
+    assert tag_map.get("team") == "platform"
+
+    # RemoveTagsFromResource on PutParameter-created tag
+    ssm.remove_tags_from_resource(
+        ResourceType="Parameter", ResourceId=pname, TagKeys=["env"]
+    )
+    tags2 = ssm.list_tags_for_resource(ResourceType="Parameter", ResourceId=pname)
+    tag_map2 = {t["Key"]: t["Value"] for t in tags2["TagList"]}
+    assert "env" not in tag_map2
+    assert tag_map2.get("team") == "platform"
+
+
 def test_ssm_get_parameter_history(ssm):
     """GetParameterHistory returns all versions of a parameter."""
     ssm.put_parameter(Name="/qa/ssm/hist", Value="v1", Type="String")
