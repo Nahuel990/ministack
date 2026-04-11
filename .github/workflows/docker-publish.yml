@@ -7,6 +7,7 @@ on:
 
 env:
   DOCKERHUB_IMAGE: nahuelnucera/ministack
+  DOCKERHUB_IMAGE_ORG: ministackorg/ministack
 
 jobs:
   publish:
@@ -31,7 +32,9 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.DOCKERHUB_IMAGE }}
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.DOCKERHUB_IMAGE_ORG }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
