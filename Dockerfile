@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
         "defusedxml>=0.7" \
         "docker>=7.0.0" \
         "pyyaml>=6.0" \
-        "cryptography>=41.0"
+        "cryptography>=41.0" \
+        "awscli"
 
 COPY ministack/ ministack/
 
