@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.5] — 2026-04-12
+
+### Fixed
+- **Secrets Manager partial ARN lookup** — `GetSecretValue` and all other operations now resolve secrets by partial ARN (without the random 6-character suffix), matching real AWS behaviour. Previously returned `ResourceNotFoundException`.
+
+---
+
 ## [1.2.4] — 2026-04-11
 
 ### Added

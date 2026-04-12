@@ -321,3 +321,19 @@ def test_secretsmanager_kms_key_id_on_update(sm):
     resp = sm.describe_secret(SecretId="kms-test-secret")
     assert resp["KmsKeyId"] == "alias/other-key"
 
+
+def test_secretsmanager_get_by_partial_arn(sm):
+    """GetSecretValue with a partial ARN (no random suffix) must resolve the secret."""
+    import uuid as _uuid
+    name = f"partial-arn-test/{_uuid.uuid4().hex[:8]}"
+    created = sm.create_secret(Name=name, SecretString="partial-arn-value")
+    full_arn = created["ARN"]
+
+    # Full ARN works
+    assert sm.get_secret_value(SecretId=full_arn)["SecretString"] == "partial-arn-value"
+
+    # Partial ARN: strip the random suffix (last hyphen + 6 chars)
+    partial_arn = full_arn.rsplit("-", 1)[0]
+    assert partial_arn != full_arn
+    assert sm.get_secret_value(SecretId=partial_arn)["SecretString"] == "partial-arn-value"
+

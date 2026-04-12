@@ -60,7 +60,13 @@ if _restored:
 # ---------------------------------------------------------------------------
 
 def _resolve(secret_id):
-    """Look up a secret by name or ARN.  Returns (storage_key, record) or (None, None)."""
+    """Look up a secret by name or ARN.  Returns (storage_key, record) or (None, None).
+
+    Supports three lookup modes (matching real AWS behaviour):
+      1. By name:        "my-secret"
+      2. By full ARN:    "arn:aws:secretsmanager:...:secret:my-secret-A1B2C3"
+      3. By partial ARN: "arn:aws:secretsmanager:...:secret:my-secret" (no random suffix)
+    """
     if not secret_id:
         return None, None
     if secret_id in _secrets:
@@ -68,6 +74,11 @@ def _resolve(secret_id):
     for key, s in _secrets.items():
         if s["ARN"] == secret_id:
             return key, s
+    # Partial ARN: prefix match against stored ARNs (AWS behaviour)
+    if secret_id.startswith("arn:"):
+        for key, s in _secrets.items():
+            if s["ARN"].startswith(secret_id):
+                return key, s
     return None, None
 
 
