@@ -483,8 +483,10 @@ def test_oac_delete_no_if_match(cloudfront):
     url = f"{endpoint}/2020-05-31/origin-access-control/{oac_id}"
     req = urllib.request.Request(
         url,
+        data=b"",
         method="DELETE",
         headers={
+            "Content-Length": "0",
             "Authorization": "AWS4-HMAC-SHA256 Credential=test/20240101/us-east-1/cloudfront/aws4_request, SignedHeaders=host, Signature=fake",
         },
     )

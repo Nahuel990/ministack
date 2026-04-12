@@ -216,11 +216,13 @@ async def app(scope, receive, send):
             headers[name.decode("latin-1").lower()] = value.decode("latin-1")
 
     body = b""
-    while True:
-        message = await receive()
-        body += message.get("body", b"")
-        if not message.get("more_body", False):
-            break
+    has_body = headers.get("content-length") or headers.get("transfer-encoding")
+    if has_body or method in ("POST", "PUT", "PATCH"):
+        while True:
+            message = await receive()
+            body += message.get("body", b"")
+            if not message.get("more_body", False):
+                break
 
     # AWS SDK v2 sends PutObject with Transfer-Encoding: chunked and
     # x-amz-content-sha256: STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER].
