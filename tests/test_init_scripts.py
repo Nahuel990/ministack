@@ -1,5 +1,6 @@
 """Tests for init script collection and execution from multiple directories (.sh and .py)."""
 
+import os
 import sys
 
 from ministack.app import _collect_scripts, _run_init_scripts
@@ -74,7 +75,7 @@ def test_collect_scripts_alphabetical_order(tmp_path):
     (tmp_path / "02-middle.sh").write_text("")
 
     result = _collect_scripts(str(tmp_path))
-    names = [r.split("/")[-1] for r in result]
+    names = [os.path.basename(r) for r in result]
     assert names == ["01-first.sh", "02-middle.sh", "03-last.sh"]
 
 
@@ -94,7 +95,7 @@ def test_collect_scripts_mixed_sort_order(tmp_path):
     (tmp_path / "02-migrate.py").write_text("")
 
     result = _collect_scripts(str(tmp_path))
-    names = [r.split("/")[-1] for r in result]
+    names = [os.path.basename(r) for r in result]
     assert names == ["01-setup.sh", "02-migrate.py", "03-cleanup.sh"]
 
 
@@ -107,7 +108,7 @@ def test_collect_scripts_ignores_non_script_files(tmp_path):
 
     result = _collect_scripts(str(tmp_path))
     assert len(result) == 2
-    names = [r.split("/")[-1] for r in result]
+    names = [os.path.basename(r) for r in result]
     assert names == ["01-seed.sh", "02-migrate.py"]
 
 

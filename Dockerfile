@@ -4,7 +4,7 @@ LABEL maintainer="MiniStack" \
       description="Local AWS Service Emulator — drop-in LocalStack replacement"
 
 # Upgrade base packages to pick up latest security patches.
-RUN apk upgrade --no-cache && apk add --no-cache nodejs && rm -f /usr/bin/wget /bin/wget
+RUN apk upgrade --no-cache && apk add --no-cache nodejs aws-cli && rm -f /usr/bin/wget /bin/wget
 
 WORKDIR /opt/ministack
 
@@ -16,8 +16,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
         "defusedxml>=0.7" \
         "docker>=7.0.0" \
         "pyyaml>=6.0" \
-        "cryptography>=41.0" \
-        "awscli"
+        "cryptography>=41.0"
 
 COPY ministack/ ministack/
 
