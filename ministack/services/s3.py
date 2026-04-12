@@ -390,7 +390,7 @@ def _dispatch(
                 return _get_object_retention(bucket, key)
             if "legal-hold" in query_params:
                 return _get_object_legal_hold(bucket, key)
-            return _get_object(bucket, key, headers)
+            return _get_object(bucket, key, headers, query_params)
 
         if method == "PUT":
             if "partNumber" in query_params and "uploadId" in query_params:
@@ -1036,9 +1036,13 @@ def _list_object_versions(bucket_name: str, query_params: dict):
     SubElement(root, "VersionIdMarker").text = version_id_marker
     SubElement(root, "MaxKeys").text = str(max_keys)
 
-    keys = sorted(
-        k for k in bucket["objects"] if k.startswith(prefix) and k > key_marker
-    )
+    # Collect all keys: from objects AND from version history (deleted objects)
+    all_keys = set(k for k in bucket["objects"] if k.startswith(prefix) and k > key_marker)
+    for (bn, k) in _object_versions:
+        if bn == bucket_name and k.startswith(prefix) and k > key_marker:
+            all_keys.add(k)
+    keys = sorted(all_keys)
+
     is_truncated = False
     SubElement(root, "IsTruncated").text = "false"
 
@@ -1055,21 +1059,33 @@ def _list_object_versions(bucket_name: str, query_params: dict):
                 if count >= max_keys:
                     is_truncated = True
                     break
-                ver = SubElement(root, "Version")
-                SubElement(ver, "Key").text = k
-                SubElement(ver, "VersionId").text = v["version_id"]
-                SubElement(ver, "IsLatest").text = "true" if v["is_latest"] else "false"
-                SubElement(ver, "LastModified").text = v["last_modified"]
-                SubElement(ver, "ETag").text = v["etag"]
-                SubElement(ver, "Size").text = str(v["size"])
-                SubElement(ver, "StorageClass").text = "STANDARD"
-                owner = SubElement(ver, "Owner")
-                SubElement(owner, "ID").text = "owner-id"
-                SubElement(owner, "DisplayName").text = "ministack"
+                if v.get("is_delete_marker"):
+                    dm = SubElement(root, "DeleteMarker")
+                    SubElement(dm, "Key").text = k
+                    SubElement(dm, "VersionId").text = v["version_id"]
+                    SubElement(dm, "IsLatest").text = "true" if v["is_latest"] else "false"
+                    SubElement(dm, "LastModified").text = v["last_modified"]
+                    owner = SubElement(dm, "Owner")
+                    SubElement(owner, "ID").text = "owner-id"
+                    SubElement(owner, "DisplayName").text = "ministack"
+                else:
+                    ver = SubElement(root, "Version")
+                    SubElement(ver, "Key").text = k
+                    SubElement(ver, "VersionId").text = v["version_id"]
+                    SubElement(ver, "IsLatest").text = "true" if v["is_latest"] else "false"
+                    SubElement(ver, "LastModified").text = v["last_modified"]
+                    SubElement(ver, "ETag").text = v["etag"]
+                    SubElement(ver, "Size").text = str(v["size"])
+                    SubElement(ver, "StorageClass").text = "STANDARD"
+                    owner = SubElement(ver, "Owner")
+                    SubElement(owner, "ID").text = "owner-id"
+                    SubElement(owner, "DisplayName").text = "ministack"
                 count += 1
         else:
             # No version history — return current object with null version
-            obj = bucket["objects"][k]
+            obj = bucket["objects"].get(k)
+            if not obj:
+                continue
             ver = SubElement(root, "Version")
             SubElement(ver, "Key").text = k
             SubElement(ver, "VersionId").text = obj.get("version_id", "null")
@@ -1462,10 +1478,28 @@ def _apply_object_lock_from_headers(bucket_name: str, key: str, headers: dict):
         _object_legal_hold[(bucket_name, key)] = lock_legal
 
 
-def _get_object(bucket_name: str, key: str, headers: dict):
+def _get_object(bucket_name: str, key: str, headers: dict, query_params: dict = None):
+    query_params = query_params or {}
     bucket = _ensure_bucket(bucket_name)
     if bucket is None:
         return _no_such_bucket(bucket_name)
+
+    version_id = _qp(query_params, "versionId", "")
+    if version_id:
+        vkey = (bucket_name, key)
+        versions = _object_versions.get(vkey, [])
+        for v in versions:
+            if v["version_id"] == version_id:
+                resp_headers = {
+                    "Content-Type": "application/octet-stream",
+                    "ETag": v["etag"],
+                    "Content-Length": str(v["size"]),
+                    "Last-Modified": v["last_modified"],
+                    "x-amz-version-id": v["version_id"],
+                }
+                return 200, resp_headers, v.get("data", b"")
+        return _error("NoSuchVersion", "The specified version does not exist.", 404, f"/{bucket_name}/{key}")
+
     if key not in bucket["objects"]:
         return _error(
             "NoSuchKey",
@@ -1534,19 +1568,38 @@ def _delete_object(bucket_name: str, key: str, headers: dict | None = None):
         if lock_err:
             return lock_err
 
+    versioning = _bucket_versioning.get(bucket_name, "")
+    if versioning in ("Enabled", "Suspended"):
+        # Add a delete marker instead of removing version history
+        delete_marker_id = new_uuid()
+        vkey = (bucket_name, key)
+        if vkey not in _object_versions:
+            _object_versions[vkey] = []
+        # Mark all previous versions as not latest
+        for v in _object_versions[vkey]:
+            v["is_latest"] = False
+        _object_versions[vkey].append({
+            "version_id": delete_marker_id,
+            "last_modified": now_iso(),
+            "etag": "",
+            "size": 0,
+            "is_latest": True,
+            "is_delete_marker": True,
+        })
+        existed = key in bucket["objects"]
+        bucket["objects"].pop(key, None)
+        if existed:
+            _fire_s3_event_async(bucket_name, key, "s3:ObjectRemoved:Delete")
+        return 204, {"x-amz-delete-marker": "true", "x-amz-version-id": delete_marker_id}, b""
+
     existed = key in bucket["objects"]
     bucket["objects"].pop(key, None)
     _object_tags.pop((bucket_name, key), None)
     _object_retention.pop((bucket_name, key), None)
     _object_legal_hold.pop((bucket_name, key), None)
-    _object_versions.pop((bucket_name, key), None)
 
     if existed:
         _fire_s3_event_async(bucket_name, key, "s3:ObjectRemoved:Delete")
-
-    versioning = _bucket_versioning.get(bucket_name, "")
-    if versioning in ("Enabled", "Suspended"):
-        return 204, {"x-amz-delete-marker": "true", "x-amz-version-id": "null"}, b""
     return 204, {}, b""
 
 
@@ -2904,7 +2957,7 @@ def reset():
     global _bucket_versioning, _bucket_encryption, _bucket_lifecycle, _bucket_cors
     global _bucket_acl, _bucket_websites, _bucket_logging_config
     global _bucket_accelerate_config, _bucket_request_payment_config
-    global _object_tags, _multipart_uploads
+    global _object_tags, _multipart_uploads, _object_versions
     global \
         _bucket_object_lock, \
         _bucket_replication, \
@@ -2930,5 +2983,6 @@ def reset():
         _bucket_replication,
         _object_retention,
         _object_legal_hold,
+        _object_versions,
     ):
         d.clear()

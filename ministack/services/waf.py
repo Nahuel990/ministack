@@ -171,6 +171,10 @@ def _delete_web_acl(data):
     uid = data.get("Id", "")
     if uid not in _web_acls:
         return _waf_err("WAFNonexistentItemException", f"WebACL {uid} not found")
+    lock_token = data.get("LockToken", "")
+    if lock_token != _web_acls[uid]["LockToken"]:
+        return _waf_err("WAFOptimisticLockException",
+                        "The resource you are trying to update has changed. Please retry.")
     arn = _web_acls[uid]["ARN"]
     del _web_acls[uid]
     _waf_tags.pop(arn, None)

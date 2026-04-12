@@ -175,6 +175,13 @@ def _act_create_queue(data: dict, _u: str) -> dict:
 
     url = _queue_url(name)
     if url in _queues:
+        # If attrs differ from existing queue, return error
+        if attrs:
+            existing = _queues[url]["attributes"]
+            for k, v in attrs.items():
+                if k in existing and existing[k] != v:
+                    raise _Err("QueueNameExists",
+                               "A queue already exists with the same name and a different value for attribute " + k)
         return {"QueueUrl": url}
 
     ts = str(int(time.time()))

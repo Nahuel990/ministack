@@ -351,6 +351,12 @@ def _start_execution(data):
     exec_arn = (f"arn:aws:states:{REGION}:{get_account_id()}"
                 f":execution:{sm['name']}:{name}")
 
+    # Reject duplicate execution names
+    if exec_arn in _executions:
+        return error_response_json(
+            "ExecutionAlreadyExists",
+            f"Execution already exists: '{exec_arn}'", 400)
+
     start_date = now_iso()
     input_str = data.get("input", "{}")
 
@@ -423,6 +429,10 @@ def _describe_execution(data):
         "output": execution["output"],
         "outputDetails": execution.get("outputDetails", {"included": True}),
     }
+    if execution.get("error"):
+        result["error"] = execution["error"]
+    if execution.get("cause"):
+        result["cause"] = execution["cause"]
     return json_response(result)
 
 
@@ -1082,6 +1092,8 @@ def _run_execution(exec_arn):
 
 def _fail_execution(execution, error, cause):
     execution["status"] = "FAILED"
+    execution["error"] = error
+    execution["cause"] = cause
     execution["output"] = json.dumps({"Error": error, "Cause": cause})
     execution["stopDate"] = now_iso()
     _add_event(execution, "ExecutionFailed", {

@@ -440,6 +440,7 @@ def _create_api(data):
         "disableSchemaValidation": data.get("disableSchemaValidation", False),
         "disableExecuteApiEndpoint": data.get("disableExecuteApiEndpoint", False),
         "version": data.get("version", ""),
+        "description": data.get("description", ""),
     }
     if data.get("corsConfiguration"):
         api["corsConfiguration"] = data["corsConfiguration"]

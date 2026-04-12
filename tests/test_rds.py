@@ -94,7 +94,7 @@ def test_rds_delete_instance_v2(rds):
     rds.delete_db_instance(DBInstanceIdentifier="rds-del-v2", SkipFinalSnapshot=True)
     with pytest.raises(ClientError) as exc:
         rds.describe_db_instances(DBInstanceIdentifier="rds-del-v2")
-    assert exc.value.response["Error"]["Code"] == "DBInstanceNotFound"
+    assert exc.value.response["Error"]["Code"] == "DBInstanceNotFoundFault"
 
 def test_rds_modify_instance_v2(rds):
     rds.create_db_instance(

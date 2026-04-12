@@ -65,7 +65,7 @@ def run():
             "function_name": init.get("function_name", ""),
             "memory_limit_in_mb": init.get("memory", 128),
             "invoked_function_arn": init.get("arn", ""),
-            "aws_request_id": event.get("_request_id", ""),
+            "aws_request_id": event.pop("_request_id", ""),
         })()
         try:
             result = handler_fn(event, context)

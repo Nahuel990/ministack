@@ -836,6 +836,11 @@ def _create_resource(api_id, parent_id, data):
     if parent_id not in _resources.get(api_id, {}):
         return _v1_error("NotFoundException", "Invalid Resource identifier specified", 404)
     path_part = data.get("pathPart", "")
+    # Check for duplicate pathPart under same parent
+    for r in _resources.get(api_id, {}).values():
+        if r.get("parentId") == parent_id and r.get("pathPart") == path_part:
+            return _v1_error("ConflictException",
+                             f"Another resource with the same parent already has this name: {path_part}", 409)
     resource_id = _new_id()[:8]
     resource = {
         "id": resource_id,

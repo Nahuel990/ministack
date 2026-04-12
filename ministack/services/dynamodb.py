@@ -663,8 +663,11 @@ def _batch_write_item(data):
     for table_name, requests in request_items.items():
         table = _tables.get(table_name)
         if not table:
-            unprocessed[table_name] = requests
-            continue
+            return error_response_json(
+                "ResourceNotFoundException",
+                f"Requested resource not found",
+                400,
+            )
         for req in requests:
             if "PutRequest" in req:
                 item = req["PutRequest"]["Item"]

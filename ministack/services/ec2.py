@@ -271,6 +271,10 @@ def _run_instances(p):
     instance_type = _p(p, "InstanceType") or "t2.micro"
     min_count = int(_p(p, "MinCount") or "1")
     max_count = int(_p(p, "MaxCount") or "1")
+    if min_count > max_count:
+        return _error("InvalidParameterCombination",
+                      f"Value ({min_count}) for parameter MinCount is not valid. "
+                      f"MinCount must not exceed MaxCount.", 400)
     key_name = _p(p, "KeyName") or ""
     subnet_id = _p(p, "SubnetId") or _DEFAULT_SUBNET_ID
     user_data = _p(p, "UserData") or ""
@@ -530,6 +534,7 @@ def _create_security_group(p):
              "Ipv6Ranges": [], "PrefixListIds": [], "UserIdGroupPairs": []},
         ],
     }
+    _parse_tag_specs(p, "security-group", sg_id)
     return _xml(200, "CreateSecurityGroupResponse",
                 f"<return>true</return><groupId>{sg_id}</groupId>")
 
@@ -537,6 +542,10 @@ def _create_security_group(p):
 def _delete_security_group(p):
     sg_id = _p(p, "GroupId")
     if sg_id and sg_id in _security_groups:
+        # Block deletion of default security group
+        if _security_groups[sg_id]["GroupName"] == "default":
+            return _error("CannotDelete",
+                          f"the specified group: \"{sg_id}\" name: \"default\" cannot be deleted by a user", 400)
         del _security_groups[sg_id]
     elif sg_id:
         return _error("InvalidGroup.NotFound",
@@ -637,6 +646,7 @@ def _create_key_pair(p):
         "KeyFingerprint": fingerprint,
         "KeyPairId": f"key-{new_uuid().replace('-','')[:17]}",
     }
+    _parse_tag_specs(p, "key-pair", _key_pairs[name]['KeyPairId'])
     return _xml(200, "CreateKeyPairResponse", f"""
         <keyName>{name}</keyName>
         <keyFingerprint>{fingerprint}</keyFingerprint>
@@ -777,6 +787,7 @@ def _create_vpc(p):
         "OwnerId": get_account_id(), "DefaultNetworkAclId": acl_id,
         "DefaultSecurityGroupId": sg_id, "MainRouteTableId": rtb_id,
     }
+    _parse_tag_specs(p, "vpc", vpc_id)
     return _xml(200, "CreateVpcResponse", _vpc_fields_xml(_vpcs[vpc_id], tag="vpc"))
 
 
@@ -784,6 +795,32 @@ def _delete_vpc(p):
     vpc_id = _p(p, "VpcId")
     if vpc_id not in _vpcs:
         return _error("InvalidVpcID.NotFound", f"The vpc ID '{vpc_id}' does not exist", 400)
+    # Check for attached subnets
+    for s in _subnets.values():
+        if s["VpcId"] == vpc_id:
+            return _error("DependencyViolation",
+                          f"The vpc '{vpc_id}' has dependencies and cannot be deleted.", 400)
+    # Check for non-default security groups
+    for sg in _security_groups.values():
+        if sg["VpcId"] == vpc_id and sg["GroupName"] != "default":
+            return _error("DependencyViolation",
+                          f"The vpc '{vpc_id}' has dependencies and cannot be deleted.", 400)
+    # Check for attached internet gateways
+    for igw in _internet_gateways.values():
+        for att in igw.get("Attachments", []):
+            if att.get("VpcId") == vpc_id:
+                return _error("DependencyViolation",
+                              f"The vpc '{vpc_id}' has dependencies and cannot be deleted.", 400)
+    # Clean up VPC-associated default resources
+    to_del_sgs = [sid for sid, sg in _security_groups.items() if sg["VpcId"] == vpc_id]
+    for sid in to_del_sgs:
+        del _security_groups[sid]
+    to_del_rtb = [rid for rid, r in _route_tables.items() if r["VpcId"] == vpc_id]
+    for rid in to_del_rtb:
+        del _route_tables[rid]
+    to_del_acl = [aid for aid, a in _network_acls.items() if a["VpcId"] == vpc_id]
+    for aid in to_del_acl:
+        del _network_acls[aid]
     del _vpcs[vpc_id]
     return _xml(200, "DeleteVpcResponse", "<return>true</return>")
 
@@ -834,6 +871,7 @@ def _create_subnet(p):
         "MapPublicIpOnLaunch": False,
         "OwnerId": get_account_id(),
     }
+    _parse_tag_specs(p, "subnet", subnet_id)
     return _xml(200, "CreateSubnetResponse", _subnet_fields_xml(_subnets[subnet_id], tag="subnet"))
 
 
@@ -857,6 +895,7 @@ def _create_internet_gateway(p):
         "OwnerId": get_account_id(),
         "Attachments": [],
     }
+    _parse_tag_specs(p, "internet-gateway", igw_id)
     return _xml(200, "CreateInternetGatewayResponse",
                 _igw_fields_xml(_internet_gateways[igw_id], tag="internetGateway"))
 
@@ -978,6 +1017,7 @@ def _create_route_table(p):
         ],
         "Associations": [],
     }
+    _parse_tag_specs(p, "route-table", rtb_id)
     return _xml(200, "CreateRouteTableResponse",
                 _rtb_fields_xml(_route_tables[rtb_id], tag="routeTable"))
 
@@ -1621,7 +1661,7 @@ def _volume_inner_xml(vol):
         <encrypted>{'true' if vol['Encrypted'] else 'false'}</encrypted>
         <multiAttachEnabled>{'true' if vol['MultiAttachEnabled'] else 'false'}</multiAttachEnabled>
         <attachmentSet>{attachments}</attachmentSet>
-        <tagSet/>"""
+        {_tag_set_xml(vol['VolumeId'])}"""
 
 
 # ---------------------------------------------------------------------------
@@ -1747,7 +1787,7 @@ def _snapshot_inner_xml(snap):
         <description>{_esc(snap['Description'])}</description>
         <encrypted>{'true' if snap['Encrypted'] else 'false'}</encrypted>
         <storageTier>{snap['StorageTier']}</storageTier>
-        <tagSet/>"""
+        {_tag_set_xml(snap['SnapshotId'])}"""
 
 
 # ---------------------------------------------------------------------------
@@ -1916,7 +1956,7 @@ def _rtb_fields_xml(rtb, tag="item"):
         <routeSet>{routes}</routeSet>
         <associationSet>{assocs}</associationSet>
         <propagatingVgwSet/>
-        <tagSet/>
+        {_tag_set_xml(rtb['RouteTableId'])}
     </{tag}>"""
 
 
@@ -1984,6 +2024,24 @@ def _p(params, key, default=""):
     if isinstance(val, list):
         return val[0] if val else default
     return val
+
+
+def _parse_tag_specs(p, resource_type, resource_id):
+    """Parse TagSpecification.N from params and store tags for the given resource."""
+    i = 1
+    while _p(p, f"TagSpecification.{i}.ResourceType"):
+        if _p(p, f"TagSpecification.{i}.ResourceType") == resource_type:
+            tags = []
+            j = 1
+            while _p(p, f"TagSpecification.{i}.Tag.{j}.Key"):
+                tags.append({
+                    "Key": _p(p, f"TagSpecification.{i}.Tag.{j}.Key"),
+                    "Value": _p(p, f"TagSpecification.{i}.Tag.{j}.Value", ""),
+                })
+                j += 1
+            if tags:
+                _tags[resource_id] = tags
+        i += 1
 
 
 def _parse_member_list(params, prefix):
@@ -2187,6 +2245,7 @@ def _create_nat_gateway(params):
     _nat_gateways[nat_id] = record
     if tags:
         _tags[nat_id] = tags
+    _parse_tag_specs(params, "natgateway", nat_id)
     inner = f"""<natGateway>
         <natGatewayId>{nat_id}</natGatewayId>
         <subnetId>{subnet_id}</subnetId>
@@ -2221,7 +2280,7 @@ def _describe_nat_gateways(params):
             <connectivityType>{nat['ConnectivityType']}</connectivityType>
             <createTime>{nat['CreateTime']}</createTime>
             <natGatewayAddressSet/>
-            <tagSet/>
+            {_tag_set_xml(nat['NatGatewayId'])}
         </item>"""
     return _xml(200, "DescribeNatGatewaysResponse",
                 f"<natGatewaySet>{items}</natGatewaySet>")
@@ -2258,6 +2317,7 @@ def _create_network_acl(params):
     _network_acls[acl_id] = record
     if tags:
         _tags[acl_id] = tags
+    _parse_tag_specs(params, "network-acl", acl_id)
     inner = f"""<networkAcl>
         <networkAclId>{acl_id}</networkAclId>
         <vpcId>{vpc_id}</vpcId>

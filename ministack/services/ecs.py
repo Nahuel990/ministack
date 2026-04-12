@@ -441,12 +441,8 @@ def _describe_task_definition(data):
     if not td:
         return error_response_json("ClientException",
             f"Unable to describe task definition: {td_ref}", 400)
-    include = set(data.get("include", [])) if isinstance(data, dict) else set()
     resp = {"taskDefinition": td}
-    if "TAGS" in include:
-        resp["tags"] = _tags.get(td["taskDefinitionArn"], [])
-    else:
-        resp["tags"] = []
+    resp["tags"] = _tags.get(td["taskDefinitionArn"], [])
     return json_response(resp)
 
 

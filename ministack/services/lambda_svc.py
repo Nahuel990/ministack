@@ -1832,7 +1832,7 @@ def _publish_version(name: str, data: dict):
 
     ver_config = copy.deepcopy(func["config"])
     ver_config["Version"] = str(ver_num)
-    ver_config["FunctionArn"] = _func_arn(name)
+    ver_config["FunctionArn"] = f"{_func_arn(name)}:{ver_num}"
     ver_config["RevisionId"] = new_uuid()
     if data.get("Description"):
         ver_config["Description"] = data["Description"]

@@ -319,7 +319,7 @@ def _delete_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _instances.get(db_id)
     if not instance:
-        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
 
     if instance.get("DeletionProtection"):
         return _error("InvalidParameterCombination",
@@ -352,7 +352,7 @@ def _describe_db_instances(p):
     if db_id:
         instance = _instances.get(db_id)
         if not instance:
-            return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
+            return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
         instances = [instance]
     else:
         instances = list(_instances.values())
@@ -369,7 +369,7 @@ def _modify_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _instances.get(db_id)
     if not instance:
-        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
 
     apply_immediately = _p(p, "ApplyImmediately") == "true"
 
@@ -435,7 +435,7 @@ def _start_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _instances.get(db_id)
     if not instance:
-        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
     instance["DBInstanceStatus"] = "available"
     return _single_instance_response("StartDBInstanceResponse", "StartDBInstanceResult", instance)
 
@@ -444,7 +444,7 @@ def _stop_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _instances.get(db_id)
     if not instance:
-        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
     instance["DBInstanceStatus"] = "stopped"
     return _single_instance_response("StopDBInstanceResponse", "StopDBInstanceResult", instance)
 
@@ -453,7 +453,7 @@ def _reboot_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _instances.get(db_id)
     if not instance:
-        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
     instance["DBInstanceStatus"] = "available"
     return _single_instance_response("RebootDBInstanceResponse", "RebootDBInstanceResult", instance)
 
@@ -468,7 +468,7 @@ def _create_read_replica(p):
 
     source = _instances.get(source_id)
     if not source:
-        return _error("DBInstanceNotFound", f"DBInstance {source_id} not found.", 404)
+        return _error("DBInstanceNotFoundFault", f"DBInstance {source_id} not found.", 404)
     if replica_id in _instances:
         return _error("DBInstanceAlreadyExistsFault", f"DBInstance {replica_id} already exists.", 400)
 
@@ -783,7 +783,7 @@ def _create_db_snapshot(p):
 
     instance = _instances.get(db_id)
     if not instance:
-        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
 
     snap = _create_snapshot_internal(snap_id, instance)
 
