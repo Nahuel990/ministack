@@ -633,8 +633,8 @@ MiniStack supports two types of init scripts, with LocalStack-compatible paths:
 
 | Phase | MiniStack path | LocalStack-compatible path |
 |-------|----------------|---------------------------|
-| Pre-start | `/docker-entrypoint-initaws.d/*.sh` | `/etc/localstack/init/boot.d/*.sh` |
-| Post-ready | `/docker-entrypoint-initaws.d/ready.d/*.sh` | `/etc/localstack/init/ready.d/*.sh` |
+| Pre-start | `/docker-entrypoint-initaws.d/*.{sh,py}` | `/etc/localstack/init/boot.d/*.{sh,py}` |
+| Post-ready | `/docker-entrypoint-initaws.d/ready.d/*.{sh,py}` | `/etc/localstack/init/ready.d/*.{sh,py}` |
 
 Scripts from both paths are merged, deduplicated by filename, and run in alphabetical order.
 If the same filename exists in both paths, the MiniStack-native path takes priority.

@@ -694,7 +694,7 @@ async def _wait_for_port(port, timeout=30):
 
 
 async def _run_ready_scripts():
-    """Execute .sh scripts from ready.d directories after the server is ready."""
+    """Execute .sh/.py scripts from ready.d directories after the server is ready."""
     scripts = _collect_scripts('/docker-entrypoint-initaws.d/ready.d', '/etc/localstack/init/ready.d')
     if not scripts:
         return
@@ -704,8 +704,9 @@ async def _run_ready_scripts():
     for script_path in scripts:
         logger.info('Running ready script: %s', script_path)
         try:
+            cmd = [sys.executable, script_path] if script_path.endswith('.py') else ['sh', script_path]
             proc = await asyncio.create_subprocess_exec(
-                'sh', script_path,
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=os.environ,
@@ -726,19 +727,19 @@ async def _run_ready_scripts():
 
 
 def _collect_scripts(*dirs):
-    """Collect .sh scripts from multiple directories, deduped by filename."""
+    """Collect .sh/.py scripts from multiple directories, deduped by filename."""
     seen = {}
     for d in dirs:
         if not os.path.isdir(d):
             continue
         for f in sorted(os.listdir(d)):
-            if f.endswith('.sh') and f not in seen:
+            if f.endswith(('.sh', '.py')) and f not in seen:
                 seen[f] = os.path.join(d, f)
     return [seen[f] for f in sorted(seen)]
 
 
 def _run_init_scripts():
-    """Execute .sh scripts from init directories in alphabetical order."""
+    """Execute .sh/.py scripts from init directories in alphabetical order."""
     scripts = _collect_scripts('/docker-entrypoint-initaws.d', '/etc/localstack/init/boot.d')
     if not scripts:
         return
@@ -746,8 +747,9 @@ def _run_init_scripts():
     for script_path in scripts:
         logger.info("Running init script: %s", script_path)
         try:
+            cmd = [sys.executable, script_path] if script_path.endswith('.py') else ["sh", script_path]
             result = subprocess.run(
-                ["sh", script_path], env=os.environ,
+                cmd, env=os.environ,
                 capture_output=True, text=True, timeout=300,
             )
             if result.stdout:
