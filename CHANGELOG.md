@@ -19,7 +19,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **EC2 CreateVolume/CreateSnapshot TagSpecifications** — tags specified in `TagSpecifications` are now persisted.
 - **ElastiCache CreateCacheSubnetGroup** — `DescribeCacheSubnetGroups` now returns the `Subnets` list with subnet identifiers and availability zones.
 - **SNS error code** — `GetTopicAttributes`, `Publish`, and other operations on nonexistent topics now return `NotFound` instead of `NotFoundException`, matching real AWS.
-- **LocalStack init script path compatibility** — now supports `/etc/localstack/init/ready.d/` in addition to `/docker-entrypoint-initaws.d/ready.d/` for drop-in LocalStack replacement.
+- **LocalStack init script path compatibility** — now supports `/etc/localstack/init/ready.d/` in addition to `/docker-entrypoint-initaws.d/ready.d/` for drop-in LocalStack replacement. Contributed by @AdigaAkhil (#271)
 - **CloudWatch error response protocol mismatch** — error responses now match the request protocol (JSON errors for JSON requests, CBOR errors for CBOR requests). Previously, JSON-protocol requests received CBOR-encoded errors causing boto3 `UnicodeDecodeError`.
 - **AppSync apiId length** — `CreateGraphQLApi` now generates 26-character alphanumeric IDs matching real AWS format. Previously 8 characters, which broke boto3 ARN validation for tag operations.
 - **EC2 CreateTags persistence** — tags applied via `CreateTags` now appear in `DescribeVpcs`, `DescribeSubnets`, `DescribeSecurityGroups`, and `DescribeInternetGateways`. Previously returned empty `<tagSet/>`.
