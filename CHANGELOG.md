@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **SFN aws-sdk error code prefixing** — SDK errors from `aws-sdk:*` task integrations are now prefixed with the service name (e.g., `SecretsManager.ResourceExistsException` instead of bare `ResourceExistsException`), matching real AWS Step Functions behavior. This allows ASL `Catch` blocks that match on service-specific error codes (e.g., `SecretsManager.ResourceExistsException`) to work correctly. Contributed by @jayjanssen
+
+---
+
 ## [1.2.9] — 2026-04-13
 
 ### Added

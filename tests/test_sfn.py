@@ -2473,3 +2473,99 @@ def test_sfn_intrinsic_functions_batch_2(sfn, sfn_sync):
     assert output["add"] == 8
     assert len(output["uuid"]) == 36  # UUID format
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_error_prefix_catch(sfn, sm):
+    """aws-sdk errors are prefixed with the service name so Catch blocks match.
+
+    Real AWS SFN surfaces SDK errors as "<ServiceName>.<ErrorCode>" (e.g.,
+    "SecretsManager.ResourceExistsException").  Verify that a Catch block
+    matching the prefixed form works correctly.
+    """
+    import uuid as _uuid
+
+    secret_name = f"sdk-err-prefix-{_uuid.uuid4().hex[:8]}"
+
+    # Pre-create the secret so the SFN's CreateSecret will fail.
+    sm.create_secret(Name=secret_name, SecretString='{"test":"value"}')
+
+    definition = json.dumps({
+        "StartAt": "CreateDuplicate",
+        "States": {
+            "CreateDuplicate": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:secretsmanager:createSecret",
+                "Parameters": {
+                    "Name": secret_name,
+                    "SecretString": '{"dup":"true"}',
+                },
+                "Catch": [
+                    {
+                        "ErrorEquals": ["SecretsManager.ResourceExistsException"],
+                        "ResultPath": "$.error",
+                        "Next": "Caught",
+                    }
+                ],
+                "End": True,
+            },
+            "Caught": {
+                "Type": "Pass",
+                "Result": "handled",
+                "ResultPath": "$.recovered",
+                "End": True,
+            },
+        },
+    })
+
+    sm_name = f"sdk-err-prefix-{_uuid.uuid4().hex[:8]}"
+    sm_resp = sfn.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )
+
+    ex = sfn.start_execution(stateMachineArn=sm_resp["stateMachineArn"], input="{}")
+    desc = _wait_sfn(sfn, ex["executionArn"])
+
+    assert desc["status"] == "SUCCEEDED", f"Expected SUCCEEDED, got {desc['status']}: {desc.get('cause', '')}"
+    output = json.loads(desc["output"])
+    assert output["recovered"] == "handled"
+    assert "SecretsManager.ResourceExistsException" in output["error"]["Error"]
+
+    # Cleanup.
+    sfn.delete_state_machine(stateMachineArn=sm_resp["stateMachineArn"])
+    sm.delete_secret(SecretId=secret_name, ForceDeleteWithoutRecovery=True)
+
+
+def test_sfn_aws_sdk_error_prefix_in_failed_execution(sfn, sfn_sync):
+    """When no Catch matches, the prefixed error code appears in the execution failure."""
+    import uuid as _uuid
+
+    sm_name = f"sdk-err-nocatch-{_uuid.uuid4().hex[:8]}"
+
+    definition = json.dumps({
+        "StartAt": "DescribeMissing",
+        "States": {
+            "DescribeMissing": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:DescribeDBClusters",
+                "Parameters": {
+                    "DBClusterIdentifier": "nonexistent-cluster-prefix-test",
+                },
+                "End": True,
+            },
+        },
+    })
+
+    sm_arn = sfn_sync.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )["stateMachineArn"]
+
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input="{}")
+    assert resp["status"] == "FAILED"
+    # Error should have the "Rds." prefix.
+    assert resp.get("error", "").startswith("Rds."), f"Expected Rds. prefix, got: {resp.get('error', '')}"
+
+    sfn_sync.delete_state_machine(stateMachineArn=sm_arn)

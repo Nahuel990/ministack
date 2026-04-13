@@ -2189,6 +2189,47 @@ _AWS_SDK_SERVICE_MAP = {
     "lambda": {"protocol": "rest"},
 }
 
+# Map lowercase service names used in aws-sdk ARNs to the PascalCase prefix
+# that real AWS Step Functions uses when surfacing SDK errors (e.g.,
+# "SecretsManager.ResourceExistsException").
+_AWS_SDK_ERROR_PREFIX = {
+    "secretsmanager": "SecretsManager",
+    "dynamodb": "DynamoDb",
+    "sfn": "Sfn",
+    "logs": "CloudWatchLogs",
+    "ssm": "Ssm",
+    "eventbridge": "EventBridge",
+    "kinesis": "Kinesis",
+    "glue": "Glue",
+    "athena": "Athena",
+    "ecs": "Ecs",
+    "ecr": "Ecr",
+    "kms": "Kms",
+    "sqs": "Sqs",
+    "sns": "Sns",
+    "rds": "Rds",
+    "elasticache": "ElastiCache",
+    "ec2": "Ec2",
+    "iam": "Iam",
+    "sts": "Sts",
+    "cloudwatch": "CloudWatch",
+    "rdsdata": "RdsData",
+    "s3": "S3",
+    "lambda": "Lambda",
+}
+
+
+def _prefix_sdk_error(service_name: str, error_code: str) -> str:
+    """Prefix an SDK error code with the service name, matching real AWS SFN behavior.
+
+    E.g., ("secretsmanager", "ResourceExistsException") -> "SecretsManager.ResourceExistsException"
+    If the error already has a dot prefix or is a States.* error, return as-is.
+    """
+    if "." in error_code:
+        return error_code
+    prefix = _AWS_SDK_ERROR_PREFIX.get(service_name, service_name.capitalize())
+    return f"{prefix}.{error_code}"
+
 # Static action→path maps for REST-JSON services.
 # Avoids a botocore runtime dependency for path resolution.
 _REST_JSON_ACTION_PATHS = {
@@ -2254,9 +2295,9 @@ def _dispatch_aws_sdk_json(service_info, service_name, action, input_data):
     result = json.loads(decoded) if decoded else {}
 
     if status >= 400:
-        error_type = result.get("__type", result.get("Error", {}).get("Code", f"{service_name}.ServiceException"))
+        error_type = result.get("__type", result.get("Error", {}).get("Code", "ServiceException"))
         error_msg = result.get("message", result.get("Message", str(result)))
-        raise _ExecutionError(error_type, error_msg)
+        raise _ExecutionError(_prefix_sdk_error(service_name, error_type), error_msg)
 
     # For JSON-protocol services, only convert top-level keys to avoid
     # mangling user-defined data (e.g. DynamoDB attribute names).
@@ -2549,12 +2590,12 @@ def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
                 msg = err_el.findtext("{http://rds.amazonaws.com/doc/2014-10-31/}Message")
                 if msg is None:
                     msg = err_el.findtext("Message")
-                raise _ExecutionError(code or f"{service_name}.ServiceException", msg or decoded)
+                raise _ExecutionError(_prefix_sdk_error(service_name, code or "ServiceException"), msg or decoded)
         except _ExecutionError:
             raise
         except Exception:
             pass
-        raise _ExecutionError(f"{service_name}.ServiceException", decoded)
+        raise _ExecutionError(_prefix_sdk_error(service_name, "ServiceException"), decoded)
 
     # Convert successful XML response to dict, then apply SFN key naming convention
     try:
@@ -2640,11 +2681,11 @@ def _dispatch_aws_sdk_rest_json(service_info, service_name, action, input_data):
             err_data = json.loads(decoded)
             code = err_data.get("code") or err_data.get("__type", "ServiceException")
             msg = err_data.get("message") or err_data.get("Message") or decoded
-            raise _ExecutionError(code, msg)
+            raise _ExecutionError(_prefix_sdk_error(service_name, code), msg)
         except _ExecutionError:
             raise
         except Exception:
-            raise _ExecutionError(f"{service_name}.ServiceException", decoded)
+            raise _ExecutionError(_prefix_sdk_error(service_name, "ServiceException"), decoded)
 
     try:
         return json.loads(decoded) if decoded else {}
