@@ -12,6 +12,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 - **EC2 CreateDefaultVpc** — new action creates a default VPC with all associated resources (3 default subnets, internet gateway, route table, network ACL, security group), matching real AWS behavior. Returns `DefaultVpcAlreadyExists` if one already exists. Reported by @staranto 
 - **DynamoDB ExecuteStatement (PartiQL)** — supports `SELECT`, `INSERT`, `UPDATE`, `DELETE` PartiQL statements with `?` parameter binding. Enables IntelliJ database integration and other PartiQL-based tooling. Reported by @mspiller
+- **SNS FIFO topic support** — `.fifo` naming validation, `MessageGroupId`/`MessageDeduplicationId` enforcement, 5-minute deduplication window, sequence numbers, content-based deduplication, FIFO SQS subscription validation, `PublishBatch` FIFO support, thread-safe dedup cache. Contributed by @yskarparis (#279)
 
 ### Fixed
 - **Lambda UpdateFunctionConfiguration Layers** — attaching layers via `update-function-configuration` no longer throws `'str' object has no attribute 'get'`. Layer ARN strings are now normalized to `{"Arn": ..., "CodeSize": 0}` dicts, matching the `create-function` path. Reported by @Vagator-Prostovich

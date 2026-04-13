@@ -482,6 +482,7 @@ def _set_subscription_attributes(params):
 # original MessageId/SequenceNumber without re-delivering to subscribers.
 # Reference: https://docs.aws.amazon.com/sns/latest/dg/fifo-message-dedup.html
 _DEDUP_WINDOW_S = 300
+_fifo_lock = _threading.Lock()
 
 
 def _is_fifo_topic(topic: dict) -> bool:
@@ -565,24 +566,32 @@ def _publish(params):
             return _error("InvalidParameterException", str(exc), 400)
 
         # Prune expired cache entries, then check for duplicate
-        _prune_sns_dedup(topic)
-        cached = topic.get("dedup_cache", {}).get(dedup_id)
-        if cached:
-            # Duplicate within the 5-minute window — return cached result
-            return _xml(
-                200,
-                "PublishResponse",
-                f"<PublishResult>"
-                f"<MessageId>{cached['message_id']}</MessageId>"
-                f"<SequenceNumber>{cached['sequence_number']}</SequenceNumber>"
-                f"</PublishResult>",
-            )
+        with _fifo_lock:
+            _prune_sns_dedup(topic)
+            cached = topic.get("dedup_cache", {}).get(dedup_id)
+            if cached:
+                # Duplicate within the 5-minute window — return cached result
+                return _xml(
+                    200,
+                    "PublishResponse",
+                    f"<PublishResult>"
+                    f"<MessageId>{cached['message_id']}</MessageId>"
+                    f"<SequenceNumber>{cached['sequence_number']}</SequenceNumber>"
+                    f"</PublishResult>",
+                )
 
-        # New message: increment sequence counter
-        topic["fifo_seq"] = topic.get("fifo_seq", 0) + 1
-        seq_number = str(topic["fifo_seq"]).zfill(20)
+            # New message: increment sequence counter
+            topic["fifo_seq"] = topic.get("fifo_seq", 0) + 1
+            seq_number = str(topic["fifo_seq"]).zfill(20)
+            msg_id = new_uuid()
 
-        msg_id = new_uuid()
+            # Cache the entry for deduplication (300s window)
+            topic.setdefault("dedup_cache", {})[dedup_id] = {
+                "expire": time.time() + _DEDUP_WINDOW_S,
+                "message_id": msg_id,
+                "sequence_number": seq_number,
+            }
+
         topic["messages"].append({
             "id": msg_id,
             "message": message,
@@ -594,13 +603,6 @@ def _publish(params):
 
         _fanout(topic_arn, msg_id, message, subject, message_structure, msg_attrs,
                 message_group_id=group_id, message_dedup_id=dedup_id)
-
-        # Cache the entry for deduplication (300s window)
-        topic.setdefault("dedup_cache", {})[dedup_id] = {
-            "expire": time.time() + _DEDUP_WINDOW_S,
-            "message_id": msg_id,
-            "sequence_number": seq_number,
-        }
 
         logger.info("SNS FIFO publish to %s: %s", topic_arn, message[:100])
         return _xml(
@@ -701,23 +703,31 @@ def _publish_batch(params):
                 continue
 
             # Dedup check
-            _prune_sns_dedup(topic)
-            cached = topic.get("dedup_cache", {}).get(dedup_id)
-            if cached:
-                successful += (
-                    "<member>"
-                    f"<Id>{_xml_escape(eid)}</Id>"
-                    f"<MessageId>{cached['message_id']}</MessageId>"
-                    f"<SequenceNumber>{cached['sequence_number']}</SequenceNumber>"
-                    "</member>"
-                )
-                continue
+            with _fifo_lock:
+                _prune_sns_dedup(topic)
+                cached = topic.get("dedup_cache", {}).get(dedup_id)
+                if cached:
+                    successful += (
+                        "<member>"
+                        f"<Id>{_xml_escape(eid)}</Id>"
+                        f"<MessageId>{cached['message_id']}</MessageId>"
+                        f"<SequenceNumber>{cached['sequence_number']}</SequenceNumber>"
+                        "</member>"
+                    )
+                    continue
 
-            # New FIFO message: increment sequence counter
-            topic["fifo_seq"] = topic.get("fifo_seq", 0) + 1
-            seq_number = str(topic["fifo_seq"]).zfill(20)
+                # New FIFO message: increment sequence counter
+                topic["fifo_seq"] = topic.get("fifo_seq", 0) + 1
+                seq_number = str(topic["fifo_seq"]).zfill(20)
+                msg_id = new_uuid()
 
-            msg_id = new_uuid()
+                # Cache for deduplication
+                topic.setdefault("dedup_cache", {})[dedup_id] = {
+                    "expire": time.time() + _DEDUP_WINDOW_S,
+                    "message_id": msg_id,
+                    "sequence_number": seq_number,
+                }
+
             topic["messages"].append({
                 "id": msg_id,
                 "message": message,
@@ -729,13 +739,6 @@ def _publish_batch(params):
 
             _fanout(topic_arn, msg_id, message, subject, message_structure, msg_attrs,
                     message_group_id=group_id, message_dedup_id=dedup_id)
-
-            # Cache for deduplication
-            topic.setdefault("dedup_cache", {})[dedup_id] = {
-                "expire": time.time() + _DEDUP_WINDOW_S,
-                "message_id": msg_id,
-                "sequence_number": seq_number,
-            }
 
             successful += (
                 "<member>"
