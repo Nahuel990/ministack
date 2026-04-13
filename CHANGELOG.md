@@ -9,6 +9,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **SFN query-protocol XML response fidelity** — `_xml_element_to_dict` now coerces known numeric fields to integers, boolean fields to booleans, and detects list-wrapper elements to produce JSON arrays even with a single child. Empty self-closing list wrappers return `[]` instead of `""`. Contributed by @jayjanssen.
 ### Added
 - **RDS Data API SQL-aware stubs** — when no real database endpoint is available, `ExecuteStatement` now tracks `CREATE/DROP DATABASE`, `CREATE/DROP USER`, and `GRANT/REVOKE` statements in memory per cluster. Verification queries (`SELECT schema_name FROM information_schema.schemata`, `SELECT FROM mysql.user`, `SHOW GRANTS FOR`) return tracked state. Enables acceptance testing of database provisioning workflows without Docker-in-Docker. Connection errors also fall back to stubs instead of returning 400. Contributed by @jayjanssen.
 ### Added
