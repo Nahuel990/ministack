@@ -1,22 +1,35 @@
+FROM python:3.12-alpine AS builder
+
+RUN pip install --no-cache-dir --no-compile \
+        uvicorn==0.30.6 \
+        "cbor2>=5.4.0" \
+        "defusedxml>=0.7" \
+        "docker>=7.0.0" \
+        "pyyaml>=6.0" \
+        "cryptography>=41.0" \
+        "awscli"
+
+# Strip awscli help examples (~25 MB) and Python cache files (~15 MB).
+RUN rm -rf /usr/local/lib/python3.12/site-packages/awscli/examples \
+    && find /usr/local/lib/python3.12/site-packages -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null \
+    && rm -rf /usr/local/lib/python3.12/site-packages/pip*.dist-info \
+    && rm -rf /usr/local/lib/python3.12/site-packages/pip*
+
 FROM python:3.12-alpine
 
 LABEL maintainer="MiniStack" \
       description="Local AWS Service Emulator — drop-in LocalStack replacement"
 
 # Upgrade base packages to pick up latest security patches.
-RUN apk upgrade --no-cache && apk add --no-cache nodejs aws-cli && rm -f /usr/bin/wget /bin/wget
+RUN apk upgrade --no-cache && apk add --no-cache nodejs && rm -f /usr/bin/wget /bin/wget
 
 WORKDIR /opt/ministack
 
-# Install all Python dependencies.
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-        uvicorn==0.30.6 \
-        "cbor2>=5.4.0" \
-        "defusedxml>=0.7" \
-        "docker>=7.0.0" \
-        "pyyaml>=6.0" \
-        "cryptography>=41.0"
+# Copy cleaned Python packages and CLI entrypoints from builder.
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin/aws /usr/local/bin/aws
+COPY --from=builder /usr/local/bin/aws_completer /usr/local/bin/aws_completer
+COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 
 COPY ministack/ ministack/
 
