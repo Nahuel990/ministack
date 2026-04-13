@@ -9,7 +9,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [1.2.7] — 2026-04-12
 
+### Added
+- **EC2 CreateDefaultVpc** — new action creates a default VPC with all associated resources (3 default subnets, internet gateway, route table, network ACL, security group), matching real AWS behavior. Returns `DefaultVpcAlreadyExists` if one already exists. Reported by @staranto 
+- **DynamoDB ExecuteStatement (PartiQL)** — supports `SELECT`, `INSERT`, `UPDATE`, `DELETE` PartiQL statements with `?` parameter binding. Enables IntelliJ database integration and other PartiQL-based tooling. Reported by @mspiller
+
 ### Fixed
+- **Lambda UpdateFunctionConfiguration Layers** — attaching layers via `update-function-configuration` no longer throws `'str' object has no attribute 'get'`. Layer ARN strings are now normalized to `{"Arn": ..., "CodeSize": 0}` dicts, matching the `create-function` path. Reported by @Vagator-Prostovich
+- **EC2 default VPC network ACL** — the default VPC's network ACL (`acl-00000001`) was referenced but never initialized, causing `DescribeNetworkAcls` to omit it. Now created at startup with standard allow/deny entries.
 - **S3 GetObject by VersionId** — requesting a specific version now returns the correct object data. Previously always returned the latest version, ignoring the `versionId` parameter.
 - **S3 delete markers in ListObjectVersions** — deleting an object in a versioned bucket now inserts a proper delete marker. `ListObjectVersions` returns `DeleteMarker` elements. Previously delete markers were missing entirely.
 - **S3 reset clears version history** — `/_ministack/reset` now clears `_object_versions` store. Previously versioned objects accumulated across resets.

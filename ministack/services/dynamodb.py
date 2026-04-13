@@ -5,7 +5,8 @@ Supports: CreateTable, DeleteTable, DescribeTable, ListTables, UpdateTable,
           BatchWriteItem, BatchGetItem, TransactWriteItems, TransactGetItems,
           DescribeTimeToLive, UpdateTimeToLive,
           DescribeContinuousBackups, UpdateContinuousBackups, DescribeEndpoints,
-          TagResource, UntagResource, ListTagsOfResource.
+          TagResource, UntagResource, ListTagsOfResource,
+          ExecuteStatement (PartiQL: SELECT, INSERT, UPDATE, DELETE).
 Uses X-Amz-Target header for action routing (JSON API).
 """
 
@@ -195,6 +196,7 @@ async def handle_request(method: str, path: str, headers: dict, body: bytes, que
         "TagResource": _tag_resource,
         "UntagResource": _untag_resource,
         "ListTagsOfResource": _list_tags,
+        "ExecuteStatement": _execute_statement,
     }
 
     handler = handlers.get(action)
@@ -651,6 +653,364 @@ def _scan(data):
 
     _add_consumed_capacity(result, data, name)
     return json_response(result)
+
+
+# ---------------------------------------------------------------------------
+# PartiQL — ExecuteStatement
+# ---------------------------------------------------------------------------
+
+def _execute_statement(data):
+    statement = data.get("Statement", "")
+    parameters = data.get("Parameters", [])
+
+    if not statement or not statement.strip():
+        return error_response_json("ValidationException", "Statement must not be empty", 400)
+
+    try:
+        parsed = _parse_partiql(statement, parameters)
+    except ValueError as e:
+        return error_response_json("ValidationException", str(e), 400)
+
+    op = parsed["op"]
+    table_name = parsed["table"]
+    table = _tables.get(table_name)
+    if not table:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Requested resource not found: Table: {table_name} not found", 400)
+
+    if op == "SELECT":
+        return _partiql_select(table, parsed)
+    elif op == "INSERT":
+        return _partiql_insert(table, parsed)
+    elif op == "UPDATE":
+        return _partiql_update(table, parsed)
+    elif op == "DELETE":
+        return _partiql_delete(table, parsed)
+    else:
+        return error_response_json("ValidationException", f"Unsupported PartiQL operation: {op}", 400)
+
+
+def _partiql_select(table, parsed):
+    all_items = []
+    for pk in sorted(table["items"].keys()):
+        for sk in sorted(table["items"][pk].keys()):
+            all_items.append(table["items"][pk][sk])
+
+    if parsed.get("where_fn"):
+        filtered = [it for it in all_items if parsed["where_fn"](it)]
+    else:
+        filtered = all_items
+
+    projections = parsed.get("projections")
+    if projections:
+        projected = []
+        for it in filtered:
+            proj = {}
+            for attr in projections:
+                if attr in it:
+                    proj[attr] = it[attr]
+            projected.append(proj)
+        filtered = projected
+
+    return json_response({"Items": filtered})
+
+
+def _partiql_insert(table, parsed):
+    item = parsed.get("item", {})
+    if not item:
+        return error_response_json("ValidationException", "INSERT requires a value list", 400)
+    pk_val = _extract_key_val(item.get(table["pk_name"]))
+    sk_val = _extract_key_val(item.get(table["sk_name"])) if table["sk_name"] else "__no_sort__"
+    if not pk_val:
+        return error_response_json("ValidationException",
+                                   "Missing partition key in INSERT", 400)
+    # DynamoDB PartiQL INSERT fails on duplicate key
+    if pk_val in table["items"] and sk_val in table["items"][pk_val]:
+        return error_response_json("ConditionalCheckFailedException",
+                                   "Duplicate primary key exists in table", 400)
+    table["items"][pk_val][sk_val] = item
+    return json_response({})
+
+
+def _partiql_update(table, parsed):
+    where_fn = parsed.get("where_fn")
+    set_attrs = parsed.get("set_attrs", {})
+    if not where_fn or not set_attrs:
+        return error_response_json("ValidationException",
+                                   "UPDATE requires SET and WHERE clauses", 400)
+    updated = False
+    for pk in list(table["items"].keys()):
+        for sk in list(table["items"][pk].keys()):
+            it = table["items"][pk][sk]
+            if where_fn(it):
+                for attr, val in set_attrs.items():
+                    it[attr] = val
+                updated = True
+    if updated:
+        return json_response({})
+
+
+def _partiql_delete(table, parsed):
+    where_fn = parsed.get("where_fn")
+    if not where_fn:
+        return error_response_json("ValidationException",
+                                   "DELETE requires a WHERE clause", 400)
+    to_delete = []
+    for pk in list(table["items"].keys()):
+        for sk in list(table["items"][pk].keys()):
+            it = table["items"][pk][sk]
+            if where_fn(it):
+                to_delete.append((pk, sk))
+    for pk, sk in to_delete:
+        del table["items"][pk][sk]
+        if not table["items"][pk]:
+            del table["items"][pk]
+    if to_delete:
+        return json_response({})
+
+
+def _parse_partiql(statement, parameters):
+    """Minimal PartiQL parser for DynamoDB statements."""
+    s = statement.strip().rstrip(";").strip()
+    upper = s.upper()
+
+    if upper.startswith("SELECT"):
+        return _parse_partiql_select(s, parameters)
+    elif upper.startswith("INSERT"):
+        return _parse_partiql_insert(s, parameters)
+    elif upper.startswith("UPDATE"):
+        return _parse_partiql_update(s, parameters)
+    elif upper.startswith("DELETE"):
+        return _parse_partiql_delete(s, parameters)
+    else:
+        raise ValueError(f"Unsupported PartiQL statement: {s[:20]}")
+
+
+def _parse_partiql_select(s, parameters):
+    import re
+    # SELECT <projections> FROM <table> [WHERE <condition>]
+    m = re.match(
+        r'SELECT\s+(.*?)\s+FROM\s+"?([A-Za-z0-9_.\-]+)"?(?:\s+WHERE\s+(.+))?$',
+        s, re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        raise ValueError(f"Could not parse SELECT statement: {s}")
+
+    proj_str = m.group(1).strip()
+    table_name = m.group(2).strip()
+    where_str = m.group(3)
+
+    projections = None
+    if proj_str != "*":
+        projections = [p.strip().strip('"') for p in proj_str.split(",")]
+
+    where_fn = _build_partiql_where(where_str, parameters) if where_str else None
+
+    return {"op": "SELECT", "table": table_name, "projections": projections, "where_fn": where_fn}
+
+
+def _parse_partiql_insert(s, parameters):
+    import re
+    # INSERT INTO <table> VALUE { ... }
+    m = re.match(
+        r"INSERT\s+INTO\s+\"?([A-Za-z0-9_.\-]+)\"?\s+VALUE\s+(.+)$",
+        s, re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        raise ValueError(f"Could not parse INSERT statement: {s}")
+
+    table_name = m.group(1).strip()
+    value_str = m.group(2).strip()
+    item = _parse_partiql_value(value_str, parameters)
+    if not isinstance(item, dict) or not all(isinstance(v, dict) for v in item.values()):
+        raise ValueError("INSERT VALUE must be a map of DynamoDB-typed attributes")
+    return {"op": "INSERT", "table": table_name, "item": item}
+
+
+def _parse_partiql_update(s, parameters):
+    import re
+    # UPDATE <table> SET <attr>=<val>[,...] WHERE <condition>
+    m = re.match(
+        r"UPDATE\s+\"?([A-Za-z0-9_.\-]+)\"?\s+SET\s+(.+?)\s+WHERE\s+(.+)$",
+        s, re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        raise ValueError(f"Could not parse UPDATE statement: {s}")
+
+    table_name = m.group(1).strip()
+    set_str = m.group(2).strip()
+    where_str = m.group(3).strip()
+
+    # Parse SET assignments
+    set_attrs = {}
+    param_idx = [0]
+    for assignment in _split_top_level(set_str, ','):
+        parts = assignment.split("=", 1)
+        if len(parts) != 2:
+            raise ValueError(f"Invalid SET assignment: {assignment}")
+        attr = parts[0].strip().strip('"')
+        val_str = parts[1].strip()
+        set_attrs[attr] = _parse_partiql_literal(val_str, parameters, param_idx)
+
+    where_fn = _build_partiql_where(where_str, parameters, param_idx)
+    return {"op": "UPDATE", "table": table_name, "set_attrs": set_attrs, "where_fn": where_fn}
+
+
+def _parse_partiql_delete(s, parameters):
+    import re
+    # DELETE FROM <table> WHERE <condition>
+    m = re.match(
+        r"DELETE\s+FROM\s+\"?([A-Za-z0-9_.\-]+)\"?\s+WHERE\s+(.+)$",
+        s, re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        raise ValueError(f"Could not parse DELETE statement: {s}")
+
+    table_name = m.group(1).strip()
+    where_str = m.group(2).strip()
+    where_fn = _build_partiql_where(where_str, parameters)
+    return {"op": "DELETE", "table": table_name, "where_fn": where_fn}
+
+
+def _build_partiql_where(where_str, parameters, param_idx=None):
+    """Build a predicate function from a PartiQL WHERE clause."""
+    if not where_str or not where_str.strip():
+        return None
+    if param_idx is None:
+        param_idx = [0]
+
+    # Parse simple conditions: attr op value [AND attr op value ...]
+    conditions = _parse_partiql_conditions(where_str, parameters, param_idx)
+
+    def where_fn(item):
+        for attr, op, val in conditions:
+            item_val = item.get(attr)
+            if not _compare_ddb(item_val, op, val):
+                return False
+        return True
+
+    return where_fn
+
+
+def _parse_partiql_conditions(where_str, parameters, param_idx):
+    """Parse WHERE conditions joined by AND. Returns list of (attr, op, ddb_value)."""
+    import re
+    conditions = []
+    # Split on AND (case-insensitive, word boundary)
+    parts = re.split(r'\s+AND\s+', where_str, flags=re.IGNORECASE)
+    for part in parts:
+        part = part.strip()
+        m = re.match(r'"?([A-Za-z0-9_.\-]+)"?\s*(=|<>|!=|<=|>=|<|>)\s*(.+)$', part)
+        if not m:
+            raise ValueError(f"Could not parse WHERE condition: {part}")
+        attr = m.group(1)
+        op = m.group(2)
+        if op == '!=':
+            op = '<>'
+        val_str = m.group(3).strip()
+        val = _parse_partiql_literal(val_str, parameters, param_idx)
+        conditions.append((attr, op, val))
+    return conditions
+
+
+def _parse_partiql_literal(val_str, parameters, param_idx=None):
+    """Parse a PartiQL literal or ? parameter reference into a DynamoDB typed value."""
+    if param_idx is None:
+        param_idx = [0]
+    val_str = val_str.strip()
+
+    if val_str == "?":
+        if param_idx[0] >= len(parameters):
+            raise ValueError("Not enough parameters for ? placeholders")
+        val = parameters[param_idx[0]]
+        param_idx[0] += 1
+        return val
+
+    # String literal
+    if (val_str.startswith("'") and val_str.endswith("'")) or \
+       (val_str.startswith('"') and val_str.endswith('"')):
+        return {"S": val_str[1:-1]}
+
+    # Boolean
+    if val_str.upper() == "TRUE":
+        return {"BOOL": True}
+    if val_str.upper() == "FALSE":
+        return {"BOOL": False}
+
+    # NULL
+    if val_str.upper() == "NULL":
+        return {"NULL": True}
+
+    # Number
+    try:
+        Decimal(val_str)
+        return {"N": val_str}
+    except (InvalidOperation, ValueError):
+        pass
+
+    raise ValueError(f"Cannot parse PartiQL value: {val_str}")
+
+
+def _parse_partiql_value(val_str, parameters, param_idx=None):
+    """Parse a PartiQL VALUE map like {'attr': val, ...} into a DynamoDB item."""
+    if param_idx is None:
+        param_idx = [0]
+    val_str = val_str.strip()
+
+    if val_str == "?":
+        if param_idx[0] >= len(parameters):
+            raise ValueError("Not enough parameters for ? placeholders")
+        val = parameters[param_idx[0]]
+        param_idx[0] += 1
+        return val
+
+    # Parse DynamoDB JSON-style map: { 'key' : value, ... }
+    if not val_str.startswith("{") or not val_str.endswith("}"):
+        raise ValueError(f"Expected a map value, got: {val_str}")
+
+    inner = val_str[1:-1].strip()
+    result = {}
+    for pair in _split_top_level(inner, ','):
+        pair = pair.strip()
+        if not pair:
+            continue
+        kv = pair.split(":", 1)
+        if len(kv) != 2:
+            raise ValueError(f"Invalid key-value pair: {pair}")
+        key = kv[0].strip().strip("'\"")
+        val = _parse_partiql_literal(kv[1].strip(), parameters, param_idx)
+        result[key] = val
+    return result
+
+
+def _split_top_level(s, delimiter):
+    """Split string by delimiter, respecting nested braces/parens/quotes."""
+    parts = []
+    depth = 0
+    current = []
+    in_str = None
+    for ch in s:
+        if in_str:
+            current.append(ch)
+            if ch == in_str:
+                in_str = None
+        elif ch in ("'", '"'):
+            in_str = ch
+            current.append(ch)
+        elif ch in ('(', '{', '['):
+            depth += 1
+            current.append(ch)
+        elif ch in (')', '}', ']'):
+            depth -= 1
+            current.append(ch)
+        elif ch == delimiter and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current))
+    return parts
 
 
 # ---------------------------------------------------------------------------

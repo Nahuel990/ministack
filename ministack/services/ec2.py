@@ -11,7 +11,7 @@ Supports:
                    AuthorizeSecurityGroupEgress, RevokeSecurityGroupEgress
   Key Pairs:       CreateKeyPair, DeleteKeyPair, DescribeKeyPairs, ImportKeyPair
   VPC / Subnets:   DescribeVpcs, DescribeSubnets, DescribeAvailabilityZones
-                   CreateVpc, DeleteVpc, CreateSubnet, DeleteSubnet
+                   CreateVpc, CreateDefaultVpc, DeleteVpc, CreateSubnet, DeleteSubnet
                    CreateInternetGateway, DeleteInternetGateway, DescribeInternetGateways,
                    AttachInternetGateway, DetachInternetGateway
   Elastic IPs:     AllocateAddress, ReleaseAddress, AssociateAddress, DisassociateAddress,
@@ -216,6 +216,17 @@ def _init_defaults():
                 {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
                  "Ipv6Ranges": [], "PrefixListIds": [], "UserIdGroupPairs": []},
             ],
+        }
+    if _DEFAULT_ACL_ID not in _network_acls:
+        _network_acls[_DEFAULT_ACL_ID] = {
+            "NetworkAclId": _DEFAULT_ACL_ID, "VpcId": _DEFAULT_VPC_ID, "IsDefault": True,
+            "Entries": [
+                {"RuleNumber": 100, "Protocol": "-1", "RuleAction": "allow", "Egress": False, "CidrBlock": "0.0.0.0/0"},
+                {"RuleNumber": 32767, "Protocol": "-1", "RuleAction": "deny", "Egress": False, "CidrBlock": "0.0.0.0/0"},
+                {"RuleNumber": 100, "Protocol": "-1", "RuleAction": "allow", "Egress": True, "CidrBlock": "0.0.0.0/0"},
+                {"RuleNumber": 32767, "Protocol": "-1", "RuleAction": "deny", "Egress": True, "CidrBlock": "0.0.0.0/0"},
+            ],
+            "Associations": [], "Tags": [], "OwnerId": get_account_id(),
         }
     if _DEFAULT_IGW_ID not in _internet_gateways:
         _internet_gateways[_DEFAULT_IGW_ID] = {
@@ -823,6 +834,72 @@ def _delete_vpc(p):
         del _network_acls[aid]
     del _vpcs[vpc_id]
     return _xml(200, "DeleteVpcResponse", "<return>true</return>")
+
+
+def _create_default_vpc(p):
+    # AWS returns DefaultVpcAlreadyExists if one already exists
+    for vpc in _vpcs.values():
+        if vpc.get("IsDefault"):
+            return _error("DefaultVpcAlreadyExists",
+                          "A Default VPC already exists for this account in this region.", 400)
+    cidr = "172.31.0.0/16"
+    vpc_id = _new_vpc_id()
+    acl_id = "acl-" + "".join(random.choices(string.hexdigits[:16], k=17))
+    _network_acls[acl_id] = {
+        "NetworkAclId": acl_id, "VpcId": vpc_id, "IsDefault": True,
+        "Entries": [
+            {"RuleNumber": 100, "Protocol": "-1", "RuleAction": "allow", "Egress": False, "CidrBlock": "0.0.0.0/0"},
+            {"RuleNumber": 32767, "Protocol": "-1", "RuleAction": "deny", "Egress": False, "CidrBlock": "0.0.0.0/0"},
+            {"RuleNumber": 100, "Protocol": "-1", "RuleAction": "allow", "Egress": True, "CidrBlock": "0.0.0.0/0"},
+            {"RuleNumber": 32767, "Protocol": "-1", "RuleAction": "deny", "Egress": True, "CidrBlock": "0.0.0.0/0"},
+        ],
+        "Associations": [], "Tags": [], "OwnerId": get_account_id(),
+    }
+    rtb_id = "rtb-" + "".join(random.choices(string.hexdigits[:16], k=17))
+    rtb_assoc_id = "rtbassoc-" + "".join(random.choices(string.hexdigits[:16], k=17))
+    _route_tables[rtb_id] = {
+        "RouteTableId": rtb_id, "VpcId": vpc_id, "OwnerId": get_account_id(),
+        "Routes": [
+            {"DestinationCidrBlock": cidr, "GatewayId": "local", "State": "active", "Origin": "CreateRouteTable"},
+        ],
+        "Associations": [
+            {"RouteTableAssociationId": rtb_assoc_id, "RouteTableId": rtb_id, "Main": True,
+             "AssociationState": {"State": "associated"}},
+        ],
+    }
+    sg_id = _new_sg_id()
+    _security_groups[sg_id] = {
+        "GroupId": sg_id, "GroupName": "default", "Description": "default VPC security group",
+        "VpcId": vpc_id, "OwnerId": get_account_id(), "IpPermissions": [],
+        "IpPermissionsEgress": [
+            {"IpProtocol": "-1", "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+             "Ipv6Ranges": [], "PrefixListIds": [], "UserIdGroupPairs": []},
+        ],
+    }
+    igw_id = _new_igw_id()
+    _internet_gateways[igw_id] = {
+        "InternetGatewayId": igw_id, "OwnerId": get_account_id(),
+        "Attachments": [{"VpcId": vpc_id, "State": "available"}],
+    }
+    _vpcs[vpc_id] = {
+        "VpcId": vpc_id, "CidrBlock": cidr, "State": "available", "IsDefault": True,
+        "DhcpOptionsId": "dopt-00000001", "InstanceTenancy": "default",
+        "OwnerId": get_account_id(), "DefaultNetworkAclId": acl_id,
+        "DefaultSecurityGroupId": sg_id, "MainRouteTableId": rtb_id,
+    }
+    # Create default subnets (one per AZ, matching AWS behavior)
+    for i, (sub_cidr, az_suffix) in enumerate([
+        ("172.31.0.0/20", "a"), ("172.31.16.0/20", "b"), ("172.31.32.0/20", "c"),
+    ]):
+        subnet_id = _new_subnet_id()
+        _subnets[subnet_id] = {
+            "SubnetId": subnet_id, "VpcId": vpc_id, "CidrBlock": sub_cidr,
+            "AvailabilityZone": f"{REGION}{az_suffix}",
+            "AvailableIpAddressCount": 4091, "State": "available",
+            "DefaultForAz": True, "MapPublicIpOnLaunch": True,
+            "OwnerId": get_account_id(),
+        }
+    return _xml(200, "CreateDefaultVpcResponse", _vpc_fields_xml(_vpcs[vpc_id], tag="vpc"))
 
 
 # ---------------------------------------------------------------------------
@@ -3856,6 +3933,7 @@ _ACTION_MAP = {
     "ImportKeyPair": _import_key_pair,
     "DescribeVpcs": _describe_vpcs,
     "CreateVpc": _create_vpc,
+    "CreateDefaultVpc": _create_default_vpc,
     "DeleteVpc": _delete_vpc,
     "DescribeSubnets": _describe_subnets,
     "CreateSubnet": _create_subnet,

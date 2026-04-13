@@ -1199,3 +1199,70 @@ def test_describe_tags_filters(ec2):
     # All tags have correct resource type
     resp = ec2.describe_tags(Filters=[{"Name": "resource-id", "Values": [id1, id2]}])
     assert all(t["ResourceType"] == "instance" for t in resp["Tags"])
+
+
+def test_ec2_default_vpc_network_acl(ec2):
+    """Default VPC's network ACL should exist and be queryable."""
+    resp = ec2.describe_network_acls(
+        Filters=[{"Name": "default", "Values": ["true"]}]
+    )
+    acls = resp["NetworkAcls"]
+    assert len(acls) >= 1
+    default_acl = acls[0]
+    assert default_acl["IsDefault"] is True
+    # Should have both allow and deny entries
+    assert len(default_acl["Entries"]) >= 4
+
+
+def test_ec2_create_default_vpc_already_exists(ec2):
+    """CreateDefaultVpc should fail when a default VPC already exists."""
+    with pytest.raises(ClientError) as exc:
+        ec2.create_default_vpc()
+    assert exc.value.response["Error"]["Code"] == "DefaultVpcAlreadyExists"
+
+
+def test_ec2_create_default_vpc(ec2):
+    """CreateDefaultVpc should create a VPC with subnets, IGW, SG, route table, ACL."""
+    # First, find and delete the existing default VPC and its dependencies
+    vpcs = ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])["Vpcs"]
+    if vpcs:
+        default_vpc_id = vpcs[0]["VpcId"]
+        # Delete subnets
+        for s in ec2.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [default_vpc_id]}])["Subnets"]:
+            ec2.delete_subnet(SubnetId=s["SubnetId"])
+        # Detach and delete IGWs
+        for igw in ec2.describe_internet_gateways(
+            Filters=[{"Name": "attachment.vpc-id", "Values": [default_vpc_id]}]
+        )["InternetGateways"]:
+            ec2.detach_internet_gateway(InternetGatewayId=igw["InternetGatewayId"], VpcId=default_vpc_id)
+            ec2.delete_internet_gateway(InternetGatewayId=igw["InternetGatewayId"])
+        ec2.delete_vpc(VpcId=default_vpc_id)
+
+    # Now create a new default VPC
+    resp = ec2.create_default_vpc()
+    vpc = resp["Vpc"]
+    assert vpc["IsDefault"] is True
+    assert vpc["CidrBlock"] == "172.31.0.0/16"
+    assert vpc["State"] == "available"
+
+    vpc_id = vpc["VpcId"]
+
+    # Verify 3 default subnets were created
+    subnets = ec2.describe_subnets(
+        Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+    )["Subnets"]
+    assert len(subnets) == 3
+    for s in subnets:
+        assert s["DefaultForAz"] is True
+        assert s["MapPublicIpOnLaunch"] is True
+
+    # Verify IGW attached
+    igws = ec2.describe_internet_gateways(
+        Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}]
+    )["InternetGateways"]
+    assert len(igws) == 1
+
+    # Verify calling again fails
+    with pytest.raises(ClientError) as exc:
+        ec2.create_default_vpc()
+    assert exc.value.response["Error"]["Code"] == "DefaultVpcAlreadyExists"

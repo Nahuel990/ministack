@@ -1896,3 +1896,39 @@ def test_esm_response_no_function_name_field(lam, sqs):
             lam.delete_event_source_mapping(UUID=esm_uuid)
         lam.delete_function(FunctionName=fname)
         sqs.delete_queue(QueueUrl=q_url)
+
+
+def test_lambda_update_function_configuration_layers(lam):
+    """Attaching a layer via update-function-configuration should normalize ARN strings
+    to {Arn, CodeSize} dicts — regression test for 'str' object has no attribute 'get'."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("util.py", "# layer code")
+    layer_resp = lam.publish_layer_version(
+        LayerName="update-cfg-layer", Content={"ZipFile": buf.getvalue()},
+    )
+    layer_arn = layer_resp["LayerVersionArn"]
+
+    fn_zip = io.BytesIO()
+    with zipfile.ZipFile(fn_zip, "w") as z:
+        z.writestr("index.py", "def handler(e, c): return {}")
+    lam.create_function(
+        FunctionName="fn-update-layer-test",
+        Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/test",
+        Handler="index.handler",
+        Code={"ZipFile": fn_zip.getvalue()},
+    )
+
+    resp = lam.update_function_configuration(
+        FunctionName="fn-update-layer-test",
+        Layers=[layer_arn],
+    )
+    # Response Layers must be dicts with Arn key, not raw strings
+    assert len(resp["Layers"]) == 1
+    assert isinstance(resp["Layers"][0], dict)
+    assert resp["Layers"][0]["Arn"] == layer_arn
+
+    # GetFunction must also return normalized layer dicts
+    fn = lam.get_function(FunctionName="fn-update-layer-test")
+    assert fn["Configuration"]["Layers"][0]["Arn"] == layer_arn

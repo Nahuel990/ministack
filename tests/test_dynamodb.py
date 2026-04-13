@@ -1278,3 +1278,198 @@ def test_dynamodb_update_to_pay_per_request_zeroes_throughput(ddb):
     finally:
         ddb.delete_table(TableName=tname)
 
+
+# ---------------------------------------------------------------------------
+# ExecuteStatement (PartiQL)
+# ---------------------------------------------------------------------------
+
+def test_partiql_select_all(ddb):
+    """SELECT * FROM table — the IntelliJ use case."""
+    tname = "partiql-select-all"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "a"}, "val": {"S": "1"}})
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "b"}, "val": {"S": "2"}})
+
+    resp = ddb.execute_statement(Statement=f'SELECT * FROM "{tname}"')
+    assert len(resp["Items"]) == 2
+    pks = sorted(it["pk"]["S"] for it in resp["Items"])
+    assert pks == ["a", "b"]
+
+
+def test_partiql_select_with_where(ddb):
+    """SELECT with WHERE clause and ? parameter binding."""
+    tname = "partiql-select-where"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "x"}, "status": {"S": "active"}})
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "y"}, "status": {"S": "inactive"}})
+
+    resp = ddb.execute_statement(
+        Statement=f'SELECT * FROM "{tname}" WHERE pk = ?',
+        Parameters=[{"S": "x"}],
+    )
+    assert len(resp["Items"]) == 1
+    assert resp["Items"][0]["pk"]["S"] == "x"
+
+
+def test_partiql_select_projection(ddb):
+    """SELECT specific columns."""
+    tname = "partiql-select-proj"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "k1"}, "a": {"S": "1"}, "b": {"S": "2"}})
+
+    resp = ddb.execute_statement(Statement=f'SELECT pk, a FROM "{tname}"')
+    assert len(resp["Items"]) == 1
+    item = resp["Items"][0]
+    assert "pk" in item
+    assert "a" in item
+    assert "b" not in item
+
+
+def test_partiql_insert(ddb):
+    """INSERT INTO table VALUE {...}."""
+    tname = "partiql-insert"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    ddb.execute_statement(
+        Statement=f"INSERT INTO \"{tname}\" VALUE {{'pk': ?, 'data': ?}}",
+        Parameters=[{"S": "ins1"}, {"S": "hello"}],
+    )
+    resp = ddb.get_item(TableName=tname, Key={"pk": {"S": "ins1"}})
+    assert resp["Item"]["data"]["S"] == "hello"
+
+
+def test_partiql_insert_duplicate_rejected(ddb):
+    """INSERT with duplicate key should fail."""
+    tname = "partiql-ins-dup"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "dup"}})
+
+    with pytest.raises(ClientError) as exc:
+        ddb.execute_statement(
+            Statement=f"INSERT INTO \"{tname}\" VALUE {{'pk': ?}}",
+            Parameters=[{"S": "dup"}],
+        )
+    assert "ConditionalCheckFailed" in exc.value.response["Error"]["Code"]
+
+
+def test_partiql_update(ddb):
+    """UPDATE table SET attr = val WHERE pk = val."""
+    tname = "partiql-update"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "u1"}, "status": {"S": "old"}})
+
+    ddb.execute_statement(
+        Statement=f"UPDATE \"{tname}\" SET status = ? WHERE pk = ?",
+        Parameters=[{"S": "new"}, {"S": "u1"}],
+    )
+    resp = ddb.get_item(TableName=tname, Key={"pk": {"S": "u1"}})
+    assert resp["Item"]["status"]["S"] == "new"
+
+
+def test_partiql_delete(ddb):
+    """DELETE FROM table WHERE pk = val."""
+    tname = "partiql-delete"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "d1"}, "val": {"S": "x"}})
+
+    ddb.execute_statement(
+        Statement=f'DELETE FROM "{tname}" WHERE pk = ?',
+        Parameters=[{"S": "d1"}],
+    )
+    resp = ddb.get_item(TableName=tname, Key={"pk": {"S": "d1"}})
+    assert "Item" not in resp
+
+
+def test_partiql_nonexistent_table(ddb):
+    """ExecuteStatement on a nonexistent table should return ResourceNotFoundException."""
+    with pytest.raises(ClientError) as exc:
+        ddb.execute_statement(Statement='SELECT * FROM "no-such-table-partiql"')
+    assert exc.value.response["Error"]["Code"] == "ResourceNotFoundException"
+
+
+def test_partiql_select_where_number(ddb):
+    """WHERE clause with numeric comparison."""
+    tname = "partiql-num-where"
+    try:
+        ddb.delete_table(TableName=tname)
+    except ClientError:
+        pass
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "n1"}, "age": {"N": "25"}})
+    ddb.put_item(TableName=tname, Item={"pk": {"S": "n2"}, "age": {"N": "30"}})
+
+    resp = ddb.execute_statement(
+        Statement=f'SELECT * FROM "{tname}" WHERE age > ?',
+        Parameters=[{"N": "27"}],
+    )
+    assert len(resp["Items"]) == 1
+    assert resp["Items"][0]["pk"]["S"] == "n2"
+

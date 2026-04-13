@@ -906,7 +906,16 @@ def _update_config(name: str, data: dict):
         "FileSystemConfigs",
     ):
         if key in data:
-            config[key] = data[key]
+            if key == "Layers":
+                layers_cfg = []
+                for layer in data["Layers"]:
+                    if isinstance(layer, str):
+                        layers_cfg.append({"Arn": layer, "CodeSize": 0})
+                    elif isinstance(layer, dict):
+                        layers_cfg.append(layer)
+                config["Layers"] = layers_cfg
+            else:
+                config[key] = data[key]
     if "ImageConfig" in data:
         config["ImageConfigResponse"] = {"ImageConfig": data["ImageConfig"]}
     config["LastModified"] = _now_iso()
