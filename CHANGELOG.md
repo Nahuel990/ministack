@@ -7,6 +7,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **RDS Data API SQL-aware stubs** — when no real database endpoint is available, `ExecuteStatement` now tracks `CREATE/DROP DATABASE`, `CREATE/DROP USER`, and `GRANT/REVOKE` statements in memory per cluster. Verification queries (`SELECT schema_name FROM information_schema.schemata`, `SELECT FROM mysql.user`, `SHOW GRANTS FOR`) return tracked state. Enables acceptance testing of database provisioning workflows without Docker-in-Docker. Connection errors also fall back to stubs instead of returning 400. Contributed by @jayjanssen.
+
 ## [1.2.7] — 2026-04-12
 
 ### Added
