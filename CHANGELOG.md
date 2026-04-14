@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **RDS real MySQL/MariaDB connectivity** — `pymysql` (44 KB, pure Python) is now bundled in the Docker image. When MiniStack runs inside Docker, RDS containers are attached to MiniStack's Docker network with internal IP endpoints for sibling-container connectivity. The public `localhost` endpoint remains unchanged for host-mode access. The Data API authenticates using credentials from Secrets Manager, mapping the master user to MySQL `root` for admin operations. `CreateDBCluster` stores the master password; `CreateDBInstance` inherits credentials from parent clusters; `ModifyDBCluster` propagates password changes to the real MySQL container via `ALTER USER`.
+
+---
+
 ## [1.2.12] — 2026-04-14
 
 ### Added
