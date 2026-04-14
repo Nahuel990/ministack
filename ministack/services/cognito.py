@@ -247,7 +247,7 @@ def _identity_id(pool_id: str) -> str:
 
 
 def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "access",
-                 username: str = "") -> str:
+                 username: str = "", user_attrs: dict | None = None) -> str:
     """Return a JWT signed with the RSA key when cryptography is available."""
     header = base64.urlsafe_b64encode(
         json.dumps({"alg": "RS256", "kid": "ministack-key-1"}).encode()
@@ -256,14 +256,31 @@ def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "acces
     claims = {
         "sub": sub,
         "iss": f"https://cognito-idp.{REGION}.amazonaws.com/{pool_id}",
-        "client_id": client_id,
         "token_use": token_type,
         "iat": now,
         "exp": now + 3600,
         "jti": new_uuid(),
+        "auth_time": now,
+        "origin_jti": new_uuid(),
     }
-    if token_type == "access" and username:
-        claims["username"] = username
+    if token_type == "id":
+        # IdToken uses 'aud' (not 'client_id') per OIDC spec
+        claims["aud"] = client_id
+        if username:
+            claims["cognito:username"] = username
+        # Include user attributes in IdToken
+        if user_attrs:
+            for k, v in user_attrs.items():
+                if k == "sub":
+                    continue
+                claims[k] = v
+            if "email" in user_attrs:
+                claims.setdefault("email_verified", True)
+    else:
+        # AccessToken uses 'client_id'
+        claims["client_id"] = client_id
+        if username:
+            claims["username"] = username
     payload = base64.urlsafe_b64encode(
         json.dumps(claims).encode()
     ).rstrip(b"=").decode()
@@ -304,6 +321,13 @@ def _resolve_pool(pool_id: str):
 
 def _resolve_user(pool: dict, username: str):
     user = pool["_users"].get(username)
+    if not user:
+        # Real AWS also accepts the user's 'sub' UUID as Username.
+        for u in pool["_users"].values():
+            attrs = _attr_list_to_dict(u.get("Attributes", []))
+            if attrs.get("sub") == username:
+                user = u
+                break
     if not user:
         return None, error_response_json(
             "UserNotFoundException",
@@ -497,7 +521,7 @@ def _dispatch_idp(action: str, data: dict):
         "CreateUserPoolDomain": _create_user_pool_domain,
         "DeleteUserPoolDomain": _delete_user_pool_domain,
         "DescribeUserPoolDomain": _describe_user_pool_domain,
-        # Identity Provider
+        # Identity Providers
         "CreateIdentityProvider": _create_identity_provider,
         "DescribeIdentityProvider": _describe_identity_provider,
         "UpdateIdentityProvider": _update_identity_provider,
@@ -713,7 +737,7 @@ def _create_user_pool_client(data):
         "AllowedOAuthFlows": data.get("AllowedOAuthFlows", []),
         "AllowedOAuthScopes": data.get("AllowedOAuthScopes", []),
         "AllowedOAuthFlowsUserPoolClient": data.get("AllowedOAuthFlowsUserPoolClient", False),
-        "AnalyticsConfiguration": data.get("AnalyticsConfiguration", {}),
+        "AnalyticsConfiguration": data.get("AnalyticsConfiguration"),
         "PreventUserExistenceErrors": data.get("PreventUserExistenceErrors", "ENABLED"),
         "EnableTokenRevocation": data.get("EnableTokenRevocation", True),
         "EnablePropagateAdditionalUserContextData": data.get("EnablePropagateAdditionalUserContextData", False),
@@ -1097,11 +1121,13 @@ def _mfa_challenge_for_user(pool: dict, user: dict, pid: str, username: str) -> 
 
 
 def _build_auth_result(pool_id: str, client_id: str, user: dict) -> dict:
-    sub = _attr_list_to_dict(user.get("Attributes", [])).get("sub", user["Username"])
+    attrs = _attr_list_to_dict(user.get("Attributes", []))
+    sub = attrs.get("sub", user["Username"])
     username = user.get("Username", "")
     return {
         "AccessToken": _fake_token(sub, pool_id, client_id, "access", username=username),
-        "IdToken": _fake_token(sub, pool_id, client_id, "id"),
+        "IdToken": _fake_token(sub, pool_id, client_id, "id", username=username,
+                               user_attrs=attrs),
         "RefreshToken": _fake_token(sub, pool_id, client_id, "refresh"),
         "TokenType": "Bearer",
         "ExpiresIn": 3600,
@@ -1682,7 +1708,7 @@ def _describe_user_pool_domain(data):
 
 
 # ===========================================================================
-# IDENTITY PROVIDER CRUD
+# IDENTITY PROVIDERS
 # ===========================================================================
 
 VALID_PROVIDER_TYPES = {"SAML", "Facebook", "Google", "LoginWithAmazon", "SignInWithApple", "OIDC"}
@@ -1701,7 +1727,7 @@ def _create_identity_provider(data):
         return error_response_json("InvalidParameterException", "ProviderType is required.", 400)
     if provider_type not in VALID_PROVIDER_TYPES:
         return error_response_json("InvalidParameterException", f"Invalid ProviderType: {provider_type}.", 400)
-    providers = pool["_identity_providers"]
+    providers = pool.setdefault("_identity_providers", {})
     if provider_name in providers:
         return error_response_json("DuplicateProviderException",
                                    f"A provider with name {provider_name} already exists.", 400)
@@ -1736,7 +1762,8 @@ def _describe_identity_provider(data):
     if err:
         return err
     provider_name = data.get("ProviderName")
-    provider = pool["_identity_providers"].get(provider_name)
+    providers = pool.get("_identity_providers", {})
+    provider = providers.get(provider_name)
     if not provider:
         return error_response_json("ResourceNotFoundException",
                                    f"Identity provider {provider_name} does not exist.", 400)
@@ -1749,7 +1776,8 @@ def _update_identity_provider(data):
     if err:
         return err
     provider_name = data.get("ProviderName")
-    provider = pool["_identity_providers"].get(provider_name)
+    providers = pool.get("_identity_providers", {})
+    provider = providers.get(provider_name)
     if not provider:
         return error_response_json("ResourceNotFoundException",
                                    f"Identity provider {provider_name} does not exist.", 400)
@@ -1761,7 +1789,7 @@ def _update_identity_provider(data):
         new_ids = data["IdpIdentifiers"]
         # Check uniqueness against other providers in the pool
         existing_ids = set()
-        for name, p in pool["_identity_providers"].items():
+        for name, p in providers.items():
             if name != provider_name:
                 existing_ids.update(p.get("IdpIdentifiers", []))
         for ident in new_ids:
@@ -1779,10 +1807,11 @@ def _delete_identity_provider(data):
     if err:
         return err
     provider_name = data.get("ProviderName")
-    if provider_name not in pool["_identity_providers"]:
+    providers = pool.get("_identity_providers", {})
+    if provider_name not in providers:
         return error_response_json("ResourceNotFoundException",
                                    f"Identity provider {provider_name} does not exist.", 400)
-    del pool["_identity_providers"][provider_name]
+    del providers[provider_name]
     logger.info("Cognito: DeleteIdentityProvider %s from pool %s", provider_name, pid)
     return json_response({})
 
@@ -1792,11 +1821,12 @@ def _list_identity_providers(data):
     pool, err = _resolve_pool(pid)
     if err:
         return err
+    providers = pool.get("_identity_providers", {})
     max_results = min(data.get("MaxResults", 60), 60)
     next_token = data.get("NextToken")
-    providers = sorted(pool["_identity_providers"].values(), key=lambda p: p["CreationDate"])
+    sorted_providers = sorted(providers.values(), key=lambda p: p["CreationDate"])
     start = int(next_token) if next_token else 0
-    page = providers[start:start + max_results]
+    page = sorted_providers[start:start + max_results]
     resp = {
         "Providers": [
             {
@@ -1808,7 +1838,7 @@ def _list_identity_providers(data):
             for p in page
         ]
     }
-    if start + max_results < len(providers):
+    if start + max_results < len(sorted_providers):
         resp["NextToken"] = str(start + max_results)
     return json_response(resp)
 
@@ -1821,7 +1851,7 @@ def _get_identity_provider_by_identifier(data):
     identifier = data.get("IdpIdentifier")
     if not identifier:
         return error_response_json("InvalidParameterException", "IdpIdentifier is required.", 400)
-    for provider in pool["_identity_providers"].values():
+    for provider in pool.get("_identity_providers", {}).values():
         if identifier in provider.get("IdpIdentifiers", []):
             return json_response({"IdentityProvider": provider})
     return error_response_json("ResourceNotFoundException",

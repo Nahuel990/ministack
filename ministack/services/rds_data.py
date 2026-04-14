@@ -280,16 +280,14 @@ def _connect(instance, engine, database=None, password=None,
                 "pymysql is required for MySQL/Aurora MySQL rds-data support. "
                 "Install with: pip install pymysql"
             )
-        # In RDS the master user has full privileges.  In a Docker MySQL
-        # container the equivalent is 'root'.  When the secret identifies
-        # the master user (username matches MasterUsername or is absent),
-        # connect as root.  Otherwise use the actual username from the
-        # secret so user-level operations (e.g. ALTER USER … REPLACE)
-        # authenticate correctly.
+        # In Docker MySQL, 'root' has full privileges. Map the master
+        # user (or absent username) to root. Non-master usernames pass
+        # through for user-level operations.
         master = instance.get("MasterUsername", "admin")
-        connect_user = username or "root"
-        if username and username == master:
+        if not username or username == master:
             connect_user = "root"
+        else:
+            connect_user = username
         return pymysql.connect(
             host=host, port=int(port), user=connect_user,
             password=pw, database=db or None, autocommit=True,

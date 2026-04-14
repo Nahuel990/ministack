@@ -40,6 +40,14 @@ def test_codebuild_batch_get_projects(codebuild):
     assert "nonexistent" in resp["projectsNotFound"]
 
 
+def test_codebuild_batch_get_projects_by_arn(codebuild):
+    arn = codebuild.batch_get_projects(names=["test-project"])["projects"][0]["arn"]
+    resp = codebuild.batch_get_projects(names=[arn])
+    assert len(resp["projects"]) == 1
+    assert resp["projects"][0]["name"] == "test-project"
+    assert resp["projectsNotFound"] == []
+
+
 def test_codebuild_list_projects(codebuild):
     resp = codebuild.list_projects()
     assert "test-project" in resp["projects"]

@@ -204,7 +204,8 @@ def _batch_get_projects(data):
     found = []
     not_found = []
     for name in names:
-        project = _projects.get(name)
+        lookup = name.rsplit("/", 1)[-1] if name.startswith("arn:aws:codebuild:") else name
+        project = _projects.get(lookup)
         if project:
             found.append(_project_shape(project))
         else:
