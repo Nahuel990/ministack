@@ -22,6 +22,8 @@ User Pools operations:
   AdminResetUserPassword, AdminUserGlobalSignOut,
   GlobalSignOut, RevokeToken,
   CreateUserPoolDomain, DeleteUserPoolDomain, DescribeUserPoolDomain,
+  CreateIdentityProvider, DescribeIdentityProvider, UpdateIdentityProvider,
+  DeleteIdentityProvider, ListIdentityProviders, GetIdentityProviderByIdentifier,
   GetUserPoolMfaConfig, SetUserPoolMfaConfig,
   AssociateSoftwareToken, VerifySoftwareToken,
   TagResource, UntagResource, ListTagsForResource.
@@ -141,6 +143,7 @@ _user_pools = AccountScopedDict()
 #   _clients: {client_id -> client_dict},
 #   _users:   {username -> user_dict},
 #   _groups:  {group_name -> group_dict},
+#   _identity_providers: {provider_name -> provider_dict},
 # }
 
 _pool_domain_map = AccountScopedDict()   # domain -> pool_id
@@ -400,6 +403,13 @@ def _dispatch_idp(action: str, data: dict):
         "CreateUserPoolDomain": _create_user_pool_domain,
         "DeleteUserPoolDomain": _delete_user_pool_domain,
         "DescribeUserPoolDomain": _describe_user_pool_domain,
+        # Identity Provider
+        "CreateIdentityProvider": _create_identity_provider,
+        "DescribeIdentityProvider": _describe_identity_provider,
+        "UpdateIdentityProvider": _update_identity_provider,
+        "DeleteIdentityProvider": _delete_identity_provider,
+        "ListIdentityProviders": _list_identity_providers,
+        "GetIdentityProviderByIdentifier": _get_identity_provider_by_identifier,
         # MFA
         "GetUserPoolMfaConfig": _get_user_pool_mfa_config,
         "SetUserPoolMfaConfig": _set_user_pool_mfa_config,
@@ -499,6 +509,7 @@ def _create_user_pool(data):
         "_clients": {},
         "_users": {},
         "_groups": {},
+        "_identity_providers": {},
     }
     if data.get("DeviceConfiguration"):
         pool["DeviceConfiguration"] = data["DeviceConfiguration"]
@@ -1574,6 +1585,153 @@ def _describe_user_pool_domain(data):
             "CustomDomainConfig": {},
         }
     })
+
+
+# ===========================================================================
+# IDENTITY PROVIDER CRUD
+# ===========================================================================
+
+VALID_PROVIDER_TYPES = {"SAML", "Facebook", "Google", "LoginWithAmazon", "SignInWithApple", "OIDC"}
+
+
+def _create_identity_provider(data):
+    pid = data.get("UserPoolId")
+    pool, err = _resolve_pool(pid)
+    if err:
+        return err
+    provider_name = data.get("ProviderName")
+    if not provider_name:
+        return error_response_json("InvalidParameterException", "ProviderName is required.", 400)
+    provider_type = data.get("ProviderType")
+    if not provider_type:
+        return error_response_json("InvalidParameterException", "ProviderType is required.", 400)
+    if provider_type not in VALID_PROVIDER_TYPES:
+        return error_response_json("InvalidParameterException", f"Invalid ProviderType: {provider_type}.", 400)
+    providers = pool["_identity_providers"]
+    if provider_name in providers:
+        return error_response_json("DuplicateProviderException",
+                                   f"A provider with name {provider_name} already exists.", 400)
+    idp_identifiers = data.get("IdpIdentifiers", [])
+    # Check identifier uniqueness across all providers in this pool
+    existing_ids = set()
+    for p in providers.values():
+        existing_ids.update(p.get("IdpIdentifiers", []))
+    for ident in idp_identifiers:
+        if ident in existing_ids:
+            return error_response_json("DuplicateProviderException",
+                                       f"IdpIdentifier {ident} is already in use.", 400)
+    now = _now_epoch()
+    provider = {
+        "UserPoolId": pid,
+        "ProviderName": provider_name,
+        "ProviderType": provider_type,
+        "ProviderDetails": data.get("ProviderDetails", {}),
+        "AttributeMapping": data.get("AttributeMapping", {}),
+        "IdpIdentifiers": idp_identifiers,
+        "CreationDate": now,
+        "LastModifiedDate": now,
+    }
+    providers[provider_name] = provider
+    logger.info("Cognito: CreateIdentityProvider %s in pool %s", provider_name, pid)
+    return json_response({"IdentityProvider": provider})
+
+
+def _describe_identity_provider(data):
+    pid = data.get("UserPoolId")
+    pool, err = _resolve_pool(pid)
+    if err:
+        return err
+    provider_name = data.get("ProviderName")
+    provider = pool["_identity_providers"].get(provider_name)
+    if not provider:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Identity provider {provider_name} does not exist.", 400)
+    return json_response({"IdentityProvider": provider})
+
+
+def _update_identity_provider(data):
+    pid = data.get("UserPoolId")
+    pool, err = _resolve_pool(pid)
+    if err:
+        return err
+    provider_name = data.get("ProviderName")
+    provider = pool["_identity_providers"].get(provider_name)
+    if not provider:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Identity provider {provider_name} does not exist.", 400)
+    if "ProviderDetails" in data:
+        provider["ProviderDetails"] = data["ProviderDetails"]
+    if "AttributeMapping" in data:
+        provider["AttributeMapping"] = data["AttributeMapping"]
+    if "IdpIdentifiers" in data:
+        new_ids = data["IdpIdentifiers"]
+        # Check uniqueness against other providers in the pool
+        existing_ids = set()
+        for name, p in pool["_identity_providers"].items():
+            if name != provider_name:
+                existing_ids.update(p.get("IdpIdentifiers", []))
+        for ident in new_ids:
+            if ident in existing_ids:
+                return error_response_json("DuplicateProviderException",
+                                           f"IdpIdentifier {ident} is already in use.", 400)
+        provider["IdpIdentifiers"] = new_ids
+    provider["LastModifiedDate"] = _now_epoch()
+    return json_response({"IdentityProvider": provider})
+
+
+def _delete_identity_provider(data):
+    pid = data.get("UserPoolId")
+    pool, err = _resolve_pool(pid)
+    if err:
+        return err
+    provider_name = data.get("ProviderName")
+    if provider_name not in pool["_identity_providers"]:
+        return error_response_json("ResourceNotFoundException",
+                                   f"Identity provider {provider_name} does not exist.", 400)
+    del pool["_identity_providers"][provider_name]
+    logger.info("Cognito: DeleteIdentityProvider %s from pool %s", provider_name, pid)
+    return json_response({})
+
+
+def _list_identity_providers(data):
+    pid = data.get("UserPoolId")
+    pool, err = _resolve_pool(pid)
+    if err:
+        return err
+    max_results = min(data.get("MaxResults", 60), 60)
+    next_token = data.get("NextToken")
+    providers = sorted(pool["_identity_providers"].values(), key=lambda p: p["CreationDate"])
+    start = int(next_token) if next_token else 0
+    page = providers[start:start + max_results]
+    resp = {
+        "Providers": [
+            {
+                "ProviderName": p["ProviderName"],
+                "ProviderType": p["ProviderType"],
+                "LastModifiedDate": p["LastModifiedDate"],
+                "CreationDate": p["CreationDate"],
+            }
+            for p in page
+        ]
+    }
+    if start + max_results < len(providers):
+        resp["NextToken"] = str(start + max_results)
+    return json_response(resp)
+
+
+def _get_identity_provider_by_identifier(data):
+    pid = data.get("UserPoolId")
+    pool, err = _resolve_pool(pid)
+    if err:
+        return err
+    identifier = data.get("IdpIdentifier")
+    if not identifier:
+        return error_response_json("InvalidParameterException", "IdpIdentifier is required.", 400)
+    for provider in pool["_identity_providers"].values():
+        if identifier in provider.get("IdpIdentifiers", []):
+            return json_response({"IdentityProvider": provider})
+    return error_response_json("ResourceNotFoundException",
+                               f"Identity provider with identifier {identifier} does not exist.", 400)
 
 
 # ===========================================================================
