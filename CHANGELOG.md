@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **SFN Wait state scaling** — new `SFN_WAIT_SCALE` environment variable (default `1.0`) scales Wait state durations and retry interval sleeps. Set to `0` to skip all waits for fast-forward execution in test scenarios where emulated resources are immediately available. Contributed by @jayjanssen
+
+---
+
 ## [1.2.11] — 2026-04-14
 
 ### Fixed
@@ -23,6 +30,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - **SFN aws-sdk error code prefixing** — SDK errors from `aws-sdk:*` task integrations are now prefixed with the service name (e.g. `SecretsManager.ResourceExistsException` instead of bare `ResourceExistsException`), matching real AWS Step Functions behavior. Fixes `Catch` blocks that match on service-specific error codes. Contributed by @jayjanssen (#296)
+- **RDS parameter group reset actions** — `ResetDBParameterGroup` and `ResetDBClusterParameterGroup` now clear either selected overrides or the full user-parameter state, matching AWS semantics. Parameter list parsing now accepts both `Parameters.member.N` and `Parameters.Parameter.N` serialization styles used by different clients.
 
 ---
 
