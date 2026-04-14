@@ -5,7 +5,7 @@ All in-memory, no actual instance scaling.
 
 Supports:
   ASG:       CreateAutoScalingGroup, DescribeAutoScalingGroups, UpdateAutoScalingGroup,
-             DeleteAutoScalingGroup, DescribeAutoScalingInstances
+             DeleteAutoScalingGroup, DescribeAutoScalingInstances, DescribeScalingActivities
   LC:        CreateLaunchConfiguration, DescribeLaunchConfigurations, DeleteLaunchConfiguration
   Policies:  PutScalingPolicy, DescribePolicies, DeletePolicy
   Hooks:     PutLifecycleHook, DescribeLifecycleHooks, DeleteLifecycleHook,
@@ -206,6 +206,11 @@ def _delete_asg(p):
 def _describe_asg_instances(p):
     return _xml(200, "DescribeAutoScalingInstancesResponse",
                 "<DescribeAutoScalingInstancesResult><AutoScalingInstances/></DescribeAutoScalingInstancesResult>")
+
+
+def _describe_scaling_activities(p):
+    return _xml(200, "DescribeScalingActivitiesResponse",
+                "<DescribeScalingActivitiesResult><Activities/></DescribeScalingActivitiesResult>")
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +470,7 @@ _ACTION_MAP = {
     "UpdateAutoScalingGroup": _update_asg,
     "DeleteAutoScalingGroup": _delete_asg,
     "DescribeAutoScalingInstances": _describe_asg_instances,
+    "DescribeScalingActivities": _describe_scaling_activities,
     "CreateLaunchConfiguration": _create_lc,
     "DescribeLaunchConfigurations": _describe_lcs,
     "DeleteLaunchConfiguration": _delete_lc,
