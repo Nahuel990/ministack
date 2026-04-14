@@ -638,7 +638,7 @@ def _create_user_pool_client(data):
         "AllowedOAuthFlows": data.get("AllowedOAuthFlows", []),
         "AllowedOAuthScopes": data.get("AllowedOAuthScopes", []),
         "AllowedOAuthFlowsUserPoolClient": data.get("AllowedOAuthFlowsUserPoolClient", False),
-        "AnalyticsConfiguration": data.get("AnalyticsConfiguration", {}),
+        "AnalyticsConfiguration": data.get("AnalyticsConfiguration"),
         "PreventUserExistenceErrors": data.get("PreventUserExistenceErrors", "ENABLED"),
         "EnableTokenRevocation": data.get("EnableTokenRevocation", True),
         "EnablePropagateAdditionalUserContextData": data.get("EnablePropagateAdditionalUserContextData", False),
