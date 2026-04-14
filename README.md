@@ -73,13 +73,16 @@ curl http://localhost:4566/_ministack/health
 # Reset all state — wipe every service back to empty (useful between test runs)
 curl -X POST http://localhost:4566/_ministack/reset
 
+# Reset and re-run init scripts (boot.d + ready.d)
+curl -X POST http://localhost:4566/_ministack/reset?init=1
+
 # Runtime config — change service-level settings without restart
 curl -X POST http://localhost:4566/_ministack/config \
   -H "Content-Type: application/json" \
   -d '{"lambda_svc.LAMBDA_EXECUTOR": "docker"}'
 ```
 
-The reset endpoint is especially useful in CI pipelines and test suites — call it in `setUp`/`beforeEach` to get a clean environment for every test without restarting the container.
+The reset endpoint is especially useful in CI pipelines and test suites — call it in `setUp`/`beforeEach` to get a clean environment for every test without restarting the container. Add `?init=1` to re-run your init scripts after the reset, restoring any resources they create (VPCs, queues, seed data, etc.).
 
 The config endpoint supports these keys:
 
@@ -89,6 +92,7 @@ The config endpoint supports these keys:
 | `athena.ATHENA_ENGINE` | Athena query engine (`duckdb` or `mock`) |
 | `athena.ATHENA_DATA_DIR` | Directory for Athena DuckDB data files |
 | `stepfunctions._sfn_mock_config` | SFN mock config (AWS SFN Local compatible) |
+| `stepfunctions._SFN_WAIT_SCALE` | Scale factor for Wait state durations and retry sleeps (`0` = skip all waits) |
 
 To set region or account ID, use environment variables at startup:
 

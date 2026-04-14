@@ -7,12 +7,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.2.13] — 2026-04-14
 
 ### Added
-- **RDS real MySQL/MariaDB connectivity** — `pymysql` (44 KB, pure Python) is now bundled in the Docker image. When MiniStack runs inside Docker, RDS containers are attached to MiniStack's Docker network with internal IP endpoints for sibling-container connectivity. The public `localhost` endpoint remains unchanged for host-mode access. The Data API authenticates using credentials from Secrets Manager, mapping the master user to MySQL `root` for admin operations. `CreateDBCluster` stores the master password; `CreateDBInstance` inherits credentials from parent clusters; `ModifyDBCluster` propagates password changes to the real MySQL container via `ALTER USER`.
+- **RDS real MySQL/MariaDB connectivity** — `pymysql` (44 KB, pure Python) is now bundled in the Docker image. When MiniStack runs inside Docker, RDS containers are attached to MiniStack's Docker network with internal IP endpoints for sibling-container connectivity. The public `localhost` endpoint remains unchanged for host-mode access. The Data API authenticates using credentials from Secrets Manager, mapping the master user to MySQL `root` for admin operations. `CreateDBCluster` stores the master password; `CreateDBInstance` inherits credentials from parent clusters; `ModifyDBCluster` propagates password changes to the real MySQL container via `ALTER USER`. Contributed by @jayjanssen (#316)
+- **Cognito Identity Provider CRUD** — `CreateIdentityProvider`, `DescribeIdentityProvider`, `UpdateIdentityProvider`, `DeleteIdentityProvider`, `ListIdentityProviders`. Enables SAML/OIDC federation setup in local development. Reported by @prandogabriel (#325)
+- **CodeBuild `BatchGetProjects` ARN lookup** — accepts full ARNs in addition to project names, matching real AWS behavior. Contributed by @alexanderkrum-next (#321)
+
 ### Fixed
-- **SFN States.Format escape handling** — `States.Format` now correctly processes `\'`, `\{`, `\}`, and `\` escape sequences in template strings, matching AWS behavior. Escaped quotes no longer truncate the template during intrinsic argument parsing. Interpolated values are preserved verbatim (backslashes in arguments are not interpreted as escapes).
+- **SFN States.Format escape handling** — `States.Format` now correctly processes `\'`, `\{`, `\}`, and `\\` escape sequences in template strings, matching AWS behavior. Escaped quotes no longer truncate the template during intrinsic argument parsing. Interpolated values are preserved verbatim (backslashes in arguments are not interpreted as escapes). Contributed by @jayjanssen (#315)
+- **S3 GetBucketLifecycleConfiguration returns canonical XML** — lifecycle rules are now parsed on PUT and reconstructed as canonical `<LifecycleConfiguration>` XML on GET, instead of echoing back the raw PUT body. Fixes Terraform Go SDK v2 deserialization failures. Reported by @alexanderkrum-next (#324)
+- **Cognito AdminGetUser accepts sub UUID** — `AdminGetUser` and all user-resolving operations now accept the user's `sub` UUID as the `Username` parameter, matching real AWS behavior. Reported by @prandogabriel (#326)
+- **Cognito IdToken missing user attributes** — `IdToken` now includes `email`, `cognito:username`, `email_verified`, and other user attributes. Uses `aud` claim instead of `client_id`, matching the OIDC spec and real AWS Cognito. Reported by @prandogabriel (#327)
+- **Cognito AnalyticsConfiguration drift** — `AnalyticsConfiguration` defaults to `None` instead of empty dict, preventing Terraform drift on every plan. Contributed by @alexanderkrum-next (#322)
 
 ---
 

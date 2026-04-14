@@ -35,6 +35,7 @@ import time
 from urllib.parse import quote as url_quote, unquote as url_unquote, parse_qs as _parse_qs
 from defusedxml.ElementTree import fromstring
 from xml.etree.ElementTree import Element, SubElement, tostring
+from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 from ministack.core.responses import (
@@ -752,12 +753,71 @@ def _delete_bucket_encryption(name: str):
 def _get_bucket_lifecycle(name: str):
     if name not in _buckets:
         return _no_such_bucket(name)
-    config = _bucket_lifecycle.get(name)
-    if config:
+    rules = _bucket_lifecycle.get(name)
+    if rules is not None:
+        xml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+        xml += '<LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        for rule in rules:
+            xml += "<Rule>"
+            if rule.get("ID"):
+                xml += f"<ID>{_esc(rule['ID'])}</ID>"
+            # Filter
+            filt = rule.get("Filter", {})
+            xml += "<Filter>"
+            if "Prefix" in filt:
+                xml += f"<Prefix>{_esc(filt['Prefix'])}</Prefix>"
+            if "Tag" in filt:
+                xml += f"<Tag><Key>{_esc(filt['Tag']['Key'])}</Key><Value>{_esc(filt['Tag']['Value'])}</Value></Tag>"
+            if "And" in filt:
+                xml += "<And>"
+                if "Prefix" in filt["And"]:
+                    xml += f"<Prefix>{_esc(filt['And']['Prefix'])}</Prefix>"
+                for tag in filt["And"].get("Tags", []):
+                    xml += f"<Tag><Key>{_esc(tag['Key'])}</Key><Value>{_esc(tag['Value'])}</Value></Tag>"
+                xml += "</And>"
+            xml += "</Filter>"
+            xml += f"<Status>{rule.get('Status', 'Enabled')}</Status>"
+            for t in rule.get("Transitions", []):
+                xml += "<Transition>"
+                if "Days" in t:
+                    xml += f"<Days>{t['Days']}</Days>"
+                if "Date" in t:
+                    xml += f"<Date>{t['Date']}</Date>"
+                xml += f"<StorageClass>{t.get('StorageClass', 'STANDARD_IA')}</StorageClass>"
+                xml += "</Transition>"
+            for t in rule.get("NoncurrentVersionTransitions", []):
+                xml += "<NoncurrentVersionTransition>"
+                if "NoncurrentDays" in t:
+                    xml += f"<NoncurrentDays>{t['NoncurrentDays']}</NoncurrentDays>"
+                xml += f"<StorageClass>{t.get('StorageClass', 'STANDARD_IA')}</StorageClass>"
+                xml += "</NoncurrentVersionTransition>"
+            if "Expiration" in rule:
+                exp = rule["Expiration"]
+                xml += "<Expiration>"
+                if "Days" in exp:
+                    xml += f"<Days>{exp['Days']}</Days>"
+                if "Date" in exp:
+                    xml += f"<Date>{exp['Date']}</Date>"
+                if "ExpiredObjectDeleteMarker" in exp:
+                    xml += f"<ExpiredObjectDeleteMarker>{str(exp['ExpiredObjectDeleteMarker']).lower()}</ExpiredObjectDeleteMarker>"
+                xml += "</Expiration>"
+            if "NoncurrentVersionExpiration" in rule:
+                nve = rule["NoncurrentVersionExpiration"]
+                xml += "<NoncurrentVersionExpiration>"
+                if "NoncurrentDays" in nve:
+                    xml += f"<NoncurrentDays>{nve['NoncurrentDays']}</NoncurrentDays>"
+                xml += "</NoncurrentVersionExpiration>"
+            if rule.get("AbortIncompleteMultipartUpload"):
+                aimu = rule["AbortIncompleteMultipartUpload"]
+                xml += "<AbortIncompleteMultipartUpload>"
+                xml += f"<DaysAfterInitiation>{aimu.get('DaysAfterInitiation', 7)}</DaysAfterInitiation>"
+                xml += "</AbortIncompleteMultipartUpload>"
+            xml += "</Rule>"
+        xml += "</LifecycleConfiguration>"
         return 200, {
             "Content-Type": "application/xml",
             "x-amz-transition-default-minimum-object-size": "all_storage_classes_128K",
-        }, config
+        }, xml.encode()
     return _error(
         "NoSuchLifecycleConfiguration",
         "The lifecycle configuration does not exist",
@@ -769,7 +829,104 @@ def _get_bucket_lifecycle(name: str):
 def _put_bucket_lifecycle(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_lifecycle[name] = body
+    # Parse incoming XML into structured rules for canonical GET responses.
+    rules = []
+    try:
+        from defusedxml import ElementTree as ET
+        root = ET.fromstring(body)
+        ns = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
+        for rule_el in root.findall("Rule", ns) or root.findall("s3:Rule", ns):
+            rule: dict = {}
+            _lc_text = lambda el, tag: (el.findtext(tag) or el.findtext(f"s3:{tag}", namespaces=ns) or "")
+            _lc_find = lambda el, tag: (el.find(tag) or el.find(f"s3:{tag}", ns))
+            _lc_findall = lambda el, tag: (el.findall(tag) or el.findall(f"s3:{tag}", ns))
+            id_val = _lc_text(rule_el, "ID")
+            if id_val:
+                rule["ID"] = id_val
+            rule["Status"] = _lc_text(rule_el, "Status") or "Enabled"
+            # Filter
+            filt_el = _lc_find(rule_el, "Filter")
+            filt: dict = {}
+            if filt_el is not None:
+                prefix = _lc_text(filt_el, "Prefix")
+                if prefix or _lc_find(filt_el, "Prefix") is not None:
+                    filt["Prefix"] = prefix
+                tag_el = _lc_find(filt_el, "Tag")
+                if tag_el is not None:
+                    filt["Tag"] = {"Key": _lc_text(tag_el, "Key"), "Value": _lc_text(tag_el, "Value")}
+                and_el = _lc_find(filt_el, "And")
+                if and_el is not None:
+                    and_data: dict = {}
+                    p = _lc_text(and_el, "Prefix")
+                    if p or _lc_find(and_el, "Prefix") is not None:
+                        and_data["Prefix"] = p
+                    tags = []
+                    for t in _lc_findall(and_el, "Tag"):
+                        tags.append({"Key": _lc_text(t, "Key"), "Value": _lc_text(t, "Value")})
+                    if tags:
+                        and_data["Tags"] = tags
+                    filt["And"] = and_data
+            rule["Filter"] = filt
+            # Transitions
+            transitions = []
+            for t in _lc_findall(rule_el, "Transition"):
+                td: dict = {}
+                days = _lc_text(t, "Days")
+                if days:
+                    td["Days"] = int(days)
+                date = _lc_text(t, "Date")
+                if date:
+                    td["Date"] = date
+                td["StorageClass"] = _lc_text(t, "StorageClass") or "STANDARD_IA"
+                transitions.append(td)
+            if transitions:
+                rule["Transitions"] = transitions
+            # NoncurrentVersionTransitions
+            nv_transitions = []
+            for t in _lc_findall(rule_el, "NoncurrentVersionTransition"):
+                td = {}
+                days = _lc_text(t, "NoncurrentDays")
+                if days:
+                    td["NoncurrentDays"] = int(days)
+                td["StorageClass"] = _lc_text(t, "StorageClass") or "STANDARD_IA"
+                nv_transitions.append(td)
+            if nv_transitions:
+                rule["NoncurrentVersionTransitions"] = nv_transitions
+            # Expiration
+            exp_el = _lc_find(rule_el, "Expiration")
+            if exp_el is not None:
+                exp: dict = {}
+                days = _lc_text(exp_el, "Days")
+                if days:
+                    exp["Days"] = int(days)
+                date = _lc_text(exp_el, "Date")
+                if date:
+                    exp["Date"] = date
+                eodm = _lc_text(exp_el, "ExpiredObjectDeleteMarker")
+                if eodm:
+                    exp["ExpiredObjectDeleteMarker"] = eodm.lower() == "true"
+                rule["Expiration"] = exp
+            # NoncurrentVersionExpiration
+            nve_el = _lc_find(rule_el, "NoncurrentVersionExpiration")
+            if nve_el is not None:
+                nve: dict = {}
+                days = _lc_text(nve_el, "NoncurrentDays")
+                if days:
+                    nve["NoncurrentDays"] = int(days)
+                rule["NoncurrentVersionExpiration"] = nve
+            # AbortIncompleteMultipartUpload
+            aimu_el = _lc_find(rule_el, "AbortIncompleteMultipartUpload")
+            if aimu_el is not None:
+                days = _lc_text(aimu_el, "DaysAfterInitiation")
+                rule["AbortIncompleteMultipartUpload"] = {
+                    "DaysAfterInitiation": int(days) if days else 7
+                }
+            rules.append(rule)
+    except Exception:
+        # Fallback: store raw if parsing fails
+        _bucket_lifecycle[name] = body
+        return 200, {"x-amz-transition-default-minimum-object-size": "all_storage_classes_128K"}, b""
+    _bucket_lifecycle[name] = rules
     return 200, {"x-amz-transition-default-minimum-object-size": "all_storage_classes_128K"}, b""
 
 
