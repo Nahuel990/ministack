@@ -11,6 +11,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **Transfer Family** — new service: CreateServer, DescribeServer, DeleteServer, ListServers, CreateUser, DescribeUser, DeleteUser, ListUsers, ImportSshPublicKey, DeleteSshPublicKey. 10 operations covering SFTP server/user management with SSH key rotation and LOGICAL home directory mappings to S3. 19 integration tests.
+### Fixed
+- **Lambda endpoint URL override** — function-level `AWS_ENDPOINT_URL` environment variables no longer override MiniStack's internal endpoint. When MiniStack runs in Docker with a host-port that differs from the container port (e.g., `4568:4566`), Lambda functions would receive the host-mapped URL which is unreachable from inside the container, causing SDK callbacks to fail with "connection refused". Fix applies to all executor paths: provided runtime, Docker mode, image mode, and warm workers. Contributed by @jayjanssen
+- **SFN callback/activity timeout not scaled** — `SFN_WAIT_SCALE=0` no longer causes `States.Timeout` on activity tasks and `waitForTaskToken` callbacks. The scale factor was incorrectly applied to functional timeouts (which must wait for real work to complete), not just Wait state sleeps and retry intervals. Contributed by @jayjanssen
+
+---
+
+## [1.2.15] — 2026-04-15
+
+### Fixed
+- **Kinesis `GetRecords` iterator handling** — shard iterators are no longer consumed (popped) on use, matching real AWS behavior where iterators remain valid until their 5-minute TTL expires. Previously, calling `GetRecords` immediately invalidated the iterator, causing `ExpiredIteratorException` on client retries. Polling consumers like Apache Camel that retry on transient failures would fail with "Iterator has expired or is invalid". Reported by @markwimpory
+
+---
+
+## [1.2.14] — 2026-04-15
+
+### Added
+- **Cognito federated SAML/OIDC auth flow** — `GET /oauth2/authorize` (redirects to external SAML/OIDC IdP), `POST /saml2/idpresponse` (parses SAML assertion, creates federated user, issues authorization code), and `POST /oauth2/token` now supports `grant_type=authorization_code` for full SSO flow. Also adds `GetIdentityProviderByIdentifier`. Contributed by @prandogabriel (#329)
+- **EC2 AuthorizeSecurityGroup returns rules** — `AuthorizeSecurityGroupIngress` and `AuthorizeSecurityGroupEgress` now return `SecurityGroupRules` in the response with rule IDs, group ownership, protocol, port range, and CIDR details. Required by Terraform AWS provider v6. Reported by @mspiller (#325)
+
+### Fixed
+- **Cognito token claims correctness** — `origin_jti` and `auth_time` claims are now only included in `IdToken` and `AccessToken` (not `RefreshToken`), matching real AWS Cognito behavior. Refresh tokens use minimal claims with only `client_id`. 
 
 ---
 

@@ -520,10 +520,11 @@ def _get_records(data):
     iterator = data.get("ShardIterator")
     limit = min(data.get("Limit", 10000), 10000)
 
-    state = _shard_iterators.pop(iterator, None)
+    state = _shard_iterators.get(iterator)
     if not state:
         return error_response_json("ExpiredIteratorException", "Iterator has expired or is invalid", 400)
     if time.time() - state["created_at"] > ITERATOR_EXPIRY_SECONDS:
+        del _shard_iterators[iterator]
         return error_response_json("ExpiredIteratorException", "Iterator has expired", 400)
 
     stream = _streams.get(state["stream"])
@@ -551,6 +552,10 @@ def _get_records(data):
     if shard["records"] and new_pos < len(shard["records"]):
         millis_behind = max(0, int((time.time() - shard["records"][new_pos]["ApproximateArrivalTimestamp"]) * 1000))
 
+    # Retire the current iterator and issue a new one with advanced position,
+    # matching AWS behavior: each GetRecords call returns a NextShardIterator.
+    # The old iterator remains valid until it expires naturally (5 min TTL),
+    # allowing client retries to succeed.
     next_token = new_uuid()
     _shard_iterators[next_token] = {
         "stream": state["stream"],

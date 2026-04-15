@@ -323,6 +323,32 @@ def test_kinesis_esm_creates_and_lists(lam, kin):
     lam.delete_function(FunctionName="esm-kin-fn")
 
 
+def test_kinesis_iterator_reuse_on_retry(kin):
+    """Same shard iterator can be used multiple times (client retry), matching AWS behavior."""
+    kin.create_stream(StreamName="kin-iter-retry", ShardCount=1)
+    kin.put_record(StreamName="kin-iter-retry", Data=b"rec1", PartitionKey="pk1")
+    kin.put_record(StreamName="kin-iter-retry", Data=b"rec2", PartitionKey="pk2")
+
+    desc = kin.describe_stream(StreamName="kin-iter-retry")
+    shard_id = desc["StreamDescription"]["Shards"][0]["ShardId"]
+    it = kin.get_shard_iterator(
+        StreamName="kin-iter-retry", ShardId=shard_id, ShardIteratorType="TRIM_HORIZON"
+    )["ShardIterator"]
+
+    # First call with iterator
+    resp1 = kin.get_records(ShardIterator=it)
+    assert len(resp1["Records"]) == 2
+
+    # Retry with the same iterator — should succeed and return identical data
+    resp2 = kin.get_records(ShardIterator=it)
+    assert len(resp2["Records"]) == 2
+    assert resp2["Records"][0]["Data"] == resp1["Records"][0]["Data"]
+
+    # NextShardIterator from first call should advance past existing records
+    resp3 = kin.get_records(ShardIterator=resp1["NextShardIterator"])
+    assert len(resp3["Records"]) == 0
+
+
 def test_kinesis_cbor_put_record(kin):
     """Java SDK sends CBOR-encoded PutRecord; ministack must decode it."""
     import cbor2
