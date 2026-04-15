@@ -1400,6 +1400,14 @@ def test_cognito_saml_full_flow(cognito_idp):
     assert "refresh_token" in tokens
     assert tokens["token_type"] == "Bearer"
 
+    # Step 3b: Verify id_token contains email claim
+    id_payload_b64 = tokens["id_token"].split(".")[1]
+    id_payload_b64 += "=" * (4 - len(id_payload_b64) % 4)
+    id_claims = json.loads(base64.urlsafe_b64decode(id_payload_b64))
+    assert id_claims.get("email") == "john@example.com", f"Missing email in id_token: {id_claims}"
+    assert id_claims.get("token_use") == "id"
+    assert "cognito:username" in id_claims
+
     # Step 4: Verify user was created via AdminGetUser
     user = cognito_idp.admin_get_user(UserPoolId=pid, Username="TestSAML_john@example.com")
     assert user["Username"] == "TestSAML_john@example.com"

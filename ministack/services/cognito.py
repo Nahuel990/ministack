@@ -2245,8 +2245,16 @@ def _oauth2_token(data, query_params, raw_body: bytes = b""):
         sub = code_data["sub"]
         effective_client_id = code_data["client_id"]
 
+        # Fetch user attributes for id_token claims (email, etc.)
+        user_attrs = {}
+        pool = _user_pools.get(pool_id)
+        if pool:
+            user = pool["_users"].get(username)
+            if user:
+                user_attrs = _attr_list_to_dict(user.get("Attributes", []))
+
         access_token = _fake_token(sub, pool_id, effective_client_id, "access", username)
-        id_token = _fake_token(sub, pool_id, effective_client_id, "id", username)
+        id_token = _fake_token(sub, pool_id, effective_client_id, "id", username, user_attrs=user_attrs)
         refresh_token = secrets.token_urlsafe(48)
 
         return json_response({
