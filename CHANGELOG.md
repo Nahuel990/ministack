@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Lambda endpoint URL override** — function-level `AWS_ENDPOINT_URL` environment variables no longer override MiniStack's internal endpoint. When MiniStack runs in Docker with a host-port that differs from the container port (e.g., `4568:4566`), Lambda functions would receive the host-mapped URL which is unreachable from inside the container, causing SDK callbacks to fail with "connection refused". Fix applies to all executor paths: provided runtime, Docker mode, image mode, and warm workers. Contributed by @jayjanssen
+
+---
+
 ## [1.2.15] — 2026-04-15
 
 ### Fixed
