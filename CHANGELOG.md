@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.15] — 2026-04-15
+
+### Fixed
+- **Kinesis `GetRecords` iterator handling** — shard iterators are no longer consumed (popped) on use, matching real AWS behavior where iterators remain valid until their 5-minute TTL expires. Previously, calling `GetRecords` immediately invalidated the iterator, causing `ExpiredIteratorException` on client retries. Polling consumers like Apache Camel that retry on transient failures would fail with "Iterator has expired or is invalid". Reported by @markwimpory
+
+---
+
 ## [1.2.14] — 2026-04-15
 
 ### Added
