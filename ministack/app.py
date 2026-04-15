@@ -82,6 +82,7 @@ from ministack.services import (
     servicediscovery,
     s3files,
     codebuild,
+    transfer,
 )
 from ministack.services import iam_sts
 from ministack.services.iam_sts import handle_iam_request, handle_sts_request
@@ -131,6 +132,7 @@ SERVICE_HANDLERS = {
     "kms": kms.handle_request,
     "cloudfront": cloudfront.handle_request,
     "codebuild": codebuild.handle_request,
+    "transfer": transfer.handle_request,
     "appsync": appsync.handle_request,
     "servicediscovery": servicediscovery.handle_request,
     "s3files": s3files.handle_request,
@@ -193,7 +195,7 @@ BANNER = r"""
           SSM, EventBridge, Kinesis, CloudWatch, SES, SES v2, ACM, WAF v2, Step Functions,
           ECS, RDS, ElastiCache, Glue, Athena, API Gateway, Firehose, Route53,
           Cognito, EC2, EMR, EBS, EFS, ALB/ELBv2, CloudFormation, KMS, ECR, CloudFront,
-          AppSync, Cloud Map, S3 Files, RDS Data API, CodeBuild, AppConfig
+          AppSync, Cloud Map, S3 Files, RDS Data API, CodeBuild, AppConfig, Transfer
 """
 
 
@@ -516,7 +518,7 @@ async def app(scope, receive, send):
         _non_s3_hosts = {"s3", "s3-control", "sqs", "sns", "dynamodb", "lambda", "iam", "sts",
                          "secretsmanager", "logs", "ssm", "events", "kinesis",
                          "monitoring", "ses", "states", "ecs", "rds", "rds-data", "elasticache",
-                         "glue", "athena", "apigateway", "cloudformation", "autoscaling", "codebuild"}
+                         "glue", "athena", "apigateway", "cloudformation", "autoscaling", "codebuild", "transfer"}
         if bucket not in _non_s3_hosts:
             vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
             try:
@@ -653,6 +655,7 @@ async def _handle_lifespan(scope, receive, send):
                     "emr": emr.get_state,
                     "cloudfront": cloudfront.get_state,
                     "codebuild": codebuild.get_state,
+                    "transfer": transfer.get_state,
                     "acm": acm.get_state,
                     "firehose": firehose.get_state,
                     "ses": ses.get_state,
@@ -828,6 +831,7 @@ def _reset_all_state():
         (kms, kms.reset),
         (cloudfront, cloudfront.reset),
         (codebuild, codebuild.reset),
+        (transfer, transfer.reset),
         (ecr, ecr.reset),
         (appsync, appsync.reset),
         (servicediscovery, servicediscovery.reset),

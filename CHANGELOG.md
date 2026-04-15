@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+- **Transfer Family** — new service: CreateServer, DescribeServer, DeleteServer, ListServers, CreateUser, DescribeUser, DeleteUser, ListUsers, ImportSshPublicKey, DeleteSshPublicKey. 10 operations covering SFTP server/user management with SSH key rotation and LOGICAL home directory mappings to S3. 19 integration tests.
+
+---
+
 ## [1.2.13] — 2026-04-14
 
 ### Added

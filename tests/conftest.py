@@ -288,3 +288,7 @@ def codebuild():
 @pytest.fixture(scope="session")
 def autoscaling():
     return make_client("autoscaling")
+
+@pytest.fixture(scope="session")
+def transfer():
+    return make_client("transfer")
