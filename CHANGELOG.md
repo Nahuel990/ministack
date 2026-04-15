@@ -10,6 +10,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [1.2.14] — 2026-04-15
 
 ### Added
+- **KMS ECC key support** — `CreateKey` now supports `ECC_SECG_P256K1`, `ECC_NIST_P256`, `ECC_NIST_P384`, and `ECC_NIST_P521` key specs with `ECDSA_SHA_256`, `ECDSA_SHA_384`, `ECDSA_SHA_512` signing algorithms. Sign/Verify works for both `RAW` and `DIGEST` message types. `GetPublicKey` returns DER-encoded EC public keys. Contributed by @dvrkn
 - **Cognito federated SAML/OIDC auth flow** — `GET /oauth2/authorize` (redirects to external SAML/OIDC IdP), `POST /saml2/idpresponse` (parses SAML assertion, creates federated user, issues authorization code), and `POST /oauth2/token` now supports `grant_type=authorization_code` for full SSO flow. Also adds `GetIdentityProviderByIdentifier`. Contributed by @prandogabriel (#329)
 - **EC2 AuthorizeSecurityGroup returns rules** — `AuthorizeSecurityGroupIngress` and `AuthorizeSecurityGroupEgress` now return `SecurityGroupRules` in the response with rule IDs, group ownership, protocol, port range, and CIDR details. Required by Terraform AWS provider v6. Reported by @mspiller (#325)
 

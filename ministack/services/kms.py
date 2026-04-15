@@ -20,7 +20,7 @@ logger = logging.getLogger("kms")
 try:
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa, utils
     HAS_CRYPTO = True
 except ImportError:
     InvalidSignature = Exception
@@ -39,8 +39,8 @@ _keys = AccountScopedDict()
 # key_id -> {
 #     KeyId, Arn, KeyState, KeyUsage, KeySpec, Description,
 #     CreationDate, Enabled, Origin,
-#     _private_key (rsa private key object, RSA only),
-#     _public_key_der (bytes, RSA only),
+#     _private_key (asymmetric private key object, RSA/ECC only),
+#     _public_key_der (bytes, RSA/ECC only),
 #     _symmetric_key (bytes, SYMMETRIC_DEFAULT only),
 # }
 _aliases = AccountScopedDict()  # alias_name -> key_id (e.g. "alias/my-key" -> "uuid")
@@ -226,6 +226,30 @@ def _create_key(data):
                 "RSAES_OAEP_SHA_256",
             ]
             rec["SigningAlgorithms"] = []
+    elif key_spec in ("ECC_NIST_P256", "ECC_NIST_P384", "ECC_NIST_P521", "ECC_SECG_P256K1"):
+        err = _require_crypto("CreateKey")
+        if err:
+            return err
+        curve_map = {
+            "ECC_NIST_P256": ec.SECP256R1(),
+            "ECC_NIST_P384": ec.SECP384R1(),
+            "ECC_NIST_P521": ec.SECP521R1(),
+            "ECC_SECG_P256K1": ec.SECP256K1(),
+        }
+        private_key = ec.generate_private_key(curve_map[key_spec])
+        rec["_private_key"] = private_key
+        rec["_public_key_der"] = private_key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        signing_algo_map = {
+            "ECC_NIST_P256": ["ECDSA_SHA_256"],
+            "ECC_NIST_P384": ["ECDSA_SHA_384"],
+            "ECC_NIST_P521": ["ECDSA_SHA_512"],
+            "ECC_SECG_P256K1": ["ECDSA_SHA_256"],
+        }
+        rec["SigningAlgorithms"] = signing_algo_map[key_spec]
+        rec["EncryptionAlgorithms"] = []
     else:
         return error_response_json(
             "UnsupportedOperationException",
@@ -302,19 +326,29 @@ def _sign(data):
         message = message_b64
 
     pad, hash_algo = _signing_params(algorithm)
-    if pad is None:
+    if hash_algo is None:
         return error_response_json(
             "UnsupportedOperationException",
             f"Signing algorithm {algorithm} is not supported",
             400,
         )
 
-    if message_type == "DIGEST":
-        signature = rec["_private_key"].sign(
-            message, pad, utils.Prehashed(hash_algo)
-        )
+    if pad is None:
+        # ECDSA – no padding; pass ec.ECDSA(hash) as the algorithm
+        if message_type == "DIGEST":
+            signature = rec["_private_key"].sign(
+                message, ec.ECDSA(utils.Prehashed(hash_algo))
+            )
+        else:
+            signature = rec["_private_key"].sign(message, ec.ECDSA(hash_algo))
     else:
-        signature = rec["_private_key"].sign(message, pad, hash_algo)
+        # RSA
+        if message_type == "DIGEST":
+            signature = rec["_private_key"].sign(
+                message, pad, utils.Prehashed(hash_algo)
+            )
+        else:
+            signature = rec["_private_key"].sign(message, pad, hash_algo)
 
     logger.debug("Signed %d bytes with key %s (%s)", len(message), key_id, algorithm)
     return json_response({
@@ -349,7 +383,7 @@ def _verify(data):
     signature = base64.b64decode(signature_b64) if isinstance(signature_b64, str) else signature_b64
 
     pad, hash_algo = _signing_params(algorithm, for_verify=True)
-    if pad is None:
+    if hash_algo is None:
         return error_response_json(
             "UnsupportedOperationException",
             f"Signing algorithm {algorithm} is not supported",
@@ -358,10 +392,18 @@ def _verify(data):
 
     public_key = rec["_private_key"].public_key()
     try:
-        if message_type == "DIGEST":
-            public_key.verify(signature, message, pad, utils.Prehashed(hash_algo))
+        if pad is None:
+            # ECDSA
+            if message_type == "DIGEST":
+                public_key.verify(signature, message, ec.ECDSA(utils.Prehashed(hash_algo)))
+            else:
+                public_key.verify(signature, message, ec.ECDSA(hash_algo))
         else:
-            public_key.verify(signature, message, pad, hash_algo)
+            # RSA
+            if message_type == "DIGEST":
+                public_key.verify(signature, message, pad, utils.Prehashed(hash_algo))
+            else:
+                public_key.verify(signature, message, pad, hash_algo)
         valid = True
     except InvalidSignature:
         valid = False
@@ -374,7 +416,12 @@ def _verify(data):
 
 
 def _signing_params(algorithm, for_verify=False):
-    """Return (padding, hash_algorithm) for a signing algorithm."""
+    """Return (padding, hash_algorithm) for a signing algorithm.
+
+    For RSA algorithms, padding is a padding object.
+    For ECDSA algorithms, padding is None (ECDSA uses ec.ECDSA() instead).
+    If the algorithm is unknown, returns (None, None).
+    """
     if not HAS_CRYPTO:
         return None, None
 
@@ -406,6 +453,10 @@ def _signing_params(algorithm, for_verify=False):
             ),
             hashes.SHA512(),
         ),
+        # ECDSA – padding is None; callers use ec.ECDSA(hash) instead
+        "ECDSA_SHA_256": (None, hashes.SHA256()),
+        "ECDSA_SHA_384": (None, hashes.SHA384()),
+        "ECDSA_SHA_512": (None, hashes.SHA512()),
     }
     return algo_map.get(algorithm, (None, None))
 
