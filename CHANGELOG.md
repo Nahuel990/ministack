@@ -7,6 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Lambda endpoint URL override** — function-level `AWS_ENDPOINT_URL` environment variables no longer override MiniStack's internal endpoint. When MiniStack runs in Docker with a host-port that differs from the container port (e.g., `4568:4566`), Lambda functions would receive the host-mapped URL which is unreachable from inside the container, causing SDK callbacks to fail with "connection refused". Fix applies to all executor paths: provided runtime, Docker mode, image mode, and warm workers. Contributed by @jayjanssen
+- **SFN callback/activity timeout not scaled** — `SFN_WAIT_SCALE=0` no longer causes `States.Timeout` on activity tasks and `waitForTaskToken` callbacks. The scale factor was incorrectly applied to functional timeouts (which must wait for real work to complete), not just Wait state sleeps and retry intervals. Contributed by @jayjanssen
+
+---
+
+## [1.2.15] — 2026-04-15
+
+### Fixed
+- **Kinesis `GetRecords` iterator handling** — shard iterators are no longer consumed (popped) on use, matching real AWS behavior where iterators remain valid until their 5-minute TTL expires. Previously, calling `GetRecords` immediately invalidated the iterator, causing `ExpiredIteratorException` on client retries. Polling consumers like Apache Camel that retry on transient failures would fail with "Iterator has expired or is invalid". Reported by @markwimpory
+
+---
+
 ## [1.2.14] — 2026-04-15
 
 ### Added
