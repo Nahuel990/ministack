@@ -7,10 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.2.14] — 2026-04-15
 
 ### Added
-- **Cognito federated SAML/OIDC auth flow** — `GET /oauth2/authorize` (redirects to external SAML/OIDC IdP), `POST /saml2/idpresponse` (parses SAML assertion, creates federated user, issues authorization code), and `POST /oauth2/token` now supports `grant_type=authorization_code` for full SSO flow. Also adds `GetIdentityProviderByIdentifier`. Closes #325.
+- **Cognito federated SAML/OIDC auth flow** — `GET /oauth2/authorize` (redirects to external SAML/OIDC IdP), `POST /saml2/idpresponse` (parses SAML assertion, creates federated user, issues authorization code), and `POST /oauth2/token` now supports `grant_type=authorization_code` for full SSO flow. Also adds `GetIdentityProviderByIdentifier`. Contributed by @prandogabriel (#329)
+- **EC2 AuthorizeSecurityGroup returns rules** — `AuthorizeSecurityGroupIngress` and `AuthorizeSecurityGroupEgress` now return `SecurityGroupRules` in the response with rule IDs, group ownership, protocol, port range, and CIDR details. Required by Terraform AWS provider v6. Reported by @mspiller (#325)
+
+### Fixed
+- **Cognito token claims correctness** — `origin_jti` and `auth_time` claims are now only included in `IdToken` and `AccessToken` (not `RefreshToken`), matching real AWS Cognito behavior. Refresh tokens use minimal claims with only `client_id`. 
 
 ---
 
