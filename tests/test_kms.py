@@ -419,6 +419,187 @@ def test_kms_list_key_policies(kms_client):
     assert "default" in resp["PolicyNames"]
     kms_client.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=7)
 
+def test_kms_create_ecc_secg_p256k1_key(kms_client):
+    resp = kms_client.create_key(
+        KeySpec="ECC_SECG_P256K1",
+        KeyUsage="SIGN_VERIFY",
+        Description="secp256k1 signing key",
+    )
+    meta = resp["KeyMetadata"]
+    assert meta["KeySpec"] == "ECC_SECG_P256K1"
+    assert meta["KeyUsage"] == "SIGN_VERIFY"
+    assert "ECDSA_SHA_256" in meta["SigningAlgorithms"]
+    assert meta["EncryptionAlgorithms"] == []
+
+def test_kms_ecc_sign_and_verify(kms_client):
+    key = kms_client.create_key(KeySpec="ECC_SECG_P256K1", KeyUsage="SIGN_VERIFY")
+    key_id = key["KeyMetadata"]["KeyId"]
+    message = b"hello secp256k1"
+
+    sign_resp = kms_client.sign(
+        KeyId=key_id,
+        Message=message,
+        MessageType="RAW",
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert sign_resp["KeyId"] == key_id
+    assert sign_resp["SigningAlgorithm"] == "ECDSA_SHA_256"
+    assert len(sign_resp["Signature"]) > 0
+
+    verify_resp = kms_client.verify(
+        KeyId=key_id,
+        Message=message,
+        MessageType="RAW",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert verify_resp["SignatureValid"] is True
+
+def test_kms_ecc_verify_wrong_message(kms_client):
+    key = kms_client.create_key(KeySpec="ECC_SECG_P256K1", KeyUsage="SIGN_VERIFY")
+    key_id = key["KeyMetadata"]["KeyId"]
+
+    sign_resp = kms_client.sign(
+        KeyId=key_id,
+        Message=b"original",
+        MessageType="RAW",
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    verify_resp = kms_client.verify(
+        KeyId=key_id,
+        Message=b"tampered",
+        MessageType="RAW",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert verify_resp["SignatureValid"] is False
+
+def test_kms_ecc_get_public_key(kms_client):
+    key = kms_client.create_key(KeySpec="ECC_SECG_P256K1", KeyUsage="SIGN_VERIFY")
+    key_id = key["KeyMetadata"]["KeyId"]
+
+    resp = kms_client.get_public_key(KeyId=key_id)
+    assert resp["KeyId"] == key_id
+    assert resp["KeySpec"] == "ECC_SECG_P256K1"
+    assert resp["PublicKey"]
+    assert "ECDSA_SHA_256" in resp["SigningAlgorithms"]
+
+def test_kms_ecc_nist_p256_sign_verify(kms_client):
+    key = kms_client.create_key(KeySpec="ECC_NIST_P256", KeyUsage="SIGN_VERIFY")
+    key_id = key["KeyMetadata"]["KeyId"]
+
+    sign_resp = kms_client.sign(
+        KeyId=key_id,
+        Message=b"nist p256 message",
+        MessageType="RAW",
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    verify_resp = kms_client.verify(
+        KeyId=key_id,
+        Message=b"nist p256 message",
+        MessageType="RAW",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert verify_resp["SignatureValid"] is True
+
+def test_kms_ecc_nist_p384_sign_verify(kms_client):
+    key = kms_client.create_key(KeySpec="ECC_NIST_P384", KeyUsage="SIGN_VERIFY")
+    meta = key["KeyMetadata"]
+    assert "ECDSA_SHA_384" in meta["SigningAlgorithms"]
+
+    sign_resp = kms_client.sign(
+        KeyId=meta["KeyId"],
+        Message=b"nist p384 message",
+        MessageType="RAW",
+        SigningAlgorithm="ECDSA_SHA_384",
+    )
+    verify_resp = kms_client.verify(
+        KeyId=meta["KeyId"],
+        Message=b"nist p384 message",
+        MessageType="RAW",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_384",
+    )
+    assert verify_resp["SignatureValid"] is True
+
+def test_kms_ecc_nist_p521_sign_verify(kms_client):
+    key = kms_client.create_key(KeySpec="ECC_NIST_P521", KeyUsage="SIGN_VERIFY")
+    meta = key["KeyMetadata"]
+    assert "ECDSA_SHA_512" in meta["SigningAlgorithms"]
+
+    sign_resp = kms_client.sign(
+        KeyId=meta["KeyId"],
+        Message=b"nist p521 message",
+        MessageType="RAW",
+        SigningAlgorithm="ECDSA_SHA_512",
+    )
+    verify_resp = kms_client.verify(
+        KeyId=meta["KeyId"],
+        Message=b"nist p521 message",
+        MessageType="RAW",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_512",
+    )
+    assert verify_resp["SignatureValid"] is True
+
+def test_kms_ecc_sign_verify_digest_mode(kms_client):
+    """Sign/Verify with MessageType=DIGEST (pre-hashed message)."""
+    import hashlib
+    key = kms_client.create_key(KeySpec="ECC_SECG_P256K1", KeyUsage="SIGN_VERIFY")
+    key_id = key["KeyMetadata"]["KeyId"]
+
+    message_digest = hashlib.sha256(b"original message").digest()
+
+    sign_resp = kms_client.sign(
+        KeyId=key_id,
+        Message=message_digest,
+        MessageType="DIGEST",
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert sign_resp["SigningAlgorithm"] == "ECDSA_SHA_256"
+
+    verify_resp = kms_client.verify(
+        KeyId=key_id,
+        Message=message_digest,
+        MessageType="DIGEST",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert verify_resp["SignatureValid"] is True
+
+    # Wrong digest should fail
+    wrong_digest = hashlib.sha256(b"different message").digest()
+    verify_resp = kms_client.verify(
+        KeyId=key_id,
+        Message=wrong_digest,
+        MessageType="DIGEST",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert verify_resp["SignatureValid"] is False
+
+def test_kms_ecc_sign_via_alias(kms_client):
+    """Sign and verify using an alias instead of key ID."""
+    key = kms_client.create_key(KeySpec="ECC_SECG_P256K1", KeyUsage="SIGN_VERIFY")
+    key_id = key["KeyMetadata"]["KeyId"]
+    kms_client.create_alias(AliasName="alias/ecc-sign-alias", TargetKeyId=key_id)
+
+    sign_resp = kms_client.sign(
+        KeyId="alias/ecc-sign-alias",
+        Message=b"alias signing test",
+        MessageType="RAW",
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    verify_resp = kms_client.verify(
+        KeyId="alias/ecc-sign-alias",
+        Message=b"alias signing test",
+        MessageType="RAW",
+        Signature=sign_resp["Signature"],
+        SigningAlgorithm="ECDSA_SHA_256",
+    )
+    assert verify_resp["SignatureValid"] is True
+
 def test_kms_key_rotation_with_period(kms_client):
     """EnableKeyRotation with custom RotationPeriodInDays."""
     key = kms_client.create_key()

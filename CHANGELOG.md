@@ -12,8 +12,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Added
 - **Transfer Family** — new service: CreateServer, DescribeServer, DeleteServer, ListServers, CreateUser, DescribeUser, DeleteUser, ListUsers, ImportSshPublicKey, DeleteSshPublicKey. 10 operations covering SFTP server/user management with SSH key rotation and LOGICAL home directory mappings to S3. 19 integration tests.
 ### Fixed
-- **Lambda endpoint URL override** — function-level `AWS_ENDPOINT_URL` environment variables no longer override MiniStack's internal endpoint. When MiniStack runs in Docker with a host-port that differs from the container port (e.g., `4568:4566`), Lambda functions would receive the host-mapped URL which is unreachable from inside the container, causing SDK callbacks to fail with "connection refused". Fix applies to all executor paths: provided runtime, Docker mode, image mode, and warm workers. Contributed by @jayjanssen
-- **SFN callback/activity timeout not scaled** — `SFN_WAIT_SCALE=0` no longer causes `States.Timeout` on activity tasks and `waitForTaskToken` callbacks. The scale factor was incorrectly applied to functional timeouts (which must wait for real work to complete), not just Wait state sleeps and retry intervals. Contributed by @jayjanssen
+- **Cognito `cognito:groups` missing from tokens** — `initiate_auth` and `admin_initiate_auth` now include the `cognito:groups` claim in both access and ID tokens when the user belongs to one or more groups. Real AWS Cognito includes this claim automatically; MiniStack was not threading the already-populated `_groups` list through to the JWT builder.
+
+---
+
+## [1.2.16] — 2026-04-15
+
+### Added
+- **KMS ECC key support** — `CreateKey` now supports `ECC_SECG_P256K1`, `ECC_NIST_P256`, `ECC_NIST_P384`, and `ECC_NIST_P521` key specs with `ECDSA_SHA_256`, `ECDSA_SHA_384`, `ECDSA_SHA_512` signing algorithms. Sign/Verify works for both `RAW` and `DIGEST` message types. `GetPublicKey` returns DER-encoded EC public keys. Contributed by @dvrkn (#335)
+
+### Fixed
+- **Lambda endpoint URL override** — function-level `AWS_ENDPOINT_URL` environment variables no longer override MiniStack's internal endpoint. When MiniStack runs in Docker with a host-port that differs from the container port (e.g., `4568:4566`), Lambda functions would receive the host-mapped URL which is unreachable from inside the container, causing SDK callbacks to fail with "connection refused". Fix applies to all executor paths: provided runtime, Docker mode, image mode, and warm workers. Contributed by @jayjanssen (#336)
+- **SFN callback/activity timeout not scaled** — `SFN_WAIT_SCALE=0` no longer causes `States.Timeout` on activity tasks and `waitForTaskToken` callbacks. The scale factor was incorrectly applied to functional timeouts (which must wait for real work to complete), not just Wait state sleeps and retry intervals. Contributed by @jayjanssen (#337)
+- **Init scripts override mounted AWS credentials** — ready.d scripts no longer set `AWS_ACCESS_KEY_ID=test` when the user has mounted `~/.aws/credentials` into the container. The AWS CLI credential chain (env vars > credentials file) meant our defaults stomped on the user's configured profile. Now checks for credentials files at `~/.aws/credentials`, `/root/.aws/credentials`, and `AWS_SHARED_CREDENTIALS_FILE`. Reported by @staranto
 
 ---
 
