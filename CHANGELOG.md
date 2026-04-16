@@ -7,7 +7,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.2.19] — 2026-04-16
 
 ### Added
 - **EventBridge Scheduler service** — full `scheduler` API: CreateSchedule, GetSchedule, UpdateSchedule, DeleteSchedule, ListSchedules, CreateScheduleGroup, GetScheduleGroup, DeleteScheduleGroup, ListScheduleGroups, TagResource, UntagResource, ListTagsForResource. Supports schedule groups, cascading deletes, name prefix/state filters, and `at()`/`cron()`/`rate()` expressions. 21 tests.
