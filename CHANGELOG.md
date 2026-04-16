@@ -7,20 +7,49 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [1.2.20] — 2026-04-16
+## [1.2.20] — 2026-04-17
 
 ### Added
 - **EKS service with k3s backend** — CreateCluster, DescribeCluster, ListClusters, DeleteCluster, CreateNodegroup, DescribeNodegroup, ListNodegroups, DeleteNodegroup, TagResource, UntagResource, ListTagsForResource. `CreateCluster` spawns a real k3s Docker container (75 MB) providing a full Kubernetes API server. `kubectl`, Helm, and any K8s tooling work out of the box. Cascading delete removes nodegroups and k3s container. CloudFormation `AWS::EKS::Cluster` and `AWS::EKS::Nodegroup` provisioners included.
 - **Lambda layer S3 support** — `PublishLayerVersion` now accepts `S3Bucket`/`S3Key` in Content, matching real AWS behavior. Contributed by @Baptiste-Garcin (#356)
+- **Lambda Windows compatibility** — replaced `select.select()` stderr polling with cross-platform background thread + queue. Fixes Lambda warm worker execution on Windows. Contributed by @davidtme (#350)
+- **Lambda ESM poller on CFN create and state restore** — event source mappings created via CloudFormation or restored from persisted state now correctly start the background poller. Contributed by @davidtme (#350)
 
 ### Fixed
-- **EC2 SecurityGroup duplicate detection ignoring Description** — `AuthorizeSecurityGroupIngress` duplicate check and `RevokeSecurityGroupIngress` now compare rules without the `Description` field, matching AWS behavior. Rules with different descriptions but same protocol/port/CIDR are correctly detected as duplicates.
-- **CloudWatch DeleteDashboards error** — deleting a nonexistent dashboard returned 500 InternalError instead of 404 DashboardNotFoundError. Missing `status` argument in error call.
-- **Athena ListNamedQueries empty** — `ListNamedQueries` without a `WorkGroup` filter now returns all queries instead of only those in the "primary" workgroup, matching AWS behavior.
-- **ElastiCache CreateCacheSubnetGroup missing Subnets** — response XML now includes `<Subnets>` with SubnetIdentifier and availability zone, matching AWS response shape.
-- **Cognito OAuth2 lazy loading** — OAuth2 endpoints (`/oauth2/authorize`, `/login`, `/oauth2/token`, `/oauth2/userInfo`, `/logout`) now use lazy module loading, fixing crash when Cognito module wasn't pre-imported.
-- **Cognito OAuth2 persistence** — `_authorization_codes` and `_refresh_tokens` now included in `get_state()`/`restore_state()`, preventing loss of active sessions on restart with `PERSIST_STATE=1`.
-- **Lambda warm worker stuck after init failure** — when a warm worker crashes during module import (e.g. missing layer dependency), the broken worker is now invalidated so the next invocation gets a fresh process instead of reusing the broken one. Reported by @Baptiste-Garcin
+
+#### AWS Compliance (21 fixes from full-codebase audit)
+- **KMS `Verify` error handling** — invalid signatures now raise `KMSInvalidSignatureException` (HTTP 400) instead of returning `SignatureValid: false` with HTTP 200, matching real AWS behavior.
+- **KMS `Decrypt`/`GenerateDataKey`/`Sign`/`Verify`/`Encrypt` response `KeyId`** — all KMS crypto operations now return the full key ARN in the `KeyId` field instead of the bare UUID, matching real AWS.
+- **KMS `PendingDeletion` state check** — `Encrypt`, `Decrypt`, `Sign`, `Verify`, and `GenerateDataKey` now return `KMSInvalidStateException` when called on a key scheduled for deletion or disabled. Previously these operations silently succeeded.
+- **EC2 `TerminateInstances`/`StopInstances`/`StartInstances` unknown instance IDs** — now return `InvalidInstanceID.NotFound` error instead of silently succeeding with an empty response.
+- **EC2 VPC `cidrBlockAssociationSet` missing** — `CreateVpc` and `DescribeVpcs` responses now include `<cidrBlockAssociationSet>` with the primary CIDR association. Fixes Terraform AWS provider v6 crash (`index out of range [0]`). Reported by @mspiller (#331)
+- **SQS FIFO `DeduplicationScope: messageGroup`** — content-based deduplication now correctly scopes per message group when `DeduplicationScope` is `messageGroup`. Previously, two messages with the same body but different `MessageGroupId` values were incorrectly deduplicated. Contributed by @CSandyHub (#359)
+- **SNS `ListSubscriptions` XML escaping** — endpoint URLs containing `&` or other XML special characters are now properly escaped, preventing malformed XML responses.
+- **DynamoDB `DescribeTable` `LatestStreamArn` stability** — stream ARN and label are now set once when `StreamSpecification` is enabled instead of regenerated on every `DescribeTable` call. Fixes CDK drift detection and ESM setup failures.
+- **SSM `GetParametersByPath` root path** — `GetParametersByPath` with `Path=/` and `Recursive=false` now correctly returns only top-level parameters instead of all parameters in the store.
+- **ElastiCache `AutomaticFailover`/`MultiAZ` values** — `CreateReplicationGroup` and `ModifyReplicationGroup` now return `enabled`/`disabled` enum values instead of raw `true`/`false` strings, matching the AWS API contract.
+- **Transfer Family pagination off-by-one** — `ListServers` and `ListUsers` no longer re-serve the token item when paginating, fixing duplicate entries across pages.
+- **ECS `PutAccountSettingDefault` inconsistency** — now stores a plain string value like `PutAccountSetting`, fixing `ListAccountSettings` response shape when both endpoints were used.
+- **IAM user inline policy persistence** — restructured `_user_inline_policies` from tuple keys `(user, policy)` to nested dict `{user: {policy: doc}}`. Tuple keys silently broke JSON serialization, causing all user inline policies to be lost on restart with `PERSIST_STATE=1`.
+- **Route53 `reset()` multi-tenancy** — `reset()` now calls `.clear()` on existing `AccountScopedDict` instances instead of replacing them with plain `dict` objects, preserving multi-tenant isolation after reset.
+- **STS `AssumeRoleWithWebIdentity` provider** — `Provider` field now uses the caller-supplied `ProviderId` instead of hardcoded `accounts.google.com`.
+- **EKS state persistence** — `get_state()` now saves `port_counter` and strips Docker container IDs. `restore_state()` restores port counter and marks clusters as `FAILED` (k3s containers don't survive restart).
+
+#### Architecture & Safety
+- **Persistence `eval()` replaced with `ast.literal_eval`** — deserialization of `AccountScopedDict` keys no longer uses `eval()`, closing a code injection vector via crafted state files.
+- **RDS `_wait_for_port` no longer blocks event loop** — container port wait now runs in a background thread. Previously a `CreateDBInstance` with Docker could block the entire ASGI server for up to 60 seconds.
+- **RDS `get_state()` multi-account persistence** — `get_state()` now serializes instances as a full `AccountScopedDict`, capturing all accounts instead of only the default account at shutdown time.
+- **RDS `_port_counter` thread safety** — port allocation now uses a `threading.Lock`, preventing potential duplicate ports under concurrent requests.
+- **Lambda ESM poller account context** — background SQS/Kinesis/DynamoDB Streams pollers now iterate `_esms._data` directly and set the correct account context per ESM. Previously, event source mappings created under non-default accounts were silently never polled.
+
+### Also Fixed
+- **EC2 SecurityGroup duplicate detection ignoring Description** — `AuthorizeSecurityGroupIngress` duplicate check and `RevokeSecurityGroupIngress` now compare rules without the `Description` field, matching AWS behavior.
+- **CloudWatch DeleteDashboards error** — deleting a nonexistent dashboard returned 500 InternalError instead of 404 DashboardNotFoundError.
+- **Athena ListNamedQueries empty** — `ListNamedQueries` without a `WorkGroup` filter now returns all queries instead of only "primary" workgroup.
+- **ElastiCache CreateCacheSubnetGroup missing Subnets** — response XML now includes `<Subnets>` element.
+- **Cognito OAuth2 lazy loading** — OAuth2 endpoints now use lazy module loading, fixing crash when Cognito module wasn't pre-imported.
+- **Cognito OAuth2 persistence** — `_authorization_codes` and `_refresh_tokens` now included in state persistence.
+- **Lambda warm worker stuck after init failure** — broken workers are now invalidated so the next invocation gets a fresh process. Reported by @Baptiste-Garcin
 
 ---
 

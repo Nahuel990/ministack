@@ -431,6 +431,9 @@ def _describe_instance_status(p):
 
 def _terminate_instances(p):
     ids = _parse_member_list(p, "InstanceId")
+    for iid in ids:
+        if iid not in _instances:
+            return _error("InvalidInstanceID.NotFound", f"The instance ID '{iid}' does not exist", 400)
     items = ""
     for iid in ids:
         inst = _instances.get(iid)
@@ -448,6 +451,9 @@ def _terminate_instances(p):
 
 def _stop_instances(p):
     ids = _parse_member_list(p, "InstanceId")
+    for iid in ids:
+        if iid not in _instances:
+            return _error("InvalidInstanceID.NotFound", f"The instance ID '{iid}' does not exist", 400)
     items = ""
     for iid in ids:
         inst = _instances.get(iid)
@@ -464,6 +470,9 @@ def _stop_instances(p):
 
 def _start_instances(p):
     ids = _parse_member_list(p, "InstanceId")
+    for iid in ids:
+        if iid not in _instances:
+            return _error("InvalidInstanceID.NotFound", f"The instance ID '{iid}' does not exist", 400)
     items = ""
     for iid in ids:
         inst = _instances.get(iid)
@@ -2022,10 +2031,19 @@ def _perm_xml(r):
 
 
 def _vpc_fields_xml(vpc, tag="item"):
+    cidr = vpc['CidrBlock']
+    assoc_id = vpc.get('_cidr_assoc_id', f"vpc-cidr-assoc-{vpc['VpcId'][4:]}")
     return f"""<{tag}>
         <vpcId>{vpc['VpcId']}</vpcId>
         <state>{vpc['State']}</state>
-        <cidrBlock>{vpc['CidrBlock']}</cidrBlock>
+        <cidrBlock>{cidr}</cidrBlock>
+        <cidrBlockAssociationSet>
+            <item>
+                <cidrBlock>{cidr}</cidrBlock>
+                <associationId>{assoc_id}</associationId>
+                <cidrBlockState><state>associated</state></cidrBlockState>
+            </item>
+        </cidrBlockAssociationSet>
         <dhcpOptionsId>{vpc['DhcpOptionsId']}</dhcpOptionsId>
         <instanceTenancy>{vpc['InstanceTenancy']}</instanceTenancy>
         <isDefault>{'true' if vpc['IsDefault'] else 'false'}</isDefault>

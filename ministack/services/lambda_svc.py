@@ -45,8 +45,8 @@ import zipfile
 from datetime import datetime, timezone
 from urllib.parse import unquote
 
-from ministack.core.persistence import load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.persistence import load_state, PERSIST_STATE
+from ministack.core.responses import AccountScopedDict, get_account_id, _request_account_id, error_response_json, json_response, new_uuid
 from ministack.core.lambda_runtime import get_or_create_worker, invalidate_worker
 
 if typing.TYPE_CHECKING:
@@ -2599,7 +2599,8 @@ def _poll_loop():
 def _poll_sqs():
     from ministack.services import sqs as _sqs
 
-    for esm in list(_esms.values()):
+    for (acct_id, _esm_key), esm in list(_esms._data.items()):
+        _request_account_id.set(acct_id)
         if not esm.get("Enabled", True):
             continue
         source_arn = esm.get("EventSourceArn", "")
@@ -2708,7 +2709,8 @@ def _poll_sqs():
 def _poll_kinesis():
     from ministack.services import kinesis as _kin
 
-    for esm in list(_esms.values()):
+    for (acct_id, _esm_key), esm in list(_esms._data.items()):
+        _request_account_id.set(acct_id)
         if not esm.get("Enabled", True):
             continue
         source_arn = esm.get("EventSourceArn", "")
@@ -2819,7 +2821,8 @@ def _poll_dynamodb_streams():
     if not stream_records:
         return
 
-    for esm in list(_esms.values()):
+    for (acct_id, _esm_key), esm in list(_esms._data.items()):
+        _request_account_id.set(acct_id)
         if not esm.get("Enabled", True):
             continue
         source_arn = esm.get("EventSourceArn", "")

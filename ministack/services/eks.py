@@ -56,17 +56,40 @@ def reset():
 
 
 def get_state():
-    return copy.deepcopy({
-        "clusters": _clusters,
-        "nodegroups": _nodegroups,
-        "tags": _tags,
-    })
+    clusters = copy.deepcopy(_clusters)
+    # Strip Docker container IDs (not restorable across restarts)
+    if isinstance(clusters, AccountScopedDict):
+        for key in list(clusters._data):
+            clusters._data[key].pop("_docker_id", None)
+    else:
+        for c in clusters.values():
+            c.pop("_docker_id", None)
+    return {
+        "clusters": clusters,
+        "nodegroups": copy.deepcopy(_nodegroups),
+        "tags": copy.deepcopy(_tags),
+        "port_counter": _port_counter[0],
+    }
 
 
 def restore_state(data):
     _clusters.update(data.get("clusters", {}))
     _nodegroups.update(data.get("nodegroups", {}))
     _tags.update(data.get("tags", {}))
+    if "port_counter" in data:
+        _port_counter[0] = data["port_counter"]
+    # Restored clusters have no running k3s container — mark status accordingly
+    if isinstance(_clusters, AccountScopedDict):
+        for key in list(_clusters._data):
+            c = _clusters._data[key]
+            if c.get("status") == "ACTIVE":
+                c["status"] = "FAILED"
+                c["_docker_id"] = None
+    else:
+        for c in _clusters.values():
+            if c.get("status") == "ACTIVE":
+                c["status"] = "FAILED"
+                c["_docker_id"] = None
 
 
 # ---------------------------------------------------------------------------
