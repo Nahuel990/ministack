@@ -205,6 +205,11 @@ SERVICE_PATTERNS = {
         "path_prefixes": ["/configurationsessions", "/configuration"],
         "credential_scope": "appconfigdata",
     },
+    "scheduler": {
+        "host_patterns": [r"scheduler\."],
+        "path_prefixes": ["/schedules", "/schedule-groups"],
+        "credential_scope": "scheduler",
+    },
 }
 
 
@@ -265,6 +270,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "autoscaling": "autoscaling",
                 "appconfig": "appconfig",
                 "appconfigdata": "appconfigdata",
+                "scheduler": "scheduler",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
@@ -493,7 +499,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
         return "apigateway"
     if path_lower.startswith("/2015-03-31/functions"):
         return "lambda"
-    if path_lower.startswith("/oauth2/token"):
+    if path_lower.startswith(("/oauth2/", "/login", "/logout")):
         return "cognito-idp"
     if path_lower.startswith("/oauth2/authorize"):
         return "cognito-idp"

@@ -23,7 +23,7 @@ import ministack.services.ssm as _ssm
 import ministack.services.cloudwatch as _cw
 import ministack.services.cloudwatch_logs as _cw_logs
 import ministack.services.eventbridge as _eb
-import ministack.services.iam_sts as _iam_sts
+import ministack.services.iam as _iam
 import ministack.services.apigateway_v1 as _apigw_v1
 import ministack.services.appsync as _appsync
 import ministack.services.secretsmanager as _sm
@@ -42,6 +42,7 @@ import ministack.services.waf as _waf
 import ministack.services.cloudfront as _cf
 import ministack.services.rds as _rds
 import ministack.services.autoscaling as _asg
+import ministack.services.codebuild as _codebuild
 
 
 logger = logging.getLogger("cloudformation")
@@ -475,12 +476,12 @@ def _iam_role_create(logical_id, props, stack_name):
     for t in tags:
         role["Tags"].append({"Key": t.get("Key", ""), "Value": t.get("Value", "")})
 
-    _iam_sts._roles[name] = role
+    _iam._roles[name] = role
     return name, {"Arn": arn, "RoleId": role_id}
 
 
 def _iam_role_delete(physical_id, props):
-    _iam_sts._roles.pop(physical_id, None)
+    _iam._roles.pop(physical_id, None)
 
 
 # --- IAM Policy ---
@@ -512,12 +513,12 @@ def _iam_policy_create(logical_id, props, stack_name):
         }],
         "Tags": [],
     }
-    _iam_sts._policies[arn] = policy
+    _iam._policies[arn] = policy
 
     # Attach to roles if Roles property specified
     roles = props.get("Roles", [])
     for role_name in roles:
-        role = _iam_sts._roles.get(role_name)
+        role = _iam._roles.get(role_name)
         if role:
             role["AttachedPolicies"].append({
                 "PolicyName": name,
@@ -529,7 +530,7 @@ def _iam_policy_create(logical_id, props, stack_name):
 
 
 def _iam_policy_delete(physical_id, props):
-    _iam_sts._policies.pop(physical_id, None)
+    _iam._policies.pop(physical_id, None)
 
 
 # --- IAM InstanceProfile ---
@@ -542,7 +543,7 @@ def _iam_ip_create(logical_id, props, stack_name):
 
     roles = []
     for rname in props.get("Roles", []):
-        role = _iam_sts._roles.get(rname)
+        role = _iam._roles.get(rname)
         if role:
             roles.append(role)
 
@@ -555,15 +556,15 @@ def _iam_ip_create(logical_id, props, stack_name):
         "CreateDate": now_iso(),
         "Tags": [],
     }
-    _iam_sts._instance_profiles[name] = profile
+    _iam._instance_profiles[name] = profile
     return arn, {"Arn": arn}
 
 
 def _iam_ip_delete(physical_id, props):
     # physical_id is the ARN -- find the name
-    for name, ip in list(_iam_sts._instance_profiles.items()):
+    for name, ip in list(_iam._instance_profiles.items()):
         if ip.get("Arn") == physical_id:
-            _iam_sts._instance_profiles.pop(name, None)
+            _iam._instance_profiles.pop(name, None)
             return
 
 
@@ -651,6 +652,57 @@ def _eb_rule_delete(physical_id, props):
     key = _eb._rule_key(physical_id, bus)
     _eb._rules.pop(key, None)
     _eb._targets.pop(key, None)
+
+
+# --- EventBridge Scheduler (AWS::Scheduler::Schedule) ---
+
+
+def _scheduler_schedule_create(logical_id, props, stack_name):
+    import ministack.services.scheduler as _sched
+    name = props.get("Name") or _physical_name(stack_name, logical_id, max_len=64)
+    group = props.get("GroupName", "default")
+    _sched._ensure_default_group()
+    body = {
+        "ScheduleExpression": props.get("ScheduleExpression", "rate(1 hour)"),
+        "FlexibleTimeWindow": props.get("FlexibleTimeWindow", {"Mode": "OFF"}),
+        "Target": props.get("Target", {"Arn": "arn:aws:lambda:us-east-1:000000000000:function:noop", "RoleArn": "arn:aws:iam::000000000000:role/noop"}),
+        "GroupName": group,
+        "State": props.get("State", "ENABLED"),
+        "Description": props.get("Description", ""),
+    }
+    _sched._create_schedule(name, body)
+    arn = _sched._schedule_arn(group, name)
+    return name, {"Arn": arn}
+
+
+def _scheduler_schedule_delete(physical_id, props):
+    import ministack.services.scheduler as _sched
+    group = props.get("GroupName", "default")
+    key = f"{group}/{physical_id}"
+    sched = _sched._schedules.pop(key, None)
+    if sched:
+        _sched._tags.pop(sched.get("Arn", ""), None)
+
+
+def _scheduler_group_create(logical_id, props, stack_name):
+    import ministack.services.scheduler as _sched
+    name = props.get("Name") or _physical_name(stack_name, logical_id, max_len=64)
+    _sched._create_schedule_group(name, {"Tags": props.get("Tags", [])})
+    arn = _sched._group_arn(name)
+    return name, {"Arn": arn}
+
+
+def _scheduler_group_delete(physical_id, props):
+    import ministack.services.scheduler as _sched
+    # Cascade delete child schedules (matches REST API behavior)
+    keys_to_delete = [k for k, v in _sched._schedules.items() if v["GroupName"] == physical_id]
+    for k in keys_to_delete:
+        arn = _sched._schedules[k]["Arn"]
+        del _sched._schedules[k]
+        _sched._tags.pop(arn, None)
+    group = _sched._schedule_groups.pop(physical_id, None)
+    if group:
+        _sched._tags.pop(group.get("Arn", ""), None)
 
 
 # --- Kinesis Stream ---
@@ -1351,13 +1403,47 @@ def _ecr_repo_delete(physical_id, props):
     _ecr._repositories.pop(physical_id, None)
 
 
+# --- CodeBuild Project provisioner ---
+
+def _codebuild_project_create(logical_id, props, stack_name):
+    name = props.get("Name") or _physical_name(stack_name, logical_id, max_len=255)
+    
+    # Pre-check for duplicates to raise exception (not just return error response)
+    if name in _codebuild._projects:
+        raise ValueError(f"CodeBuild project already exists: {name}")
+    
+    data = {
+        "name": name,
+        "description": props.get("Description", ""),
+        "source": props.get("Source", {"type": "NO_SOURCE"}),
+        "sourceVersion": props.get("SourceVersion", ""),
+        "artifacts": props.get("Artifacts", {"type": "NO_ARTIFACTS"}),
+        "environment": props.get("Environment", {
+            "type": "LINUX_CONTAINER",
+            "image": "aws/codebuild/standard:7.0",
+            "computeType": "BUILD_GENERAL1_SMALL",
+        }),
+        "serviceRole": props.get("ServiceRole", f"arn:aws:iam::{get_account_id()}:role/codebuild-role"),
+        "timeoutInMinutes": int(props.get("TimeoutInMinutes", 60)),
+        "tags": [{"key": t["Key"], "value": t["Value"]} for t in props.get("Tags", [])],
+        "encryptionKey": props.get("EncryptionKey", f"arn:aws:kms:{REGION}:{get_account_id()}:alias/aws/codebuild"),
+    }
+    _codebuild._create_project(data)
+    arn = _codebuild._project_arn(name)
+    return name, {"Arn": arn}
+
+
+def _codebuild_project_delete(physical_id, props):
+    _codebuild._projects.pop(physical_id, None)
+
+
 # --- IAM ManagedPolicy provisioner ---
 
 def _iam_managed_policy_create(logical_id, props, stack_name):
     name = props.get("ManagedPolicyName", f"{stack_name}-{logical_id}")
     arn = f"arn:aws:iam::{get_account_id()}:policy/{name}"
     policy_doc = props.get("PolicyDocument", {})
-    _iam_sts._policies[arn] = {
+    _iam._policies[arn] = {
         "PolicyName": name,
         "PolicyId": new_uuid().replace("-", "")[:21].upper(),
         "Arn": arn,
@@ -1374,7 +1460,7 @@ def _iam_managed_policy_create(logical_id, props, stack_name):
 
 
 def _iam_managed_policy_delete(physical_id, props):
-    _iam_sts._policies.pop(physical_id, None)
+    _iam._policies.pop(physical_id, None)
 
 
 # --- KMS resource provisioners ---
@@ -2633,6 +2719,7 @@ _RESOURCE_HANDLERS = {
     "AWS::Cognito::IdentityPool": {"create": _cognito_identity_pool_create, "delete": _cognito_identity_pool_delete},
     "AWS::Cognito::UserPoolDomain": {"create": _cognito_user_pool_domain_create, "delete": _cognito_user_pool_domain_delete},
     "AWS::ECR::Repository": {"create": _ecr_repo_create, "delete": _ecr_repo_delete},
+    "AWS::CodeBuild::Project": {"create": _codebuild_project_create, "delete": _codebuild_project_delete},
     "AWS::IAM::ManagedPolicy": {"create": _iam_managed_policy_create, "delete": _iam_managed_policy_delete},
     "AWS::KMS::Key": {"create": _kms_key_create, "delete": _kms_key_delete},
     "AWS::KMS::Alias": {"create": _kms_alias_create, "delete": _kms_alias_delete},
@@ -2661,6 +2748,9 @@ _RESOURCE_HANDLERS = {
     "AWS::CloudFront::Distribution": {"create": _cf_distribution_create, "delete": _cf_distribution_delete},
     "AWS::CloudWatch::Alarm": {"create": _cw_metric_alarm_create, "delete": _cw_metric_alarm_delete},
     "AWS::RDS::DBCluster": {"create": _rds_db_cluster_create, "delete": _rds_db_cluster_delete},
+    # EventBridge Scheduler
+    "AWS::Scheduler::Schedule": {"create": _scheduler_schedule_create, "delete": _scheduler_schedule_delete},
+    "AWS::Scheduler::ScheduleGroup": {"create": _scheduler_group_create, "delete": _scheduler_group_delete},
     # CDK metadata — safe to ignore
     "AWS::CDK::Metadata": {"create": lambda lid, props, sn: (f"CDKMetadata-{lid}", {}), "delete": lambda pid, props: None},
     # AutoScaling
