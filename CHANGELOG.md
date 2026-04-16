@@ -7,12 +7,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.20] — 2026-04-16
+
+### Added
+- **EKS service with k3s backend** — CreateCluster, DescribeCluster, ListClusters, DeleteCluster, CreateNodegroup, DescribeNodegroup, ListNodegroups, DeleteNodegroup, TagResource, UntagResource, ListTagsForResource. `CreateCluster` spawns a real k3s Docker container (75 MB) providing a full Kubernetes API server. `kubectl`, Helm, and any K8s tooling work out of the box. Cascading delete removes nodegroups and k3s container. CloudFormation `AWS::EKS::Cluster` and `AWS::EKS::Nodegroup` provisioners included.
+- **Lambda layer S3 support** — `PublishLayerVersion` now accepts `S3Bucket`/`S3Key` in Content, matching real AWS behavior. Contributed by @Baptiste-Garcin (#356)
+
+### Fixed
+- **EC2 SecurityGroup duplicate detection ignoring Description** — `AuthorizeSecurityGroupIngress` duplicate check and `RevokeSecurityGroupIngress` now compare rules without the `Description` field, matching AWS behavior. Rules with different descriptions but same protocol/port/CIDR are correctly detected as duplicates.
+- **CloudWatch DeleteDashboards error** — deleting a nonexistent dashboard returned 500 InternalError instead of 404 DashboardNotFoundError. Missing `status` argument in error call.
+- **Athena ListNamedQueries empty** — `ListNamedQueries` without a `WorkGroup` filter now returns all queries instead of only those in the "primary" workgroup, matching AWS behavior.
+- **ElastiCache CreateCacheSubnetGroup missing Subnets** — response XML now includes `<Subnets>` with SubnetIdentifier and availability zone, matching AWS response shape.
+- **Cognito OAuth2 lazy loading** — OAuth2 endpoints (`/oauth2/authorize`, `/login`, `/oauth2/token`, `/oauth2/userInfo`, `/logout`) now use lazy module loading, fixing crash when Cognito module wasn't pre-imported.
+- **Cognito OAuth2 persistence** — `_authorization_codes` and `_refresh_tokens` now included in `get_state()`/`restore_state()`, preventing loss of active sessions on restart with `PERSIST_STATE=1`.
+
+---
+
 ## [1.2.19] — 2026-04-16
 
 ### Added
 - **EventBridge Scheduler service** — full `scheduler` API: CreateSchedule, GetSchedule, UpdateSchedule, DeleteSchedule, ListSchedules, CreateScheduleGroup, GetScheduleGroup, DeleteScheduleGroup, ListScheduleGroups, TagResource, UntagResource, ListTagsForResource. Supports schedule groups, cascading deletes, name prefix/state filters, and `at()`/`cron()`/`rate()` expressions. 21 tests.
 - **CloudFormation `AWS::Scheduler::Schedule` and `AWS::Scheduler::ScheduleGroup`** — CFN/CDK stacks using EventBridge Scheduler resources now provision correctly and are queryable via the Scheduler API.
-- **EKS service with k3s backend** — CreateCluster, DescribeCluster, ListClusters, DeleteCluster, CreateNodegroup, DescribeNodegroup, ListNodegroups, DeleteNodegroup, TagResource, UntagResource, ListTagsForResource. `CreateCluster` spawns a real k3s Docker container providing a Kubernetes API server on a dynamic port. `kubectl` can connect directly. Cascading delete removes nodegroups and k3s container. CloudFormation `AWS::EKS::Cluster` and `AWS::EKS::Nodegroup` provisioners included.
 - **CloudFormation `AWS::CodeBuild::Project`** — CDK/Terraform stacks declaring CodeBuild projects now provision correctly. Supports Name, Source, Artifacts, Environment, ServiceRole, Tags, and Fn::GetAtt Arn. Contributed by @AdigaAkhil (#352)
 - **Cognito OAuth2/OIDC managed login UI** — `/oauth2/authorize` serves a browser-based login form, `/oauth2/token` supports authorization_code (with PKCE S256/plain), refresh_token, and client_credentials grants, `/oauth2/userInfo` returns OIDC claims, `/logout` redirects to logout URI. Full hosted UI flow for local development. Contributed by @kjdev (#344)
 - **ECS `ListContainerInstances` and `DescribeContainerInstances`** — stub endpoints return empty results (MiniStack runs tasks directly as Docker containers, no EC2 container instance layer).
