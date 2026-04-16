@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.18] — 2026-04-15
+
+### Fixed
+- **ECS services/tasks invisible when created via CloudFormation** — CF provisioner stored services with ARN keys instead of `cluster/name`, causing `list-services` and `list-tasks` to return empty. Fixed key format, added task spawning on service create/update/delete, and replaced stale tasks on task definition updates. CF provisioner now delegates to the ECS module for a single code path. Reported by @Vagator-Prostovich 
+- **ECS CF container definitions PascalCase mismatch** — CloudFormation container definitions used PascalCase keys (`Name`, `Image`, `PortMappings`) but the ECS runtime expected camelCase, causing `KeyError` when spawning tasks. Added `_normalize_container_defs` to convert keys.
+- **ECS `_task_def_latest` stored string instead of integer** — CF provisioner stored `"family:1"` instead of `1`, producing malformed keys like `"family:family:1"` on subsequent registrations.
+- **ECS CF task definition and service delete used wrong keys** — delete handlers used ARN but dicts were keyed by `family:revision` and `cluster/name` respectively.
+
+---
+
 ## [1.2.17] — 2026-04-15
 
 ### Added
