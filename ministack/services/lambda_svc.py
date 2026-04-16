@@ -901,8 +901,7 @@ async def _invoke(name: str, event: dict, headers: dict, path_qualifier: str | N
 # Runtime → Docker image mapping
 # ---------------------------------------------------------------------------
 
-
-_RUNTIME_IMAGE_MAP: "dict[RuntimeType, str]" = {
+_RUNTIME_IMAGE_MAP: dict[str, str] = {
     "python3.8": "public.ecr.aws/lambda/python:3.8",
     "python3.9": "public.ecr.aws/lambda/python:3.9",
     "python3.10": "public.ecr.aws/lambda/python:3.10",
@@ -918,13 +917,22 @@ _RUNTIME_IMAGE_MAP: "dict[RuntimeType, str]" = {
     "nodejs24.x": "public.ecr.aws/lambda/nodejs:24",
     "provided.al2023": "public.ecr.aws/lambda/provided:al2023",
     "provided.al2": "public.ecr.aws/lambda/provided:al2",
-    "provided": "public.ecr.aws/lambda/provided:al2023",
+    "provided": "public.ecr.aws/lambda/provided:latest",
 }
 
 
-class LambdaFunc(typing.TypedDict):
-    config: "LambdaConfigType"
-    code_zip: bytes | None
+def _docker_image_for_runtime(runtime: str) -> str | None:
+    if runtime in _RUNTIME_IMAGE_MAP:
+        return _RUNTIME_IMAGE_MAP[runtime]
+    if runtime.startswith("python"):
+        ver = runtime.replace("python", "")
+        return f"public.ecr.aws/lambda/python:{ver}"
+    if runtime.startswith("nodejs"):
+        ver = runtime.replace("nodejs", "").rstrip(".x")
+        return f"public.ecr.aws/lambda/nodejs:{ver}"
+    if runtime.startswith("provided"):
+        return "public.ecr.aws/lambda/provided:al2023"
+    return None
 
 
 # ---------------------------------------------------------------------------
