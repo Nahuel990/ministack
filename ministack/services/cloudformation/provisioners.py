@@ -42,6 +42,7 @@ import ministack.services.waf as _waf
 import ministack.services.cloudfront as _cf
 import ministack.services.rds as _rds
 import ministack.services.autoscaling as _asg
+import ministack.services.codebuild as _codebuild
 
 
 logger = logging.getLogger("cloudformation")
