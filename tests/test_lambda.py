@@ -512,6 +512,35 @@ def test_lambda_warm_start(lam, apigw):
     apigw.delete_api(ApiId=api_id)
     lam.delete_function(FunctionName=fname)
 
+def test_lambda_warm_invoke_with_stderr_logging(lam):
+    """Warm invoke should succeed repeatedly even when the worker writes to stderr."""
+    fname = f"lam-warm-stderr-{_uuid_mod.uuid4().hex[:8]}"
+    code = (
+        "import sys\n"
+        "def handler(event, context):\n"
+        "    print(f'log:{event.get(\"n\", 0)}')\n"
+        "    return {'statusCode': 200, 'value': event.get('n', 0)}\n"
+    )
+
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="python3.12",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip(code)},
+    )
+
+    try:
+        first = lam.invoke(FunctionName=fname, Payload=json.dumps({"n": 1}))
+        second = lam.invoke(FunctionName=fname, Payload=json.dumps({"n": 2}))
+
+        assert first["StatusCode"] == 200
+        assert second["StatusCode"] == 200
+        assert json.loads(first["Payload"].read())["value"] == 1
+        assert json.loads(second["Payload"].read())["value"] == 2
+    finally:
+        lam.delete_function(FunctionName=fname)
+
 def test_lambda_nodejs_create_and_invoke(lam):
     lam.create_function(
         FunctionName="lam-node-basic",
