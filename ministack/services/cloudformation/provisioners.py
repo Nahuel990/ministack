@@ -2662,6 +2662,7 @@ _RESOURCE_HANDLERS = {
     "AWS::Cognito::IdentityPool": {"create": _cognito_identity_pool_create, "delete": _cognito_identity_pool_delete},
     "AWS::Cognito::UserPoolDomain": {"create": _cognito_user_pool_domain_create, "delete": _cognito_user_pool_domain_delete},
     "AWS::ECR::Repository": {"create": _ecr_repo_create, "delete": _ecr_repo_delete},
+    "AWS::CodeBuild::Project": {"create": _codebuild_project_create, "delete": _codebuild_project_delete},
     "AWS::IAM::ManagedPolicy": {"create": _iam_managed_policy_create, "delete": _iam_managed_policy_delete},
     "AWS::KMS::Key": {"create": _kms_key_create, "delete": _kms_key_delete},
     "AWS::KMS::Alias": {"create": _kms_alias_create, "delete": _kms_alias_delete},
