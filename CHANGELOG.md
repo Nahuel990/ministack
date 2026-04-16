@@ -20,6 +20,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **ElastiCache CreateCacheSubnetGroup missing Subnets** — response XML now includes `<Subnets>` with SubnetIdentifier and availability zone, matching AWS response shape.
 - **Cognito OAuth2 lazy loading** — OAuth2 endpoints (`/oauth2/authorize`, `/login`, `/oauth2/token`, `/oauth2/userInfo`, `/logout`) now use lazy module loading, fixing crash when Cognito module wasn't pre-imported.
 - **Cognito OAuth2 persistence** — `_authorization_codes` and `_refresh_tokens` now included in `get_state()`/`restore_state()`, preventing loss of active sessions on restart with `PERSIST_STATE=1`.
+- **Lambda warm worker stuck after init failure** — when a warm worker crashes during module import (e.g. missing layer dependency), the broken worker is now invalidated so the next invocation gets a fresh process instead of reusing the broken one. Reported by @Baptiste-Garcin
 
 ---
 

@@ -1261,6 +1261,7 @@ def _execute_function_warm(func: dict, event: dict) -> dict:
             }
     except Exception as e:
         logger.error("Warm worker execution error for %s: %s", func_name, e)
+        invalidate_worker(func_name)
         return {
             "body": {"errorMessage": str(e), "errorType": type(e).__name__},
             "error": True,
