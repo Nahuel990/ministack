@@ -59,8 +59,17 @@ class _ErrorModule:
             json.dumps({"__type": "ServiceUnavailable",
                         "message": f"Service module '{self._name}' failed to load: {self._error}"}).encode()
 
-    def __getattr__(self, item):
-        return self.handle_request
+    def get_state(self):
+        return {}
+
+    def restore_state(self, data):
+        pass
+
+    def load_persisted_state(self, data):
+        pass
+
+    def reset(self):
+        pass
 
 
 def _get_module(name: str):
@@ -69,19 +78,18 @@ def _get_module(name: str):
     if mod is None:
         try:
             mod = __import__(f"ministack.services.{name}", fromlist=["handle_request"])
-        except ModuleNotFoundError as e:
-            logger.warning("Service module not found: %s - %s", name, e)
+        except (ModuleNotFoundError, ImportError) as e:
+            logger.warning("Service module failed to load: %s - %s", name, e)
             mod = _ErrorModule(name, str(e))
         _loaded_modules[name] = mod
     return mod
 
 
-def _lazy_handler(module_name: str, func_name: str = "handle_request"):
-    """Return a callable that lazily imports module_name and delegates to func_name."""
+def _lazy_handler(module_name: str):
+    """Return a callable that lazily imports module_name and delegates to handle_request."""
     async def _handler(method, path, headers, body, query_params):
         mod = _get_module(module_name)
-        fn = getattr(mod, func_name)
-        return await fn(method, path, headers, body, query_params)
+        return await mod.handle_request(method, path, headers, body, query_params)
     return _handler
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -99,8 +107,8 @@ SERVICE_HANDLERS = {
     "sns": _lazy_handler("sns"),
     "dynamodb": _lazy_handler("dynamodb"),
     "lambda": _lazy_handler("lambda_svc"),
-    "iam": _lazy_handler("iam_sts", "handle_iam_request"),
-    "sts": _lazy_handler("iam_sts", "handle_sts_request"),
+    "iam": _lazy_handler("iam"),
+    "sts": _lazy_handler("sts"),
     "secretsmanager": _lazy_handler("secretsmanager"),
     "logs": _lazy_handler("cloudwatch_logs"),
     "ssm": _lazy_handler("ssm"),
@@ -645,7 +653,7 @@ async def _handle_lifespan(scope, receive, send):
                 _state_map = {
                     "apigateway": "apigateway", "apigateway_v1": "apigateway_v1",
                     "sqs": "sqs", "sns": "sns", "ssm": "ssm",
-                    "secretsmanager": "secretsmanager", "iam": "iam_sts",
+                    "secretsmanager": "secretsmanager", "iam": "iam",
                     "dynamodb": "dynamodb", "kms": "kms", "eventbridge": "eventbridge",
                     "cloudwatch_logs": "cloudwatch_logs", "kinesis": "kinesis",
                     "ec2": "ec2", "route53": "route53", "cognito": "cognito",
@@ -659,7 +667,7 @@ async def _handle_lifespan(scope, receive, send):
                     "ses": "ses", "ses_v2": "ses_v2",
                     "servicediscovery": "servicediscovery", "s3files": "s3files",
                     "appconfig": "appconfig", "transfer": "transfer",
-                    "scheduler": "scheduler",
+                    "scheduler": "scheduler", "autoscaling": "autoscaling",
                 }
                 save_dict = {}
                 for key, mod_name in _state_map.items():
@@ -813,7 +821,7 @@ def _reset_all_state():
         "apigateway", "apigateway_v1", "firehose", "route53", "cognito", "ec2",
         "emr", "alb", "acm", "ses_v2", "waf", "efs", "cloudformation", "kms",
         "cloudfront", "codebuild", "ecr", "appsync", "servicediscovery",
-        "rds_data", "s3files", "appconfig", "transfer", "scheduler", "iam_sts",
+        "rds_data", "s3files", "appconfig", "transfer", "scheduler", "autoscaling", "iam",
     ]
     for mod_name in _ALL_SERVICE_MODULES:
         if mod_name in _loaded_modules:

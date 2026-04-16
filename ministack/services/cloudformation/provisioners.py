@@ -23,7 +23,7 @@ import ministack.services.ssm as _ssm
 import ministack.services.cloudwatch as _cw
 import ministack.services.cloudwatch_logs as _cw_logs
 import ministack.services.eventbridge as _eb
-import ministack.services.iam_sts as _iam_sts
+import ministack.services.iam as _iam
 import ministack.services.apigateway_v1 as _apigw_v1
 import ministack.services.appsync as _appsync
 import ministack.services.secretsmanager as _sm
@@ -476,12 +476,12 @@ def _iam_role_create(logical_id, props, stack_name):
     for t in tags:
         role["Tags"].append({"Key": t.get("Key", ""), "Value": t.get("Value", "")})
 
-    _iam_sts._roles[name] = role
+    _iam._roles[name] = role
     return name, {"Arn": arn, "RoleId": role_id}
 
 
 def _iam_role_delete(physical_id, props):
-    _iam_sts._roles.pop(physical_id, None)
+    _iam._roles.pop(physical_id, None)
 
 
 # --- IAM Policy ---
@@ -513,12 +513,12 @@ def _iam_policy_create(logical_id, props, stack_name):
         }],
         "Tags": [],
     }
-    _iam_sts._policies[arn] = policy
+    _iam._policies[arn] = policy
 
     # Attach to roles if Roles property specified
     roles = props.get("Roles", [])
     for role_name in roles:
-        role = _iam_sts._roles.get(role_name)
+        role = _iam._roles.get(role_name)
         if role:
             role["AttachedPolicies"].append({
                 "PolicyName": name,
@@ -530,7 +530,7 @@ def _iam_policy_create(logical_id, props, stack_name):
 
 
 def _iam_policy_delete(physical_id, props):
-    _iam_sts._policies.pop(physical_id, None)
+    _iam._policies.pop(physical_id, None)
 
 
 # --- IAM InstanceProfile ---
@@ -543,7 +543,7 @@ def _iam_ip_create(logical_id, props, stack_name):
 
     roles = []
     for rname in props.get("Roles", []):
-        role = _iam_sts._roles.get(rname)
+        role = _iam._roles.get(rname)
         if role:
             roles.append(role)
 
@@ -556,15 +556,15 @@ def _iam_ip_create(logical_id, props, stack_name):
         "CreateDate": now_iso(),
         "Tags": [],
     }
-    _iam_sts._instance_profiles[name] = profile
+    _iam._instance_profiles[name] = profile
     return arn, {"Arn": arn}
 
 
 def _iam_ip_delete(physical_id, props):
     # physical_id is the ARN -- find the name
-    for name, ip in list(_iam_sts._instance_profiles.items()):
+    for name, ip in list(_iam._instance_profiles.items()):
         if ip.get("Arn") == physical_id:
-            _iam_sts._instance_profiles.pop(name, None)
+            _iam._instance_profiles.pop(name, None)
             return
 
 
@@ -679,7 +679,9 @@ def _scheduler_schedule_delete(physical_id, props):
     import ministack.services.scheduler as _sched
     group = props.get("GroupName", "default")
     key = f"{group}/{physical_id}"
-    _sched._schedules.pop(key, None)
+    sched = _sched._schedules.pop(key, None)
+    if sched:
+        _sched._tags.pop(sched.get("Arn", ""), None)
 
 
 def _scheduler_group_create(logical_id, props, stack_name):
@@ -692,7 +694,15 @@ def _scheduler_group_create(logical_id, props, stack_name):
 
 def _scheduler_group_delete(physical_id, props):
     import ministack.services.scheduler as _sched
-    _sched._schedule_groups.pop(physical_id, None)
+    # Cascade delete child schedules (matches REST API behavior)
+    keys_to_delete = [k for k, v in _sched._schedules.items() if v["GroupName"] == physical_id]
+    for k in keys_to_delete:
+        arn = _sched._schedules[k]["Arn"]
+        del _sched._schedules[k]
+        _sched._tags.pop(arn, None)
+    group = _sched._schedule_groups.pop(physical_id, None)
+    if group:
+        _sched._tags.pop(group.get("Arn", ""), None)
 
 
 # --- Kinesis Stream ---
@@ -1432,7 +1442,7 @@ def _iam_managed_policy_create(logical_id, props, stack_name):
     name = props.get("ManagedPolicyName", f"{stack_name}-{logical_id}")
     arn = f"arn:aws:iam::{get_account_id()}:policy/{name}"
     policy_doc = props.get("PolicyDocument", {})
-    _iam_sts._policies[arn] = {
+    _iam._policies[arn] = {
         "PolicyName": name,
         "PolicyId": new_uuid().replace("-", "")[:21].upper(),
         "Arn": arn,
@@ -1449,7 +1459,7 @@ def _iam_managed_policy_create(logical_id, props, stack_name):
 
 
 def _iam_managed_policy_delete(physical_id, props):
-    _iam_sts._policies.pop(physical_id, None)
+    _iam._policies.pop(physical_id, None)
 
 
 # --- KMS resource provisioners ---
