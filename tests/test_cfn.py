@@ -1479,6 +1479,70 @@ def test_cfn_pipes_dynamodb_stream_to_sns(cfn, ddb, sqs):
 
     cfn.delete_stack(StackName=stack_name)
     _wait_stack(cfn, stack_name)
+
+
+def test_cfn_sns_topic_subscription_filter_policy_scope(cfn, sns, sqs):
+    uid = _uuid_mod.uuid4().hex[:8]
+    stack_name = f"cfn-sns-filter-{uid}"
+    queue_name = f"cfn-sns-filter-q-{uid}"
+    topic_name = f"cfn-sns-filter-topic-{uid}"
+
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "FilterQueue": {
+                "Type": "AWS::SQS::Queue",
+                "Properties": {"QueueName": queue_name},
+            },
+            "FilterTopic": {
+                "Type": "AWS::SNS::Topic",
+                "Properties": {
+                    "TopicName": topic_name,
+                },  
+            },
+            "FilterSubscription": {
+                "Type": "AWS::SNS::Subscription",
+                "Properties": {
+                    "Protocol": "sqs",
+                    "TopicArn": {"Ref": "FilterTopic"},
+                    "Endpoint": {"Fn::GetAtt": ["FilterQueue", "Arn"]},
+                    "FilterPolicy": {"color": ["blue"]},
+                },
+            },
+        },
+        "Outputs": {
+            "TopicArn": {"Value": {"Ref": "FilterTopic"}},
+        },
+    }
+
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
+
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    topic_arn = outputs["TopicArn"]
+    queue_url = sqs.get_queue_url(QueueName=queue_name)["QueueUrl"]
+
+    sns.publish(
+        TopicArn=topic_arn,
+        Message="red message",
+        MessageAttributes={"color": {"DataType": "String", "StringValue": "red"}},
+    )
+    msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1, WaitTimeSeconds=0)
+    assert len(msgs.get("Messages", [])) == 0
+
+    sns.publish(
+        TopicArn=topic_arn,
+        Message="blue message",
+        MessageAttributes={"color": {"DataType": "String", "StringValue": "blue"}},
+    )
+    msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=1, WaitTimeSeconds=1)
+    assert len(msgs.get("Messages", [])) == 1
+    body = json.loads(msgs["Messages"][0]["Body"])
+    assert body["Message"] == "blue message"
+
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
     
 # ===========================================================================
 # CodeBuild Project Tests
