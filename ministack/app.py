@@ -830,6 +830,7 @@ def _reset_all_state():
         "emr", "alb", "acm", "ses_v2", "waf", "efs", "cloudformation", "kms",
         "cloudfront", "codebuild", "ecr", "appsync", "servicediscovery",
         "rds_data", "s3files", "appconfig", "transfer", "scheduler", "autoscaling", "eks", "iam",
+        "pipes"
     ]
     for mod_name in _ALL_SERVICE_MODULES:
         if mod_name in _loaded_modules:
