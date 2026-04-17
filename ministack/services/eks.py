@@ -301,7 +301,7 @@ def _create_cluster(body):
             cluster["status"] = "ACTIVE"
         except Exception as e:
             logger.warning("EKS: failed to start k3s for %s: %s", name, e)
-            cluster["status"] = "ACTIVE"
+            cluster["status"] = "FAILED"
 
     threading.Thread(target=_bg_start, daemon=True, name=f"eks-{name}").start()
     return _json_resp(200, {"cluster": _sanitize(cluster)})

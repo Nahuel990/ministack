@@ -55,15 +55,14 @@ def test_eks_create_describe_delete_cluster(eks):
     assert "identity" in cluster
     assert "oidc" in cluster["identity"]
 
-    # Describe — cluster may still be starting in background
-    import time
-    for _ in range(10):
+    # Describe — poll until background k3s startup completes
+    for _ in range(30):
         resp = eks.describe_cluster(name=name)
         if resp["cluster"]["status"] == "ACTIVE":
             break
         time.sleep(1)
     assert resp["cluster"]["name"] == name
-    assert resp["cluster"]["status"] in ("CREATING", "ACTIVE")
+    assert resp["cluster"]["status"] == "ACTIVE"
 
     # Delete
     resp = eks.delete_cluster(name=name)

@@ -7,6 +7,27 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.21] — 2026-04-17
+
+### Added
+- **`/_ministack/ready` endpoint** — exposes ready.d script completion status, enabling Docker healthchecks and orchestrators to gate on init script completion. Contributed by @kjdev (#360)
+- **CloudFormation `AWS::Events::EventBus` provisioner** — CDK/Terraform stacks declaring EventBridge custom event buses now provision correctly. Supports Name, Tags, and Fn::GetAtt Arn/Name. Contributed by @AdigaAkhil (#365)
+- **Lambda Java, .NET, and Ruby runtime support** — `LAMBDA_EXECUTOR=docker` now supports `java21`, `java17`, `java11`, `java8.al2`, `dotnet8`, `dotnet6`, `ruby3.4`, `ruby3.3`, `ruby3.2` using official AWS Lambda RIE images.
+
+### Fixed
+- **Lambda Docker-in-Docker (DinD)** — `LAMBDA_EXECUTOR=docker` now works when ministack itself runs inside Docker. Code is copied into Lambda containers via `docker cp` instead of bind mounts (which fail because the host Docker daemon can't see the ministack container's filesystem). Lambda containers are reached via container IP instead of host-mapped ports. Fixes #367. Reported by @HackJack-101
+- **Lambda timeout enforcement** — warm workers now enforce the configured `Timeout` value. Previously, functions ran indefinitely regardless of the timeout setting.
+- **Lambda published version isolation** — `PublishVersion` now creates immutable code snapshots. Invoking a specific version returns the code from when it was published, not the current `$LATEST`. Workers are keyed by `function_name:qualifier`.
+- **Cognito password validation** — `SignUp`, `AdminCreateUser`, `AdminSetUserPassword`, `ConfirmForgotPassword`, and `ChangePassword` now validate passwords against the pool's `PasswordPolicy` (min length, uppercase, lowercase, numbers, symbols). Previously any password was accepted.
+- **EKS non-blocking cluster creation** — `CreateCluster` now returns immediately with `status: CREATING` while k3s starts in a background thread. If k3s fails to start, the cluster status is set to `FAILED` instead of silently going `ACTIVE` with a broken endpoint.
+- **Lambda `_execute_function_image` deduplicated** — Image-based Lambda execution now reuses `_invoke_rie()` instead of duplicating the HTTP polling logic.
+- **EC2 terminated instance cleanup throttled** — `DescribeInstances` no longer scans and cleans up terminated instances on every call; cleanup runs at most once per 10 seconds.
+- **S3 ETag single-compute** — `PutObject` now computes the MD5 hash once instead of twice.
+- **CloudFormation deploy/delete speed** — removed artificial 1.5s async delays from stack deploy and delete.
+- **Docker client cached** — Lambda Docker executor reuses a single Docker client instead of creating one per invocation.
+
+---
+
 ## [1.2.20] — 2026-04-17
 
 ### Added

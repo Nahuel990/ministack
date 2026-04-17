@@ -62,6 +62,30 @@ except ImportError:
     _docker_available = False
 
 _cached_docker_client = None
+_is_in_container: bool | None = None
+
+
+def _running_in_container() -> bool:
+    """Detect if we're running inside a Docker/Podman container."""
+    global _is_in_container
+    if _is_in_container is not None:
+        return _is_in_container
+    # /.dockerenv is created by Docker; /run/.containerenv by Podman
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        _is_in_container = True
+        return True
+    # Fall back to checking cgroup (works on most Linux container runtimes)
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            content = f.read()
+            if "docker" in content or "containerd" in content or "lxc" in content:
+                _is_in_container = True
+                return True
+    except (OSError, IOError):
+        pass
+    _is_in_container = False
+    return False
+
 
 def _get_docker_client():
     """Return a cached Docker client, or create one on first call."""
@@ -1176,6 +1200,14 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
             container_ip = None
             if LAMBDA_DOCKER_NETWORK:
                 container_ip = networks.get(LAMBDA_DOCKER_NETWORK, {}).get("IPAddress", "")
+            if not container_ip and _running_in_container():
+                # DinD: host-mapped ports aren't reachable from inside this container.
+                # Use the Lambda container's IP on any available Docker network.
+                for net_info in networks.values():
+                    ip = net_info.get("IPAddress", "")
+                    if ip:
+                        container_ip = ip
+                        break
             if container_ip:
                 rie_url = f"http://{container_ip}:8080/2015-03-31/functions/function/invocations"
             else:
@@ -1312,8 +1344,9 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
                 mounts.append(docker_lib.types.Mount("/var/runtime", host_code_dir, type="bind", read_only=True))
             for idx, ld in enumerate(layers_dirs):
                 mounts.append(docker_lib.types.Mount(f"/opt/layer_{idx}", ld, type="bind", read_only=True))
-        elif os.path.exists("/.dockerenv") or os.environ.get("HOSTNAME"):
-            # Running inside Docker — bind mounts from tmpdir won't work.
+        elif _running_in_container():
+            # Running inside Docker — bind mounts from tmpdir won't work
+            # because the host Docker daemon can't see our container's filesystem.
             # We'll use docker cp after container creation instead.
             _use_docker_cp = True
         else:
@@ -1472,7 +1505,7 @@ def _execute_function_warm(func: dict, event: dict) -> dict:
             }
     except Exception as e:
         logger.error("Warm worker execution error for %s: %s", func_name, e)
-        invalidate_worker(func_name)
+        invalidate_worker(func_name, qualifier=qualifier)
         return {
             "body": {"errorMessage": str(e), "errorType": type(e).__name__},
             "error": True,
