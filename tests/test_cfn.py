@@ -1472,7 +1472,10 @@ def test_cfn_pipes_dynamodb_stream_to_sns(cfn, ddb, sqs):
     rec = json.loads(envelope["Message"])
     assert rec.get("eventSource") == "aws:dynamodb"
     assert rec.get("eventName") in ("INSERT", "MODIFY", "REMOVE")
-    assert rec.get("dynamodb", {}).get("Keys", {}).get("pk", {}).get("S") == "1"
+
+    dynamodb  = rec.get("dynamodb", {})
+    assert dynamodb.get("Keys", {}).get("pk", {}).get("S") == "1"
+    assert dynamodb.get("NewImage", {}).get("pk", {}).get("S") == "1"
 
     cfn.delete_stack(StackName=stack_name)
     _wait_stack(cfn, stack_name)
