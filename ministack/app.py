@@ -162,6 +162,7 @@ SERVICE_HANDLERS = {
     "appconfigdata": _lazy_handler("appconfig"),
     "scheduler": _lazy_handler("scheduler"),
     "eks": _lazy_handler("eks"),
+    "tagging": _lazy_handler("tagging"),
 }
 
 SERVICE_NAME_ALIASES = {
