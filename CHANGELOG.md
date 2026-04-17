@@ -51,6 +51,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Cognito OAuth2 lazy loading** — OAuth2 endpoints now use lazy module loading, fixing crash when Cognito module wasn't pre-imported.
 - **Cognito OAuth2 persistence** — `_authorization_codes` and `_refresh_tokens` now included in state persistence.
 - **Lambda warm worker stuck after init failure** — broken workers are now invalidated so the next invocation gets a fresh process. Reported by @Baptiste-Garcin
+- **Docker image missing `boto3`** — Lambda functions importing `boto3` now work out of the box. Real AWS Lambda runtimes pre-install `boto3`; the Docker image only had `botocore` (via `awscli`). Reported by @xPTM1219 (#362)
 
 ---
 

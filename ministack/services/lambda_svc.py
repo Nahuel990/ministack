@@ -1056,7 +1056,8 @@ _WARM_CONTAINER_TTL = 300  # 5 minutes, matching AWS warm container behaviour
 
 
 def _warm_container_key(func_name: str, code_sha: str) -> str:
-    return f"{func_name}:{code_sha}"
+    acct = get_account_id()
+    return f"{acct}:{func_name}:{code_sha}"
 
 
 def _get_warm_container(key: str):
@@ -1267,7 +1268,12 @@ def _execute_function_docker(func: dict, event: dict) -> dict:
             "AWS_LAMBDA_FUNCTION_MEMORY_SIZE": str(config["MemorySize"]),
             "AWS_LAMBDA_FUNCTION_VERSION": config.get("Version", "$LATEST"),
             "AWS_LAMBDA_LOG_STREAM_NAME": new_uuid(),
+            "_LAMBDA_FUNCTION_ARN": config.get("FunctionArn", ""),
+            "_LAMBDA_TIMEOUT": str(timeout),
         }
+        if is_provided:
+            container_env["LAMBDA_TASK_ROOT"] = "/var/task"
+            container_env["_HANDLER"] = handler
         if layers_dirs:
             container_env["_LAMBDA_LAYERS_DIRS"] = ":".join(
                 f"/opt/layer_{i}" for i in range(len(layers_dirs))
