@@ -1014,11 +1014,12 @@ async def _invoke(name: str, event: dict, headers: dict, path_qualifier: str | N
         return 204, {"X-Amz-Executed-Version": executed_version}, b""
 
     if invocation_type == "Event":
-        threading.Thread(
-            target=_execute_function,
-            args=(exec_record, event),
-            daemon=True,
-        ).start()
+        def _invoke_async():
+            result = _execute_function(exec_record, event)
+            log_output = result.get("log", "")
+            if log_output:
+                logger.info("Lambda %s output:\n%s", name, log_output)
+        threading.Thread(target=_invoke_async, daemon=True).start()
         return 202, {"X-Amz-Executed-Version": executed_version}, b""
 
     # RequestResponse — execute in worker thread so nested SDK calls
@@ -1032,6 +1033,7 @@ async def _invoke(name: str, event: dict, headers: dict, path_qualifier: str | N
 
     log_output = result.get("log", "")
     if log_output:
+        logger.info("Lambda %s output:\n%s", name, log_output)
         resp_headers["X-Amz-Log-Result"] = base64.b64encode(
             log_output.encode("utf-8"),
         ).decode()
