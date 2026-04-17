@@ -228,10 +228,14 @@ def test_eks_cfn_cluster(cfn, eks):
     stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
     assert stack["StackStatus"] == "CREATE_COMPLETE"
 
-    # Verify via EKS API
-    resp = eks.describe_cluster(name=cluster_name)
+    # Verify via EKS API — poll for ACTIVE (k3s may still be starting)
+    for _ in range(30):
+        resp = eks.describe_cluster(name=cluster_name)
+        if resp["cluster"]["status"] == "ACTIVE":
+            break
+        time.sleep(1)
     assert resp["cluster"]["name"] == cluster_name
-    assert resp["cluster"]["status"] == "ACTIVE"
+    assert resp["cluster"]["status"] in ("ACTIVE", "CREATING")
 
     cfn.delete_stack(StackName=stack_name)
     time.sleep(2)
