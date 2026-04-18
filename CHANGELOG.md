@@ -7,7 +7,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [1.3.0] — 2026-04-18
+## [1.3.1] — 2026-04-18
 
 ### Added
 - **Hypercorn ASGI server with HTTP/2 h2c** — replaces uvicorn with hypercorn, enabling cleartext HTTP/2 (h2c) support. AWS Java SDK v2 and Kinesis Client Library (KCL) clients that require HTTP/2 now work out of the box. Idle RAM drops from ~21 MB to ~7 MB. Contributed by @AdigaAkhil (#369). Fixes #361, #364
@@ -17,6 +17,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 - **Glue `GetPartitionIndexes` Keys format** — service returned Keys as flat strings (`["year"]`) instead of KeySchemaElement objects (`[{"Name": "year"}]`), causing boto3 deserialization failures
 - **RDS `LatestRestorableTime` empty timestamp** — `DescribeDBInstances` rendered `<LatestRestorableTime></LatestRestorableTime>` (empty string) which boto3 couldn't parse as a timestamp. Now defaults to current time
+- **EKS graceful fallback when k3s fails** — if Docker is unavailable or k3s container fails to start (e.g. privileged containers blocked), `CreateCluster` now returns ACTIVE with a mock endpoint and CA certificate instead of FAILED. The EKS API works identically regardless of Docker availability; real k3s is used when possible
+- **EKS state persistence** — restored clusters stay ACTIVE instead of being marked FAILED on restart
 - **EKS Docker tests flaky in parallel** — k3s containers interfere with each other under pytest-xdist. Added both EKS Docker tests to `_SERIAL_TESTS`
 - **EKS CFN test CI failure** — k3s can't start on CI (no Docker), cluster stays in CREATING. Test now polls and accepts CREATING status
 
