@@ -90,13 +90,12 @@ const http = require("http");
 const https = require("https");
 const url = require("url");
 
-// Redirect all console methods to stderr so stdout stays clean for JSON-line protocol
+// Redirect stdout to stderr so stdout stays clean for JSON-line protocol
+const _realStdoutWrite = process.stdout.write.bind(process.stdout);
 const _stderrWrite = process.stderr.write.bind(process.stderr);
-console.log = (...a) => { _stderrWrite(require("util").format(...a) + "\n"); };
-console.warn = (...a) => { _stderrWrite(require("util").format(...a) + "\n"); };
-console.info = (...a) => { _stderrWrite(require("util").format(...a) + "\n"); };
-console.debug = (...a) => { _stderrWrite(require("util").format(...a) + "\n"); };
-console.error = (...a) => { _stderrWrite(require("util").format(...a) + "\n"); };
+process.stdout.write = function(chunk, encoding, callback) {
+  return _stderrWrite(chunk, encoding, callback);
+};
 
 function patchAwsSdk() {
   const endpoint = process.env.AWS_ENDPOINT_URL
@@ -229,15 +228,15 @@ rl.on("line", async (line) => {
         }
         handlerFn = mod[handlerName] || (mod.default && mod.default[handlerName]) || mod.default;
         if (typeof handlerFn !== "function") {
-          process.stdout.write(JSON.stringify({
+          _realStdoutWrite(JSON.stringify({
             status: "error",
             error: `Handler ${handlerName} is not a function in ${modPath}`
           }) + "\n");
           return;
         }
-        process.stdout.write(JSON.stringify({ status: "ready", cold: true }) + "\n");
+        _realStdoutWrite(JSON.stringify({ status: "ready", cold: true }) + "\n");
       } catch (e) {
-        process.stdout.write(JSON.stringify({
+        _realStdoutWrite(JSON.stringify({
           status: "error", error: e.message
         }) + "\n");
       }
@@ -267,11 +266,11 @@ rl.on("line", async (line) => {
         if (settled) return;
         settled = true;
         if (err) {
-          process.stdout.write(JSON.stringify({
+          _realStdoutWrite(JSON.stringify({
             status: "error", error: String(err.message || err), trace: err.stack || ""
           }) + "\n");
         } else {
-          process.stdout.write(JSON.stringify({ status: "ok", result: res }) + "\n");
+          _realStdoutWrite(JSON.stringify({ status: "ok", result: res }) + "\n");
         }
       };
       const callback = (err, res) => settle(err, res);
@@ -290,12 +289,12 @@ rl.on("line", async (line) => {
       // If handler accepts callback (arity >= 3) or returned undefined,
       // we wait for callback/context.done/context.succeed/context.fail
     } catch (e) {
-      process.stdout.write(JSON.stringify({
+      _realStdoutWrite(JSON.stringify({
         status: "error", error: e.message, trace: e.stack
       }) + "\n");
     }
   } catch (e) {
-    process.stdout.write(JSON.stringify({
+    _realStdoutWrite(JSON.stringify({
       status: "error", error: "JSON parse error: " + e.message
     }) + "\n");
   }
