@@ -57,12 +57,19 @@ def test_eks_create_describe_delete_cluster(eks):
     assert "identity" in cluster
     assert "oidc" in cluster["identity"]
 
-    # Describe — wait for background thread to finish
-    for _ in range(60):
-        resp = eks.describe_cluster(name=name)
-        if resp["cluster"]["status"] == "ACTIVE":
-            break
+    # Describe — wait for background thread to finish.
+    # In CI the first describe can transiently fail; retry with backoff.
+    resp = None
+    for attempt in range(60):
+        try:
+            resp = eks.describe_cluster(name=name)
+            if resp["cluster"]["status"] == "ACTIVE":
+                break
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ResourceNotFoundException":
+                raise
         time.sleep(0.5)
+    assert resp is not None, f"Cluster {name} never became describable after 30s"
     assert resp["cluster"]["name"] == name
     assert resp["cluster"]["status"] == "ACTIVE"
 
