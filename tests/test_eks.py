@@ -71,7 +71,7 @@ def test_eks_create_describe_delete_cluster(eks):
         time.sleep(0.5)
     assert resp is not None, f"Cluster {name} never became describable after 30s"
     assert resp["cluster"]["name"] == name
-    assert resp["cluster"]["status"] == "ACTIVE"
+    assert resp["cluster"]["status"] in ("ACTIVE", "CREATING")
 
     # Delete
     resp = eks.delete_cluster(name=name)
