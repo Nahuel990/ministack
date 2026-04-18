@@ -7,6 +7,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.2] — 2026-04-18
+
+### Added
+- **Resource Groups Tagging API — Phase 1** — new service at credential scope `tagging` / target prefix `ResourceGroupsTaggingAPI_20170126`. `GetResources` with `TagFilters` (AND across keys, OR across values) and `ResourceTypeFilters` across S3, Lambda, SQS, SNS, DynamoDB, EventBridge. Contributed by @AdigaAkhil (#372). Fixes #371
+- **Resource Groups Tagging API — Phase 2** — `GetTagKeys` and `GetTagValues` operations, plus GetResources expanded to KMS, ECR, ECS, Glue, Cognito (User Pools + Identity Pools), AppSync, Scheduler, CloudFront, EFS (file systems + access points). 15 services total, 18 new tests. Contributed by @AdigaAkhil (#380). Fixes #379
+- **CloudFormation `AWS::Pipes::Pipe` provisioner** — minimal EventBridge Pipes runtime covering DynamoDB Streams → SNS with background polling; `CreationTime`, `CurrentState`, and ARN exposed via `Fn::GetAtt`. Also adds `FilterPolicy` / `FilterPolicyScope` support to the `AWS::SNS::Subscription` provisioner. Contributed by @davidtme (#354)
+- **RDS `ModifyDBInstance` MasterUserPassword rotation** — password changes are now propagated to the real Postgres/MySQL Docker container via `ALTER USER`, so follow-up connections from application code authenticate with the new password. Contributed by @ptanlam (#376)
+- **Preview Docker image on every PR (including forks)** — `docker-publish-on-pr.yml` switched to `pull_request_target` and now publishes `ministackorg/ministack-preview-build:pr-N-<shortsha>` for any contributor's PR. Reviewers can `docker pull` the exact build without waiting for merge. Workflow runs against main's copy of the file, so a PR's own edits to `.github/workflows/*` cannot redirect the publish. Contributed by @jgrumboe (#377)
+
+### Fixed
+- **Resource Groups Tagging — `ResourceTypeFilters` with no matching collector** — previously fell through to every collector (asking for EC2 returned S3/SQS/SNS/etc.). Now correctly returns an empty list, matching AWS.
+- **Resource Groups Tagging — CloudFormation-provisioned DynamoDB tables** — tags set via `AWS::DynamoDB::Table { Tags: [...] }` are stored on the table record, not in the central `_tags` dict, so they were invisible to `GetResources`. The DynamoDB collector now unions both sources.
+- **EventBridge Pipes `CreationTime`** — stored as `int(time.time())` instead of `time.time()`, matching the project-wide int-epoch convention for JSON responses (Java SDK v2 compatibility).
+- **RDS `_rotate_instance_password` — SQL injection via unquoted username** — the Postgres path used `psycopg2.extensions.AsIs` to splice `MasterUsername` into an `ALTER USER` statement, bypassing quoting. Replaced with `psycopg2.sql.Identifier` for safe identifier quoting.
+- **RDS `_rotate_instance_password` — silent failure visibility** — rotation failures (unreachable container, stale old password) now log at `ERROR` rather than `WARNING` so operators notice when the stored master password diverges from the real DB.
+
+---
+
 ## [1.3.1] — 2026-04-18
 
 ### Added

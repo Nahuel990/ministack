@@ -64,8 +64,20 @@ def _collect_sns():
 
 def _collect_dynamodb():
     import ministack.services.dynamodb as svc
+    seen = set()
+    # Tags set via TagResource are stored centrally, arn -> [{"Key":, "Value":}, ...]
     for arn, tags in svc._tags.items():
+        seen.add(arn)
         yield arn, _normalise_list(tags)
+    # CloudFormation-provisioned tables store tags on the table record as {k: v}.
+    # Surface those too so CDK / Terraform-via-CFN resources show up.
+    for _name, table in svc._tables.items():
+        arn = table.get("TableArn")
+        if not arn or arn in seen:
+            continue
+        cfn_tags = table.get("tags")
+        if cfn_tags:
+            yield arn, _normalise_flat(cfn_tags)
 
 
 def _collect_eventbridge():
@@ -202,8 +214,9 @@ def _get_resources(data):
     if type_filters:
         type_prefixes = {tf.split(":")[0] for tf in type_filters}
         active = {k: v for k, v in _COLLECTORS.items() if k in type_prefixes}
-        if not active:
-            active = _COLLECTORS
+        # If none of the requested prefixes match a supported collector, return
+        # an empty result — matching AWS (filter narrows the universe, it
+        # never broadens it back to "everything").
     else:
         active = _COLLECTORS
 

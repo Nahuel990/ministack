@@ -514,25 +514,33 @@ def _rotate_instance_password(instance, old_pass, new_pass):
             conn.close()
             logger.info("RDS: rotated root password on instance %s", db_id)
         except Exception as e:
-            logger.warning("RDS: password rotation failed on instance %s: %s",
-                           db_id, e)
+            # Error (not warning) — the stored master password no longer matches
+            # the real DB container, so follow-up connections will fail.
+            logger.error("RDS: password rotation failed on instance %s: %s",
+                         db_id, e)
     elif any(e in engine for e in ("postgres", "aurora-postgresql")):
         try:
             import psycopg2
+            from psycopg2 import sql as _pgsql
+            master_user = instance.get("MasterUsername", "admin")
             conn = psycopg2.connect(
-                host=host, port=port, user=instance.get("MasterUsername", "admin"),
+                host=host, port=port, user=master_user,
                 password=old_pass, dbname=instance.get("DBName", "postgres"))
             conn.autocommit = True
             cur = conn.cursor()
+            # Use psycopg2.sql.Identifier to quote the role name safely — AsIs
+            # skips quoting entirely and is a SQL-injection hazard when
+            # MasterUsername comes from user input.
             cur.execute(
-                "ALTER USER %s WITH PASSWORD %s",
-                (psycopg2.extensions.AsIs(instance.get("MasterUsername", "admin")), new_pass))
+                _pgsql.SQL("ALTER USER {role} WITH PASSWORD %s").format(
+                    role=_pgsql.Identifier(master_user)),
+                (new_pass,))
             cur.close()
             conn.close()
             logger.info("RDS: rotated password on instance %s", db_id)
         except Exception as e:
-            logger.warning("RDS: password rotation failed on instance %s: %s",
-                           db_id, e)
+            logger.error("RDS: password rotation failed on instance %s: %s",
+                         db_id, e)
 
 
 def _modify_db_instance(p):

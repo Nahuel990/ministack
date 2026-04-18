@@ -64,7 +64,7 @@ def register_pipe(
         "CurrentState": state,
         "StartingPosition": start,
         "Tags": tags or {},
-        "CreationTime": time.time(),
+        "CreationTime": int(time.time()),
     }
     _positions[arn] = _initial_position(_pipes[name])
 
