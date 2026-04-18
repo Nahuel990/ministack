@@ -214,6 +214,11 @@ SERVICE_PATTERNS = {
         "host_patterns": [r"eks\."],
         "credential_scope": "eks",
     },
+    "tagging": {
+        "target_prefixes": ["ResourceGroupsTaggingAPI_20170126"],
+        "host_patterns": [r"tagging\."],
+        "credential_scope": "tagging",
+    },
 }
 
 
@@ -276,6 +281,7 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "appconfigdata": "appconfigdata",
                 "scheduler": "scheduler",
                 "eks": "eks",
+                "tagging": "tagging",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
