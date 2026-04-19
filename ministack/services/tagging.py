@@ -335,6 +335,141 @@ _WRITERS = {
 }
 
 
+# ── Per-service tag removers ──────────────────────────────────────────────────
+
+def _remove_s3(arn, keys):
+    import ministack.services.s3 as svc
+    tags = svc._bucket_tags.get(arn.split(":::")[-1], {})
+    for k in keys:
+        tags.pop(k, None)
+
+
+def _remove_lambda(arn, keys):
+    import ministack.services.lambda_svc as svc
+    name = arn.split("function:")[-1]
+    if name in svc._functions:
+        tags = svc._functions[name].get("tags", {})
+        for k in keys:
+            tags.pop(k, None)
+
+
+def _remove_sqs(arn, keys):
+    import ministack.services.sqs as svc
+    for q in svc._queues.values():
+        if q.get("attributes", {}).get("QueueArn") == arn:
+            tags = q.get("tags", {})
+            for k in keys:
+                tags.pop(k, None)
+            break
+
+
+def _remove_sns(arn, keys):
+    import ministack.services.sns as svc
+    if arn in svc._topics:
+        tags = svc._topics[arn].get("tags", {})
+        for k in keys:
+            tags.pop(k, None)
+
+
+def _remove_dynamodb(arn, keys):
+    import ministack.services.dynamodb as svc
+    svc._tags[arn] = [t for t in svc._tags.get(arn, []) if t["Key"] not in keys]
+
+
+def _remove_eventbridge(arn, keys):
+    import ministack.services.eventbridge as svc
+    tags = svc._tags.get(arn, {})
+    for k in keys:
+        tags.pop(k, None)
+
+
+def _remove_kms(arn, keys):
+    import ministack.services.kms as svc
+    key_id = arn.split("/")[-1]
+    if key_id in svc._keys:
+        svc._keys[key_id]["Tags"] = [
+            t for t in svc._keys[key_id].get("Tags", []) if t["TagKey"] not in keys
+        ]
+
+
+def _remove_ecr(arn, keys):
+    import ministack.services.ecr as svc
+    name = arn.split("repository/")[-1]
+    if name in svc._repositories:
+        svc._repositories[name]["tags"] = [
+            t for t in svc._repositories[name].get("tags", []) if t["Key"] not in keys
+        ]
+
+
+def _remove_ecs(arn, keys):
+    import ministack.services.ecs as svc
+    svc._tags[arn] = [t for t in svc._tags.get(arn, []) if t["key"] not in keys]
+
+
+def _remove_glue(arn, keys):
+    import ministack.services.glue as svc
+    tags = svc._tags.get(arn, {})
+    for k in keys:
+        tags.pop(k, None)
+
+
+def _remove_cognito_idp(arn, keys):
+    import ministack.services.cognito as svc
+    pool_id = arn.split("userpool/")[-1]
+    if pool_id in svc._user_pools:
+        tags = svc._user_pools[pool_id].get("UserPoolTags", {})
+        for k in keys:
+            tags.pop(k, None)
+
+
+def _remove_cognito_identity(arn, keys):
+    import ministack.services.cognito as svc
+    pool_id = arn.split("identitypool/")[-1]
+    tags = svc._identity_tags.get(pool_id, {})
+    for k in keys:
+        tags.pop(k, None)
+
+
+def _remove_appsync(arn, keys):
+    import ministack.services.appsync as svc
+    tags = svc._tags.get(arn, {})
+    for k in keys:
+        tags.pop(k, None)
+
+
+def _remove_scheduler(arn, keys):
+    import ministack.services.scheduler as svc
+    tags = svc._tags.get(arn, {})
+    for k in keys:
+        tags.pop(k, None)
+
+
+def _remove_cloudfront(arn, keys):
+    import ministack.services.cloudfront as svc
+    svc._tags[arn] = [t for t in svc._tags.get(arn, []) if t["Key"] not in keys]
+
+
+def _remove_efs(arn, keys):
+    import ministack.services.efs as svc
+    if ":file-system/" in arn:
+        resource = svc._file_systems.get(arn.split("file-system/")[-1])
+    else:
+        resource = svc._access_points.get(arn.split("access-point/")[-1])
+    if resource is not None:
+        resource["Tags"] = [t for t in resource.get("Tags", []) if t["Key"] not in keys]
+
+
+_REMOVERS = {
+    "s3": _remove_s3, "lambda": _remove_lambda, "sqs": _remove_sqs,
+    "sns": _remove_sns, "dynamodb": _remove_dynamodb, "events": _remove_eventbridge,
+    "kms": _remove_kms, "ecr": _remove_ecr, "ecs": _remove_ecs,
+    "glue": _remove_glue, "cognito-idp": _remove_cognito_idp,
+    "cognito-identity": _remove_cognito_identity, "appsync": _remove_appsync,
+    "scheduler": _remove_scheduler, "cloudfront": _remove_cloudfront,
+    "elasticfilesystem": _remove_efs,
+}
+
+
 # ── Operation handlers ────────────────────────────────────────────────────────
 
 def _get_resources(data):
