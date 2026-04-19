@@ -486,7 +486,7 @@ def _get_resources(data):
         active = _COLLECTORS
 
     results = []
-    for collector in active.values():
+    for collector in dict.fromkeys(active.values()):
         try:
             for arn, tags in collector():
                 if not _matches_type_filters(arn, type_filters):
