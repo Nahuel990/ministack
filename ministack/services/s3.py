@@ -1528,10 +1528,12 @@ def _deliver_event_to_lambda(arn: str, event_payload: dict) -> None:
         logger.warning("S3 notification: Lambda function %s not found", func_name)
         return
 
-    threading.Thread(
-        target=_lambda._execute_function, args=(func, event_payload), daemon=True
-    ).start()
-    logger.info("S3 notification → Lambda %s", func_name)
+    # Real S3 → Lambda uses asynchronous invocation, which means retries
+    # (MaximumRetryAttempts, default 2) and routing to the function's DLQ /
+    # DestinationConfig.OnFailure on final failure. Shared helper keeps the
+    # semantics identical to direct Invoke(InvocationType=Event).
+    _lambda.invoke_async_with_retry(func, event_payload)
+    logger.info("S3 notification → Lambda %s (async with retry+DLQ)", func_name)
 
 
 def _fire_s3_event_async(
