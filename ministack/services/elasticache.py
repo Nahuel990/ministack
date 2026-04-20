@@ -45,7 +45,19 @@ _tags = AccountScopedDict()  # arn -> [{"Key": ..., "Value": ...}, ...]
 _snapshots = AccountScopedDict()
 _users = AccountScopedDict()
 _user_groups = AccountScopedDict()
-_events: list = []
+# Per-account event log. AccountScopedDict under key "entries" so the list
+# manipulation stays simple and DescribeEvents never leaks cross-tenant rows.
+_events = AccountScopedDict()
+
+
+def _events_list() -> list:
+    lst = _events.get("entries")
+    if lst is None:
+        lst = []
+        _events["entries"] = lst
+    return lst
+
+
 _port_counter = [BASE_PORT]
 
 _docker = None
@@ -130,14 +142,15 @@ def _arn_snapshot(name):
 
 
 def _record_event(source_id, source_type, message):
-    _events.append({
+    lst = _events_list()
+    lst.append({
         "SourceIdentifier": source_id,
         "SourceType": source_type,
         "Message": message,
         "Date": time.time(),
     })
-    if len(_events) > 500:
-        _events[:] = _events[-500:]
+    if len(lst) > 500:
+        lst[:] = lst[-500:]
 
 
 async def handle_request(method, path, headers, body, query_params):
@@ -956,7 +969,7 @@ def _describe_events(p):
     source_type = _p(p, "SourceType")
     max_records = int(_p(p, "MaxRecords") or "100")
 
-    filtered = _events
+    filtered = _events_list()
     if source_id:
         filtered = [e for e in filtered if e["SourceIdentifier"] == source_id]
     if source_type:
@@ -1357,4 +1370,5 @@ def reset():
     _users.clear()
     _user_groups.clear()
     _events.clear()
+    _tags.clear()   # was missing from reset() — HIGH-severity gap from audit
     _port_counter[0] = BASE_PORT

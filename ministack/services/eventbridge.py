@@ -58,17 +58,15 @@ def _coerce_timestamp(value):
 
 from ministack.core.persistence import load_state, PERSIST_STATE
 
-_event_buses: dict = {
-    "default": {
-        "Name": "default",
-        "Arn": f"arn:aws:events:{REGION}:{get_account_id()}:event-bus/default",
-        "CreationTime": _now_ts(),
-        "LastModifiedTime": _now_ts(),
-    }
-}
+# Per-account bus registry. The "default" bus is lazily created per account
+# on first access so every tenant has its own default bus with an ARN whose
+# account-id segment matches the caller.
+_event_buses = AccountScopedDict()
 _rules = AccountScopedDict()
 _targets = AccountScopedDict()
-_events_log: list = []
+# Per-account event log — AccountScopedDict under "entries" keeps the list
+# semantics while scoping reads to the caller's account.
+_events_log = AccountScopedDict()
 _tags = AccountScopedDict()
 _archives = AccountScopedDict()
 _event_bus_policies = AccountScopedDict()  # bus_name -> {Statement: [...]}
@@ -76,8 +74,28 @@ _connections = AccountScopedDict()         # connection_name -> {...}
 _api_destinations = AccountScopedDict()    # destination_name -> {...}
 _replays = AccountScopedDict()              # replay_name -> replay record
 _endpoints = AccountScopedDict()            # endpoint name -> endpoint record
-# Partner event sources: key "account|name" -> metadata (cross-account style API)
-_partner_event_sources: dict = {}
+# Partner event sources, per-account (key: "account|name" pattern inside each tenant).
+_partner_event_sources = AccountScopedDict()
+
+
+def _ensure_default_bus():
+    """Lazily create the caller's account's 'default' event bus on first access.
+    Matches real AWS — every account has a pre-existing default bus."""
+    if "default" not in _event_buses:
+        _event_buses["default"] = {
+            "Name": "default",
+            "Arn": f"arn:aws:events:{REGION}:{get_account_id()}:event-bus/default",
+            "CreationTime": _now_ts(),
+            "LastModifiedTime": _now_ts(),
+        }
+
+
+def _events_log_list() -> list:
+    entries = _events_log.get("entries")
+    if entries is None:
+        entries = []
+        _events_log["entries"] = entries
+    return entries
 
 
 # ── Persistence ────────────────────────────────────────────
@@ -95,7 +113,6 @@ def get_state():
 
 
 def restore_state(data):
-    global _event_buses
     if data:
         _event_buses.update(data.get("buses", {}))
         _rules.update(data.get("rules", {}))
@@ -130,6 +147,10 @@ if _restored:
 
 
 async def handle_request(method, path, headers, body, query_params):
+    # Every account has a pre-existing default bus in real AWS — make sure
+    # the caller's tenant has one before routing the request.
+    _ensure_default_bus()
+
     target = headers.get("x-amz-target", "")
     action = target.split(".")[-1] if "." in target else ""
 
@@ -595,7 +616,7 @@ def _put_events(data):
             "Account": get_account_id(),
             "Region": REGION,
         }
-        _events_log.append(event_record)
+        _events_log_list().append(event_record)
         results.append({"EventId": event_id})
         logger.debug("EventBridge event: %s / %s", entry.get('Source'), entry.get('DetailType'))
 
@@ -1583,7 +1604,6 @@ def _update_api_destination(data):
 
 
 def reset():
-    global _event_buses
     _rules.clear()
     _targets.clear()
     _events_log.clear()
@@ -1595,11 +1615,6 @@ def reset():
     _replays.clear()
     _endpoints.clear()
     _partner_event_sources.clear()
-    _event_buses = {
-        "default": {
-            "Name": "default",
-            "Arn": f"arn:aws:events:{REGION}:{get_account_id()}:event-bus/default",
-            "CreationTime": _now_ts(),
-            "LastModifiedTime": _now_ts(),
-        }
-    }
+    _event_buses.clear()
+    # The "default" bus is lazily recreated per-account on next access via
+    # _ensure_default_bus(), so nothing to re-seed here.

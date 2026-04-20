@@ -46,9 +46,19 @@ logger = logging.getLogger("ses")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 _identities = AccountScopedDict()
-_sent_emails: list = []
+# Per-account sent-mail record. AccountScopedDict under "entries" so the list
+# manipulation stays simple but GetSendStatistics / inspection is scoped.
+_sent_emails = AccountScopedDict()
 _templates = AccountScopedDict()
 _configuration_sets = AccountScopedDict()
+
+
+def _sent_emails_list() -> list:
+    lst = _sent_emails.get("entries")
+    if lst is None:
+        lst = []
+        _sent_emails["entries"] = lst
+    return lst
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +168,7 @@ def _send_email(params):
     }
     if config_set:
         record["ConfigurationSetName"] = config_set
-    _sent_emails.append(record)
+    _sent_emails_list().append(record)
     logger.info("SES SendEmail: %s -> %s | %s", source, to_addrs, subject)
     all_addrs = to_addrs + cc_addrs + bcc_addrs
     if all_addrs:
@@ -184,7 +194,7 @@ def _send_raw_email(params):
         "Timestamp": time.time(),
         "Type": "SendRawEmail",
     }
-    _sent_emails.append(record)
+    _sent_emails_list().append(record)
     logger.info("SES SendRawEmail: %s", msg_id)
     # Relay raw message via SMTP
     actual_source = source or parsed.get("From", "")
@@ -238,7 +248,7 @@ def _send_templated_email(params):
     }
     if config_set:
         record["ConfigurationSetName"] = config_set
-    _sent_emails.append(record)
+    _sent_emails_list().append(record)
     logger.info("SES SendTemplatedEmail: %s -> %s | template=%s", source, to_addrs, template_name)
     all_addrs = to_addrs + cc_addrs + bcc_addrs
     if all_addrs:
@@ -288,7 +298,7 @@ def _send_bulk_templated_email(params):
         }
         if config_set:
             record["ConfigurationSetName"] = config_set
-        _sent_emails.append(record)
+        _sent_emails_list().append(record)
         if dest["To"]:
             mime_str = _build_mime_message(source, dest["To"], [], [],
                                            rendered.get("Subject", ""),
@@ -436,7 +446,7 @@ def _set_identity_feedback_forwarding(params):
 
 def _get_send_quota(params):
     cutoff = time.time() - 86400
-    sent_24h = sum(1 for e in _sent_emails if e["Timestamp"] >= cutoff)
+    sent_24h = sum(1 for e in _sent_emails_list() if e["Timestamp"] >= cutoff)
     return _xml(200, "GetSendQuotaResponse",
                 f"<GetSendQuotaResult>"
                 f"<Max24HourSend>50000.0</Max24HourSend>"
@@ -704,7 +714,7 @@ def _v2_send_email(data):
         record["Parsed"] = parsed
     if config_set:
         record["ConfigurationSetName"] = config_set
-    _sent_emails.append(record)
+    _sent_emails_list().append(record)
     logger.info("SES v2 SendEmail: %s -> %s", from_addr, to_addrs)
     return _json_response(200, {"MessageId": msg_id})
 
@@ -739,7 +749,7 @@ def _v2_send_bulk_email(data):
         }
         if config_set:
             record["ConfigurationSetName"] = config_set
-        _sent_emails.append(record)
+        _sent_emails_list().append(record)
         results.append({"Status": "SUCCESS", "MessageId": msg_id})
 
     logger.info("SES v2 SendBulkEmail: %s | template=%s | %s entries",
@@ -904,7 +914,7 @@ def _v2_delete_template(name):
 
 def _v2_get_account():
     cutoff = time.time() - 86400
-    sent_24h = sum(1 for e in _sent_emails if e["Timestamp"] >= cutoff)
+    sent_24h = sum(1 for e in _sent_emails_list() if e["Timestamp"] >= cutoff)
     return _json_response(200, {
         "SendQuota": {
             "Max24HourSend": 50000.0,
@@ -933,10 +943,10 @@ def _make_identity(identity, identity_type):
 
 def _aggregate_15min_buckets():
     """Aggregate sent emails into 15-minute (900 s) buckets per the AWS spec."""
-    if not _sent_emails:
+    if not _sent_emails_list():
         return []
     buckets: dict = {}
-    for email in _sent_emails:
+    for email in _sent_emails_list():
         ts = email["Timestamp"]
         bucket_ts = ts - (ts % 900)
         if bucket_ts not in buckets:

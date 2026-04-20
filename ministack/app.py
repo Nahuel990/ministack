@@ -319,6 +319,15 @@ async def app(scope, receive, send):
             await _send_response(send, status, resp_headers, resp_body)
             return
 
+    # Lambda function code download (pre-signed-style URL target for
+    # GetFunction's Code.Location): /_ministack/lambda-code/{fn}
+    if path.startswith("/_ministack/lambda-code/") and method == "GET":
+        lp = path.split("/")  # ['', '_ministack', 'lambda-code', fn]
+        if len(lp) >= 4:
+            status, resp_headers, resp_body = _get_module("lambda_svc").serve_function_code(lp[3])
+            await _send_response(send, status, resp_headers, resp_body)
+            return
+
     # Cognito JWKS / OpenID Configuration well-known endpoints
     # Path: /{poolId}/.well-known/jwks.json  or  /{poolId}/.well-known/openid-configuration
     if "/.well-known/" in path and method == "GET":

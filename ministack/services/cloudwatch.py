@@ -28,21 +28,45 @@ logger = logging.getLogger("cloudwatch")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 TWO_WEEKS_SECONDS = 14 * 24 * 3600
 
-_metrics: dict = defaultdict(list)
+# Per-tenant metric store — keyed by (namespace, metric_name, dims_key) per
+# account via AccountScopedDict so GetMetricStatistics / ListMetrics from one
+# account cannot see another account's data points.
+_metrics = AccountScopedDict()
 _alarms = AccountScopedDict()
 _composite_alarms = AccountScopedDict()
-_alarm_history: list = []
+# Alarm state-change history, per-account. Stored as AccountScopedDict under
+# a single key "entries" so the standard list manipulation still applies to
+# the caller's tenant only.
+_alarm_history = AccountScopedDict()
 _resource_tags = AccountScopedDict()
 _dashboards = AccountScopedDict()  # dashboard_name -> {DashboardName, DashboardBody, LastModified}
+
+
+def _metric_bucket(key: tuple) -> list:
+    """Return the per-account point list for a metric key, creating it on first write."""
+    pts = _metrics.get(key)
+    if pts is None:
+        pts = []
+        _metrics[key] = pts
+    return pts
+
+
+def _history_entries() -> list:
+    entries = _alarm_history.get("entries")
+    if entries is None:
+        entries = []
+        _alarm_history["entries"] = entries
+    return entries
 
 
 # ── Persistence ────────────────────────────────────────────
 
 def get_state():
     return {
-        "metrics": copy.deepcopy(dict(_metrics)),
+        "metrics": copy.deepcopy(_metrics),
         "alarms": copy.deepcopy(_alarms),
         "composite_alarms": copy.deepcopy(_composite_alarms),
+        "alarm_history": copy.deepcopy(_alarm_history),
         "dashboards": copy.deepcopy(_dashboards),
         "resource_tags": copy.deepcopy(_resource_tags),
     }
@@ -50,10 +74,10 @@ def get_state():
 
 def restore_state(data):
     if data:
-        for k, v in data.get("metrics", {}).items():
-            _metrics[k].extend(v)
+        _metrics.update(data.get("metrics", {}))
         _alarms.update(data.get("alarms", {}))
         _composite_alarms.update(data.get("composite_alarms", {}))
+        _alarm_history.update(data.get("alarm_history", {}))
         _dashboards.update(data.get("dashboards", {}))
         _resource_tags.update(data.get("resource_tags", {}))
 
@@ -204,7 +228,7 @@ def _evaluate_all_alarms():
 
 
 def _record_history(alarm_name, old_state, new_state, reason):
-    _alarm_history.append(
+    _history_entries().append(
         {
             "AlarmName": alarm_name,
             "AlarmType": "MetricAlarm",
@@ -315,7 +339,7 @@ def _put_metric_data(params, cbor_data, is_cbor, is_json=False):
                 counts = md.get("Counts", [1.0] * len(values))
                 for v, c in zip(values, counts):
                     for _ in range(int(c)):
-                        _metrics[(namespace, mn, _dims_key(dims))].append(
+                        _metric_bucket((namespace, mn, _dims_key(dims))).append(
                             {
                                 "Timestamp": _parse_ts(md.get("Timestamp"))
                                 or time.time(),
@@ -326,7 +350,7 @@ def _put_metric_data(params, cbor_data, is_cbor, is_json=False):
                         )
             elif "StatisticValues" in md:
                 sv = md["StatisticValues"]
-                _metrics[(namespace, mn, _dims_key(dims))].append(
+                _metric_bucket((namespace, mn, _dims_key(dims))).append(
                     {
                         "Timestamp": _parse_ts(md.get("Timestamp")) or time.time(),
                         "Value": sv.get("Sum", 0) / max(sv.get("SampleCount", 1), 1),
@@ -336,7 +360,7 @@ def _put_metric_data(params, cbor_data, is_cbor, is_json=False):
                     }
                 )
             else:
-                _metrics[(namespace, mn, _dims_key(dims))].append(
+                _metric_bucket((namespace, mn, _dims_key(dims))).append(
                     {
                         "Timestamp": _parse_ts(md.get("Timestamp")) or time.time(),
                         "Value": float(md.get("Value", 0)),
@@ -360,7 +384,7 @@ def _put_metric_data(params, cbor_data, is_cbor, is_json=False):
                     _p(params, f"MetricData.member.{i}.Dimensions.member.{j}.Name")
                 ] = _p(params, f"MetricData.member.{i}.Dimensions.member.{j}.Value")
                 j += 1
-            _metrics[(namespace, mn, _dims_key(dims))].append(
+            _metric_bucket((namespace, mn, _dims_key(dims))).append(
                 {
                     "Timestamp": ts,
                     "Value": value,
@@ -978,7 +1002,7 @@ def _describe_alarm_history(params, cbor_data, is_cbor, is_json=False):
         end_date = _parse_ts(_p(params, "EndDate"))
         max_records = int(_p(params, "MaxRecords") or "100")
 
-    items = list(_alarm_history)
+    items = list(_history_entries())
     if alarm_name:
         items = [h for h in items if h["AlarmName"] == alarm_name]
     if history_type:
@@ -1448,4 +1472,6 @@ def reset():
     _alarms.clear()
     _composite_alarms.clear()
     _alarm_history.clear()
+    _metrics.clear()
     _resource_tags.clear()
+    _dashboards.clear()

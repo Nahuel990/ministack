@@ -633,7 +633,10 @@ ecs.stop_task(cluster="dev", task=task_arn)
 | `PERSIST_STATE` | `0` | Set `1` to persist service state across restarts |
 | `STATE_DIR` | `/tmp/ministack-state` | Directory for persisted state files |
 | `LAMBDA_EXECUTOR` | `local` | Lambda execution mode: `local` (subprocess) or `docker` (container). `provided` runtimes and `PackageType: Image` always use Docker |
+| `LAMBDA_STRICT` | `0` | Set `1` for AWS-fidelity mode: every Lambda invocation runs in a Docker container via the AWS RIE image; in-process fallbacks are disabled. Missing Docker surfaces as `Runtime.DockerUnavailable` instead of degrading to a subprocess. Opt-in because the default install doesn't require Docker |
 | `LAMBDA_DOCKER_NETWORK` | _(unset)_ | Docker network for Lambda containers. Set to your Docker Compose network name so Lambda can reach MiniStack |
+| `LAMBDA_WARM_TTL_SECONDS` | `300` | How long an idle warm Lambda container stays in the pool before the reaper evicts it |
+| `LAMBDA_ACCOUNT_CONCURRENCY` | `0` | Account-level concurrent-invocation cap (0 = unbounded). Match real AWS by setting to `1000`. Used to simulate `ConcurrentInvocationLimitExceeded` throttles |
 | `SFN_MOCK_CONFIG` | _(unset)_ | Path to JSON file for Step Functions mock testing; compatible with AWS SFN Local format. Also accepts `LOCALSTACK_SFN_MOCK_CONFIG` |
 | `ATHENA_ENGINE` | `auto` | SQL engine for Athena: `auto`, `duckdb`, `mock` |
 | `SMTP_HOST` | _(unset)_ | SMTP server for SES email relay (e.g. `mailhog:1025`). When set, SES SendEmail/SendRawEmail actually deliver mail. When unset, emails are stored in-memory only |

@@ -42,26 +42,36 @@ def get_athena_engine():
 
 
 _executions = AccountScopedDict()
-_workgroups: dict = {
-    "primary": {
-        "Name": "primary",
-        "State": "ENABLED",
-        "Description": "Primary workgroup",
-        "CreationTime": int(time.time()),
-        "Configuration": {
-            "ResultConfiguration": {"OutputLocation": "s3://athena-results/"}
-        },
-    }
-}
+# Per-account workgroups / data catalogs. AWS's "primary" workgroup and
+# "AwsDataCatalog" exist in every account — we lazily seed them per-tenant
+# on first access so two accounts never share the same workgroup or catalog
+# state (creation times, configs, etc.).
+_workgroups = AccountScopedDict()
 _named_queries = AccountScopedDict()
-_data_catalogs: dict = {
-    "AwsDataCatalog": {
-        "Name": "AwsDataCatalog",
-        "Description": "AWS Glue Data Catalog",
-        "Type": "GLUE",
-        "Parameters": {},
-    }
-}
+_data_catalogs = AccountScopedDict()
+
+
+def _ensure_default_workgroup():
+    if "primary" not in _workgroups:
+        _workgroups["primary"] = {
+            "Name": "primary",
+            "State": "ENABLED",
+            "Description": "Primary workgroup",
+            "CreationTime": int(time.time()),
+            "Configuration": {
+                "ResultConfiguration": {"OutputLocation": "s3://athena-results/"}
+            },
+        }
+
+
+def _ensure_default_data_catalog():
+    if "AwsDataCatalog" not in _data_catalogs:
+        _data_catalogs["AwsDataCatalog"] = {
+            "Name": "AwsDataCatalog",
+            "Description": "AWS Glue Data Catalog",
+            "Type": "GLUE",
+            "Parameters": {},
+        }
 _prepared_statements = AccountScopedDict()  # "workgroup/name" -> statement dict
 _tags = AccountScopedDict()  # arn -> {key: value, ...}
 
@@ -80,13 +90,15 @@ def get_state():
 
 
 def restore_state(data):
-    global _workgroups, _data_catalogs
+    # AccountScopedDicts are mutated in-place — no module-level reassignment.
     _executions.clear()
     _executions.update(data.get("_executions", {}))
-    _workgroups = data.get("_workgroups", _workgroups)
+    _workgroups.clear()
+    _workgroups.update(data.get("_workgroups", {}))
     _named_queries.clear()
     _named_queries.update(data.get("_named_queries", {}))
-    _data_catalogs = data.get("_data_catalogs", _data_catalogs)
+    _data_catalogs.clear()
+    _data_catalogs.update(data.get("_data_catalogs", {}))
     _prepared_statements.clear()
     _prepared_statements.update(data.get("_prepared_statements", {}))
     _tags.clear()
@@ -140,6 +152,11 @@ def _arn_datacatalog(name):
 
 
 async def handle_request(method, path, headers, body, query_params):
+    # AWS pre-provisions "primary" workgroup + "AwsDataCatalog" in every
+    # account. Seed them lazily per-tenant on first access.
+    _ensure_default_workgroup()
+    _ensure_default_data_catalog()
+
     target = headers.get("x-amz-target", "")
     action = target.split(".")[-1] if "." in target else ""
 
@@ -888,26 +905,11 @@ def _execution_out(ex):
 
 
 def reset():
-    global _workgroups, _data_catalogs
     _executions.clear()
     _named_queries.clear()
     _prepared_statements.clear()
-    _workgroups = {
-        "primary": {
-            "Name": "primary",
-            "State": "ENABLED",
-            "Description": "Primary workgroup",
-            "CreationTime": int(time.time()),
-            "Configuration": {
-                "ResultConfiguration": {"OutputLocation": "s3://athena-results/"}
-            },
-        }
-    }
-    _data_catalogs = {
-        "AwsDataCatalog": {
-            "Name": "AwsDataCatalog",
-            "Description": "AWS Glue Data Catalog",
-            "Type": "GLUE",
-            "Parameters": {},
-        }
-    }
+    _workgroups.clear()
+    _data_catalogs.clear()
+    _tags.clear()
+    # "primary" workgroup and "AwsDataCatalog" are seeded lazily per-account
+    # on next access via _ensure_default_workgroup() / _ensure_default_data_catalog().

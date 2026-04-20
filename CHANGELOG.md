@@ -7,6 +7,58 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.3] — 2026-04-19
+
+### Added
+- **Lambda → CloudWatch Logs emission** — every invocation now writes to `/aws/lambda/{FunctionName}` (auto-created) on a per-invocation stream `{yyyy}/{mm}/{dd}/[{qualifier}]{uuid}` with AWS-shaped `START RequestId:` / handler stdout+stderr / `END RequestId:` / `REPORT RequestId: … Duration: N ms Billed Duration: N ms Memory Size: N MB` lines. Unlocks Metric Filter / subscription filter / alarm testing chains that were previously impossible locally. Applies to every executor (Docker RIE, warm worker, provided-runtime, local subprocess).
+- **`LAMBDA_STRICT=1` env var** — AWS-fidelity mode: every Lambda invocation runs in Docker via the AWS RIE image; in-process fallbacks are disabled. Missing Docker surfaces as `Runtime.DockerUnavailable` instead of silently degrading to a subprocess. Opt-in; default behaviour keeps the no-Docker-required install path working.
+- **`LAMBDA_WARM_TTL_SECONDS` env var** — tunable idle TTL (default 300s) before the reaper thread evicts warm Docker containers from the pool.
+- **`LAMBDA_ACCOUNT_CONCURRENCY` env var** — account-level concurrent-invocation cap (default 0 = unbounded). Set to 1000 to match real AWS's default account limit and exercise `ConcurrentInvocationLimitExceeded` throttle paths.
+- **Async retry + DLQ / `DestinationConfig.OnFailure` routing** — `Invoke(InvocationType=Event)` and every internal event-source fan-out (currently: S3 notifications) now retry up to `MaximumRetryAttempts` (default 2) on failure and route the final failure to the configured DLQ (`DeadLetterConfig.TargetArn`) or `OnFailure` destination (SQS / SNS / Lambda), with an AWS-shaped envelope (`requestContext`, `requestPayload`, `responseContext`, `responsePayload`). Shared `invoke_async_with_retry` helper keeps direct async Invoke and event-source invocations on the same semantics.
+- **`X-Amz-Function-Error: Handled` vs `Unhandled` distinction** — `_invoke_rie` now reads RIE's `Lambda-Runtime-Function-Error-Type` response header to classify raised-exception errors (`Unhandled`) separately from handler-returned error payloads (`Handled`), matching real AWS. The classification is surfaced in the Invoke response header.
+- **`Retry-After` HTTP header on 429 throttle responses** — `TooManyRequestsException` responses now include both a `retryAfterSeconds` body field and a `Retry-After` HTTP header, matching AWS.
+
+### Changed
+- **Lambda Docker executor — unified Zip/Image pool** — restores the intent of @fzonneveld's #302: Zip and Image package types now share a single code path through the RIE warm pool (`_execute_function_image` is gone). The pool is a list-per-key (`{account}:{fn}:{zip|image}:{sha|uri}`) so concurrent invocations get separate containers, up to `ReservedConcurrentExecutions` (unbounded by default, matching AWS). Thread-safe under `_warm_pool_lock`. `reset()` kills every pooled container across all accounts. A background reaper evicts idle containers past TTL. **Regression fix from 1.2.20** — the post-merge commits on that release had split the paths back apart and reintroduced per-invocation cold starts for Image type. Originally contributed by @fzonneveld (#302).
+
+### Fixed
+- **Lambda Docker executor — Image type was cold-starting per invoke** — `_execute_function_image` created a fresh container, invoked, then killed it. Image functions now share the same warm pool as Zip.
+- **Lambda Docker executor — warm cache was single-container per key** — concurrent invocations of the same function either serialised or created cold starts. The pool is now a list so up to `ReservedConcurrentExecutions` invocations run in parallel from the pool.
+- **Lambda Docker executor — `CodeSha256` missing for Image package type** — cache key was empty for Image-type, meaning different Image-type functions could collide. Cache key is now derived from `ImageUri` for Image and `CodeSha256` for Zip, per-account.
+
+### Removed
+- **`ministack/core/lambda_wrapper.py` and `ministack/core/lambda_wrapper_node.js`** — dead code since the RIE-image migration. The AWS Lambda Runtime Interface Emulator provides the full runtime contract (handler loading, stdin/stdout, LambdaContext, boto3); the hand-rolled wrappers were never referenced after #302 landed. Removed.
+
+### Multi-tenancy correctness (8 CRITICAL cross-account leaks closed)
+
+These services stored per-tenant data in plain `dict` / `list`, so `List*` / `Describe*` operations leaked rows across accounts. All now use `AccountScopedDict`. Cross-account isolation tests added to `tests/test_multitenancy.py` to lock in each fix.
+
+- **CloudWatch metrics + alarm history** — `_metrics` and `_alarm_history` were global. Tenant A's `PutMetricData` was visible to Tenant B's `ListMetrics` / `GetMetricStatistics` / `DescribeAlarmHistory`.
+- **ElastiCache events** — `_events` list was global. `DescribeEvents` returned all tenants' cache events. Also missing `_tags.clear()` from `reset()`.
+- **EventBridge** — `_event_buses`, `_events_log`, `_partner_event_sources` were all global. Tenants shared the same "default" event bus (with an ARN baked at module-load with whichever account first imported the module). The "default" bus is now seeded lazily per-tenant on first request so its ARN always matches the caller's account id.
+- **Athena workgroups + data catalogs** — `_workgroups` and `_data_catalogs` were global. Creating a workgroup named `my-wg` in Tenant A prevented Tenant B from creating one. The default `primary` workgroup and `AwsDataCatalog` are now seeded lazily per-tenant.
+- **SES sent emails** — `_sent_emails` list was global. `GetSendStatistics` aggregated across tenants.
+- **API Gateway v1** — `_stages_v1`, `_deployments_v1`, `_authorizers_v1`, `_v1_tags` were all plain dicts. REST API stages / deployments / authorizers / tags leaked across tenants. **New finding in this audit** — APIGW v1 was not covered by earlier multi-tenancy reviews.
+
+### Lambda fixes
+
+- **Kinesis ESM `FilterCriteria` fallback — `NameError: name 'new_iter' is not defined`** — when all records in a Kinesis batch were filtered out, the poller tried to advance the shard position using an undefined local, crashing the poller thread silently. Now advances by `pos + len(raw_records)` (the full consumed batch) matching the success-path semantics.
+
+### AWS API parity
+- **Lambda `State` / `LastUpdateStatus` transitions** — `CreateFunction`, `UpdateFunctionCode`, and `UpdateFunctionConfiguration` now return `State: "Pending"` + `LastUpdateStatus: "InProgress"` initially, transitioning to `Active` / `Successful` asynchronously. Terraform's `FunctionActive` and `FunctionUpdated` waiters now poll successfully instead of racing. Transition delay is tunable via `LAMBDA_STATE_TRANSITION_SECONDS` (default `0.5s`).
+- **Lambda `GetAccountSettings`** — new handler at `GET /2016-08-19/account-settings`, returns `AccountLimit` (`TotalCodeSize`, `CodeSizeUnzipped`, `CodeSizeZipped`, `ConcurrentExecutions`, `UnreservedConcurrentExecutions`) and `AccountUsage` (`TotalCodeSize`, `FunctionCount`). Matches AWS response shape so Terraform data sources and CI tooling that probe the account-level limits work.
+- **Lambda async retry exponential backoff** — `invoke_async_with_retry` now sleeps between attempts (base `1s`, exponential, capped at `30s` locally — tunable via `LAMBDA_ASYNC_RETRY_BASE_SECONDS` / `LAMBDA_ASYNC_RETRY_MAX_SECONDS`), and respects `MaximumEventAgeInSeconds` so a retry that would push past the event age is skipped and routed to DLQ. AWS uses 1-minute base; scaled down locally to keep tests fast while preserving the shape.
+- **Lambda `InvokeWithResponseStream` — real vnd.amazon.eventstream framing** — responses are now emitted as a valid `PayloadChunk` + `InvokeComplete` sequence with correct prelude CRC + message CRC. boto3's `EventStream` parser decodes them natively. Handler errors flip to the `InvokeError` event type with a JSON error body.
+- **Lambda `GetFunction.Code.Location` — pre-signed-style URL** — `GetFunction` now returns a URL pointing at a new `/_ministack/lambda-code/{fn}` endpoint, dressed with `X-Amz-Algorithm`, `X-Amz-Expires=600`, `X-Amz-Date`, `X-Amz-SignedHeaders`, `X-Amz-Signature` query params so AWS SDKs and `pip`-style pull-and-extract scripts work against it unchanged. For `PackageType=Image`, `ResolvedImageUri` is now populated (echo of `ImageUri`) alongside `ImageUri`.
+- **Lambda `ListFunctionEventInvokeConfigs`** — new handler at `GET /2019-09-25/functions/{name}/event-invoke-config/list`. Returns the stored event-invoke config (one entry) or an empty list.
+- **Lambda `GetFunctionCodeSigningConfig` / `PutFunctionCodeSigningConfig` / `DeleteFunctionCodeSigningConfig`** — real shape: GET returns `{FunctionName, CodeSigningConfigArn}`, PUT stores the ARN on the function, DELETE clears it. Was a stub returning empty fields.
+- **Lambda REPORT log line — real `Max Memory Used`** — previously hardcoded `0 MB`. When the docker executor is used, peak RSS is now read from `container.stats()`; on non-docker executors it falls back to `resource.getrusage(RUSAGE_CHILDREN).ru_maxrss` (Linux/macOS normalised). Warm-worker subprocesses that never terminate still report `0 MB` — that matches "we don't have it" and avoids inventing a number.
+- **Lambda ESM `FilterCriteria` applied during polling** — SQS / Kinesis / DynamoDB Streams pollers now evaluate each record against the ESM's `FilterCriteria.Filters` patterns and drop non-matching records before invoking the handler, matching AWS. Supports equality lists, `prefix`, `suffix`, `anything-but`, `exists`, and `numeric` content filters; SQS bodies are JSON-parsed for matching so patterns like `{"body": {"orderType": ["Premium"]}}` work as documented.
+- **Lambda runtime image map — `java25`, `dotnet10`** — added to `_RUNTIME_IMAGE_MAP`, pointing at `public.ecr.aws/lambda/java:25` and `public.ecr.aws/lambda/dotnet:10`. Matches AWS's April 2026 runtime additions.
+- **Lambda `DurableConfig` / `TenancyConfig` / `CapacityProviderConfig`** — new 2026-era optional config blocks are accepted on `CreateFunction` / `UpdateFunctionConfiguration`, stored, and echoed on `GetFunction` / `GetFunctionConfiguration`. Only emitted when set, matching AWS's response shape.
+
+---
+
 ## [1.3.2] — 2026-04-18
 
 ### Added

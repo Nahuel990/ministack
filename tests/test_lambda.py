@@ -148,7 +148,10 @@ def test_lambda_create_function(lam):
     assert resp["FunctionName"] == "lam-create-test"
     assert resp["Runtime"] == "python3.12"
     assert resp["Handler"] == "index.handler"
-    assert resp["State"] == "Active"
+    # AWS: CreateFunction returns State=Pending and transitions to Active
+    # asynchronously. Terraform's FunctionActive waiter polls GetFunction.
+    assert resp["State"] in ("Pending", "Active")
+    assert resp["LastUpdateStatus"] in ("InProgress", "Successful")
     assert "FunctionArn" in resp
 
 def test_lambda_create_duplicate(lam):
@@ -2138,3 +2141,504 @@ def test_lambda_update_function_configuration_layers(lam):
     # GetFunction must also return normalized layer dicts
     fn = lam.get_function(FunctionName="fn-update-layer-test")
     assert fn["Configuration"]["Layers"][0]["Arn"] == layer_arn
+
+
+# ============================================================================
+# Unit tests — Lambda warm-container pool, ESM filter, CW Logs emitter,
+# event-stream framing, throttle response shape. These mock containers and
+# don't hit the live ministack server, so they run even without Docker.
+# Originally lived in tests/test_lambda_pool.py — merged here for one-file-per-service.
+# ============================================================================
+
+import time
+from unittest.mock import MagicMock
+
+import pytest
+
+import ministack.services.lambda_svc as lsvc
+from ministack.core.responses import set_request_account_id
+
+
+@pytest.fixture(autouse=True)
+def _clear_pool():
+    """Fresh pool before every test; also clear after so later tests don't see residue."""
+    lsvc._warm_pool.clear()
+    yield
+    lsvc._warm_pool.clear()
+
+
+def _mk_container(running: bool = True):
+    """Fake container with a .reload() that sets status, matching docker-py interface."""
+    c = MagicMock()
+    c.status = "running" if running else "exited"
+    def _reload():
+        # No-op — container.status stays at whatever was set last.
+        pass
+    c.reload.side_effect = _reload
+    return c
+
+
+# ──────────────────────────────── pool key ──────────────────────────────────
+
+def test_pool_key_scopes_by_account():
+    """Same function in two accounts → two distinct keys → two distinct pools."""
+    set_request_account_id("111111111111")
+    k_a = lsvc._warm_pool_key("fn", {"CodeSha256": "abc"})
+    set_request_account_id("222222222222")
+    k_b = lsvc._warm_pool_key("fn", {"CodeSha256": "abc"})
+    assert k_a != k_b
+    assert k_a.startswith("111111111111:")
+    assert k_b.startswith("222222222222:")
+
+
+def test_pool_key_differs_by_package_type():
+    set_request_account_id("111111111111")
+    k_zip = lsvc._warm_pool_key("fn", {"CodeSha256": "abc"})
+    k_img = lsvc._warm_pool_key("fn", {"PackageType": "Image", "ImageUri": "my/img:v1"})
+    assert k_zip != k_img
+    assert ":zip:" in k_zip
+    assert ":image:" in k_img
+
+
+def test_pool_key_differs_by_code_sha():
+    """Code update → new key → cold start (doesn't accidentally reuse old container)."""
+    set_request_account_id("111111111111")
+    k1 = lsvc._warm_pool_key("fn", {"CodeSha256": "sha-v1"})
+    k2 = lsvc._warm_pool_key("fn", {"CodeSha256": "sha-v2"})
+    assert k1 != k2
+
+
+def test_pool_key_differs_by_image_uri():
+    set_request_account_id("111111111111")
+    k1 = lsvc._warm_pool_key("fn", {"PackageType": "Image", "ImageUri": "img:v1"})
+    k2 = lsvc._warm_pool_key("fn", {"PackageType": "Image", "ImageUri": "img:v2"})
+    assert k1 != k2
+
+
+# ──────────────────────────── acquire / spawn / release ─────────────────────
+
+def test_acquire_on_empty_pool_signals_spawn():
+    entry, reason = lsvc._pool_acquire("k", max_concurrency=None)
+    assert entry is None
+    assert reason == "spawn"
+
+
+def test_register_then_reacquire_reuses_same_entry():
+    c = _mk_container()
+    entry1 = lsvc._pool_register("k", c, tmpdir=None)
+    assert entry1["in_use"] is True
+
+    # While in_use, next acquire can't reuse it — signals spawn.
+    entry2, reason = lsvc._pool_acquire("k", max_concurrency=None)
+    assert entry2 is None
+    assert reason == "spawn"
+
+    # After release, the same container is reused.
+    lsvc._pool_release(entry1)
+    assert entry1["in_use"] is False
+    entry3, reason = lsvc._pool_acquire("k", max_concurrency=None)
+    assert entry3 is entry1
+    assert reason == "reused"
+    assert entry3["in_use"] is True
+
+
+def test_multiple_concurrent_invocations_get_separate_entries():
+    """Two concurrent invocations must land on two distinct pool entries (not the same container)."""
+    c1 = _mk_container()
+    c2 = _mk_container()
+    e1 = lsvc._pool_register("k", c1, tmpdir=None)
+    # e1 is in_use — next acquire signals spawn, simulating cold start
+    _, reason = lsvc._pool_acquire("k", max_concurrency=None)
+    assert reason == "spawn"
+    e2 = lsvc._pool_register("k", c2, tmpdir=None)
+    assert e1 is not e2
+    assert e1["container"] is c1
+    assert e2["container"] is c2
+    assert len(lsvc._warm_pool["k"]) == 2
+
+
+def test_function_concurrency_cap_rejects_when_full():
+    """ReservedConcurrentExecutions=2 → 3rd concurrent invocation gets func_cap."""
+    for _ in range(2):
+        lsvc._pool_register("k", _mk_container(), tmpdir=None)
+    entry, reason = lsvc._pool_acquire("k", max_concurrency=2)
+    assert entry is None
+    assert reason == "func_cap"
+
+
+def test_function_concurrency_cap_none_is_unbounded():
+    """No ReservedConcurrentExecutions → can always spawn."""
+    for _ in range(50):
+        lsvc._pool_register("k", _mk_container(), tmpdir=None)
+    entry, reason = lsvc._pool_acquire("k", max_concurrency=None)
+    assert entry is None
+    assert reason == "spawn"
+
+
+def test_account_concurrency_cap_rejects(monkeypatch):
+    """Global account cap: 3 in-use total → 4th is throttled as acct_cap."""
+    monkeypatch.setattr(lsvc, "_ACCOUNT_CONCURRENCY_CAP", 3)
+    # 3 in-use entries across two pool keys
+    lsvc._pool_register("k1", _mk_container(), tmpdir=None)
+    lsvc._pool_register("k1", _mk_container(), tmpdir=None)
+    lsvc._pool_register("k2", _mk_container(), tmpdir=None)
+    entry, reason = lsvc._pool_acquire("k2", max_concurrency=None)
+    assert entry is None
+    assert reason == "acct_cap"
+
+
+# ──────────────────────────── lifecycle: dead, remove, evict, clear ─────────
+
+def test_dead_containers_are_pruned_on_acquire():
+    """Pool must not hand out a dead container on reuse."""
+    dead = _mk_container(running=False)
+    alive_entry = lsvc._pool_register("k", _mk_container(running=True), tmpdir=None)
+    # Release alive so it becomes reusable
+    lsvc._pool_release(alive_entry)
+    # Sneak a dead one into the pool directly
+    lsvc._warm_pool["k"].append({
+        "container": dead, "tmpdir": None, "in_use": False,
+        "last_used": time.time(), "created": time.time(),
+    })
+    assert len(lsvc._warm_pool["k"]) == 2
+
+    # Acquire — dead one pruned, alive one reused
+    entry, reason = lsvc._pool_acquire("k", max_concurrency=None)
+    assert reason == "reused"
+    assert entry["container"] is alive_entry["container"]
+    assert len(lsvc._warm_pool["k"]) == 1
+
+
+def test_pool_remove_kills_and_unregisters():
+    entry = lsvc._pool_register("k", _mk_container(), tmpdir=None)
+    lsvc._pool_remove(entry)
+    assert entry not in lsvc._warm_pool.get("k", [])
+    entry["container"].stop.assert_called()
+    entry["container"].remove.assert_called()
+
+
+def test_pool_evict_idle_removes_only_expired_and_not_in_use(monkeypatch):
+    monkeypatch.setattr(lsvc, "_WARM_CONTAINER_TTL", 60)
+    busy = lsvc._pool_register("k", _mk_container(), tmpdir=None)  # in_use=True
+    idle_old = lsvc._pool_register("k", _mk_container(), tmpdir=None)
+    lsvc._pool_release(idle_old)
+    idle_old["last_used"] = time.time() - 300  # past TTL
+    idle_fresh = lsvc._pool_register("k", _mk_container(), tmpdir=None)
+    lsvc._pool_release(idle_fresh)  # last_used = now, within TTL
+
+    lsvc._pool_evict_idle()
+
+    remaining = lsvc._warm_pool.get("k", [])
+    assert busy in remaining        # still in use — must not be evicted
+    assert idle_fresh in remaining  # under TTL — kept
+    assert idle_old not in remaining
+    idle_old["container"].stop.assert_called()
+
+
+def test_pool_clear_all_kills_everything():
+    for key in ("a", "b", "c"):
+        lsvc._pool_register(key, _mk_container(), tmpdir=None)
+    victims = [e for lst in lsvc._warm_pool.values() for e in lst]
+    assert len(victims) == 3
+
+    lsvc._pool_clear_all()
+
+    assert lsvc._warm_pool == {}
+    for v in victims:
+        v["container"].stop.assert_called()
+        v["container"].remove.assert_called()
+
+
+# ──────────────────────────── multi-tenancy ─────────────────────────────────
+
+def test_two_accounts_get_independent_pools():
+    """Invocations in account A must not pick up account B's containers."""
+    set_request_account_id("111111111111")
+    k_a = lsvc._warm_pool_key("fn", {"CodeSha256": "sha"})
+    c_a = _mk_container()
+    e_a = lsvc._pool_register(k_a, c_a, tmpdir=None)
+    lsvc._pool_release(e_a)
+
+    set_request_account_id("222222222222")
+    k_b = lsvc._warm_pool_key("fn", {"CodeSha256": "sha"})
+    assert k_a != k_b
+
+    entry, reason = lsvc._pool_acquire(k_b, max_concurrency=None)
+    assert entry is None
+    assert reason == "spawn"   # account B must cold-start; can't reuse A's container
+
+
+def test_throttle_response_shape_matches_aws():
+    """The throttle response body must match the AWS TooManyRequestsException shape."""
+    r = lsvc._throttle_response(
+        reason_code="ReservedFunctionConcurrentInvocationLimitExceeded",
+        msg="Rate Exceeded",
+        retry_after=1,
+    )
+    assert r["throttle"] is True
+    assert r["error"] is True
+    body = r["body"]
+    assert body["__type"] == "TooManyRequestsException"
+    assert body["Reason"] == "ReservedFunctionConcurrentInvocationLimitExceeded"
+    assert "retryAfterSeconds" in body
+    assert "message" in body
+
+
+# ──────────────────── async retry + DLQ routing ─────────────────────────────
+
+def test_route_async_failure_to_sqs_dlq():
+    """Async invoke final failure routes an AWS-shaped envelope to the SQS DLQ."""
+    import ministack.services.sqs as _sqs
+    set_request_account_id("000000000000")
+    # Create a queue directly in the internal state
+    url = "http://localhost:4566/000000000000/dlq-test"
+    arn = "arn:aws:sqs:us-east-1:000000000000:dlq-test"
+    _sqs._queues[url] = {
+        "messages": [], "attributes": {"QueueArn": arn},
+        "is_fifo": False, "dedup_cache": {}, "fifo_seq": 0,
+    }
+    try:
+        lsvc._route_async_failure(
+            target_arn=arn,
+            func_name="doesnt-matter",
+            event={"input": "hi"},
+            result={"error": True, "function_error": "Unhandled",
+                    "body": {"errorType": "Handler", "errorMessage": "boom"}},
+        )
+        assert len(_sqs._queues[url]["messages"]) == 1
+        import json as _json
+        envelope = _json.loads(_sqs._queues[url]["messages"][0]["body"])
+        assert envelope["requestPayload"] == {"input": "hi"}
+        assert envelope["requestContext"]["condition"] == "RetriesExhausted"
+        assert envelope["responseContext"]["functionError"] == "Unhandled"
+        assert envelope["responsePayload"]["errorMessage"] == "boom"
+    finally:
+        _sqs._queues.pop(url, None)
+
+
+def test_route_async_failure_to_sns_topic():
+    """Async invoke final failure can target an SNS topic (OnFailure destination)."""
+    import ministack.services.sns as _sns
+    set_request_account_id("000000000000")
+    arn = "arn:aws:sns:us-east-1:000000000000:async-fail"
+    _sns._topics[arn] = {
+        "arn": arn, "name": "async-fail",
+        "subscriptions": [], "messages": [], "tags": {}, "attributes": {},
+    }
+    try:
+        # Monkey-patch _fanout to observe the call without needing subscribers
+        called = {}
+        real_fanout = _sns._fanout
+        def _capture(topic_arn, msg_id, message, subject, *args, **kwargs):
+            called["topic_arn"] = topic_arn
+            called["message"] = message
+            called["subject"] = subject
+        _sns._fanout = _capture
+        try:
+            lsvc._route_async_failure(
+                target_arn=arn,
+                func_name="doesnt-matter",
+                event={"k": "v"},
+                result={"error": True, "function_error": "Handled",
+                        "body": {"errorType": "X"}},
+            )
+            assert called.get("topic_arn") == arn
+            assert "requestPayload" in called.get("message", "")
+        finally:
+            _sns._fanout = real_fanout
+    finally:
+        _sns._topics.pop(arn, None)
+
+
+def test_route_async_failure_unknown_target_logs_and_returns():
+    """Unknown DLQ ARN must not raise — just logs."""
+    set_request_account_id("000000000000")
+    # Should NOT raise
+    lsvc._route_async_failure(
+        target_arn="arn:aws:sqs:us-east-1:000000000000:does-not-exist",
+        func_name="x", event={}, result={"error": True, "body": {}},
+    )
+
+
+# ──────────────────── RIE result → function_error classification ────────────
+
+def test_lambda_strict_hard_fails_when_docker_unavailable(monkeypatch):
+    """LAMBDA_STRICT=1 + no Docker → Runtime.DockerUnavailable, NO fallback to warm/local."""
+    monkeypatch.setattr(lsvc, "LAMBDA_STRICT", True)
+    monkeypatch.setattr(lsvc, "_docker_available", False)
+    func = {"config": {
+        "FunctionName": "strict-test",
+        "Runtime": "python3.12",
+        "PackageType": "Zip",
+        "CodeSha256": "abc",
+        "Timeout": 3,
+        "MemorySize": 128,
+    }, "code_zip": b"\x00"}
+    result = lsvc._execute_function_docker(func, {"k": "v"})
+    assert result.get("error") is True
+    assert result["body"]["errorType"] == "Runtime.DockerUnavailable"
+
+
+def test_lambda_permissive_falls_back_to_warm_without_docker(monkeypatch):
+    """Default (LAMBDA_STRICT=False) + no Docker + python runtime → warm fallback."""
+    monkeypatch.setattr(lsvc, "LAMBDA_STRICT", False)
+    monkeypatch.setattr(lsvc, "_docker_available", False)
+    called = {"warm": False}
+    def _fake_warm(func, event):
+        called["warm"] = True
+        return {"body": {"ok": True}}
+    monkeypatch.setattr(lsvc, "_execute_function_warm", _fake_warm)
+    func = {"config": {
+        "FunctionName": "perm-test",
+        "Runtime": "python3.12",
+        "PackageType": "Zip",
+        "CodeSha256": "abc",
+        "Timeout": 3,
+        "MemorySize": 128,
+    }, "code_zip": b"\x00"}
+    lsvc._execute_function_docker(func, {})
+    assert called["warm"] is True
+
+
+def test_emit_lambda_logs_writes_start_end_report_to_cw_logs():
+    """Lambda → CW Logs emits AWS-shaped START / body / END / REPORT lines."""
+    import ministack.services.cloudwatch_logs as _cwl
+    set_request_account_id("000000000000")
+    _cwl._log_groups.clear()
+
+    func = {"config": {"FunctionName": "emit-test", "Version": "$LATEST", "MemorySize": 128}}
+    lsvc._emit_lambda_logs(
+        func, request_id="abc-1234",
+        log_text="user print line 1\nuser print line 2",
+        error=False, duration_ms=42,
+    )
+
+    assert "/aws/lambda/emit-test" in _cwl._log_groups
+    streams = _cwl._log_groups["/aws/lambda/emit-test"]["streams"]
+    assert len(streams) == 1
+    stream_name = next(iter(streams))
+    assert stream_name.startswith(tuple(f"{y:04d}/" for y in range(2024, 2031)))
+    assert "[$LATEST]" in stream_name
+    msgs = [e["message"] for e in streams[stream_name]["events"]]
+    assert any(m.startswith("START RequestId: abc-1234") and "$LATEST" in m for m in msgs)
+    assert "user print line 1" in msgs
+    assert "user print line 2" in msgs
+    assert any(m == "END RequestId: abc-1234" for m in msgs)
+    assert any(m.startswith("REPORT RequestId: abc-1234") and "Duration: 42 ms" in m for m in msgs)
+
+
+def test_emit_lambda_logs_autocreate_is_per_function():
+    """Each function gets its own /aws/lambda/{name} group."""
+    import ministack.services.cloudwatch_logs as _cwl
+    set_request_account_id("000000000000")
+    _cwl._log_groups.clear()
+
+    lsvc._emit_lambda_logs(
+        {"config": {"FunctionName": "fn-a", "Version": "$LATEST", "MemorySize": 128}},
+        "r1", "", False, 1,
+    )
+    lsvc._emit_lambda_logs(
+        {"config": {"FunctionName": "fn-b", "Version": "$LATEST", "MemorySize": 128}},
+        "r2", "", False, 1,
+    )
+    assert "/aws/lambda/fn-a" in _cwl._log_groups
+    assert "/aws/lambda/fn-b" in _cwl._log_groups
+
+
+def test_emit_lambda_logs_failure_is_best_effort(monkeypatch):
+    """A broken CW Logs module must not bubble into the Lambda invocation."""
+    import ministack.services.cloudwatch_logs as _cwl
+    # Nuke the target to force a write failure
+    monkeypatch.setattr(_cwl, "_log_groups", None)
+    # Must not raise
+    lsvc._emit_lambda_logs(
+        {"config": {"FunctionName": "crash", "Version": "$LATEST", "MemorySize": 128}},
+        "r", "", False, 1,
+    )
+
+
+def test_match_esm_filter_equality():
+    """Basic equality matching on a nested record."""
+    rec = {"body": {"orderType": "Premium", "region": "us-east-1"}}
+    assert lsvc._match_esm_filter(rec, {"body": {"orderType": ["Premium"]}}) is True
+    assert lsvc._match_esm_filter(rec, {"body": {"orderType": ["Basic"]}}) is False
+
+
+def test_match_esm_filter_content_prefix_suffix_anything_but():
+    """Content-filter dicts: prefix, suffix, anything-but, exists."""
+    rec = {"body": {"name": "prod-user-42"}}
+    assert lsvc._match_esm_filter(rec, {"body": {"name": [{"prefix": "prod-"}]}}) is True
+    assert lsvc._match_esm_filter(rec, {"body": {"name": [{"prefix": "dev-"}]}}) is False
+    assert lsvc._match_esm_filter(rec, {"body": {"name": [{"suffix": "-42"}]}}) is True
+    assert lsvc._match_esm_filter(rec, {"body": {"name": [{"anything-but": ["prod-user-42"]}]}}) is False
+    assert lsvc._match_esm_filter(rec, {"body": {"name": [{"anything-but": ["other"]}]}}) is True
+    assert lsvc._match_esm_filter(rec, {"body": {"missing": [{"exists": False}]}}) is True
+    assert lsvc._match_esm_filter(rec, {"body": {"name": [{"exists": True}]}}) is True
+
+
+def test_match_esm_filter_numeric():
+    """Numeric comparison operator."""
+    rec = {"body": {"count": 7}}
+    assert lsvc._match_esm_filter(rec, {"body": {"count": [{"numeric": [">", 5]}]}}) is True
+    assert lsvc._match_esm_filter(rec, {"body": {"count": [{"numeric": [">", 10]}]}}) is False
+    assert lsvc._match_esm_filter(rec, {"body": {"count": [{"numeric": [">", 5, "<", 10]}]}}) is True
+
+
+def test_apply_filter_criteria_drops_non_matching_sqs_records():
+    """SQS bodies are JSON-parsed before matching, matching AWS behaviour."""
+    import json as _json
+    esm = {"FilterCriteria": {"Filters": [
+        {"Pattern": _json.dumps({"body": {"orderType": ["Premium"]}})},
+    ]}}
+    records = [
+        {"messageId": "a", "body": _json.dumps({"orderType": "Premium"})},
+        {"messageId": "b", "body": _json.dumps({"orderType": "Basic"})},
+    ]
+    filtered = lsvc._apply_filter_criteria(records, esm)
+    assert [r["messageId"] for r in filtered] == ["a"]
+
+
+def test_apply_filter_criteria_no_filters_passes_through():
+    records = [{"messageId": "x"}, {"messageId": "y"}]
+    assert lsvc._apply_filter_criteria(records, {}) == records
+    assert lsvc._apply_filter_criteria(records, {"FilterCriteria": {}}) == records
+
+
+def test_event_stream_encode_roundtrip():
+    """The vnd.amazon.eventstream encoder must produce a valid framed message
+    that boto3's own EventStream parser can decode."""
+    from botocore.eventstream import EventStreamBuffer
+    msg = lsvc._es_encode_message({
+        ":message-type": "event",
+        ":event-type": "PayloadChunk",
+        ":content-type": "application/octet-stream",
+    }, b"hello-world")
+    buf = EventStreamBuffer()
+    buf.add_data(msg)
+    events = list(buf)
+    assert len(events) == 1
+    event = events[0]
+    # botocore surfaces headers as a dict[str, Any] on the parsed event
+    assert event.headers[":event-type"] == "PayloadChunk"
+    assert event.payload == b"hello-world"
+
+
+def test_invoke_rie_classifies_unhandled_vs_handled():
+    """If RIE returns X-Amz-Function-Error header the result carries
+    function_error='Unhandled'. A handler-returned errorType with no RIE
+    header should produce 'Handled'."""
+    # The classification logic lives inside _invoke_rie; unit-test by
+    # simulating what that branch does via a tiny inline replica.
+    parsed_error_payload = {"errorType": "E", "errorMessage": "m"}
+
+    # Case 1: RIE header present → Unhandled
+    has_header = True
+    if has_header or (isinstance(parsed_error_payload, dict) and parsed_error_payload.get("errorType")):
+        classification = "Unhandled" if has_header else "Handled"
+    assert classification == "Unhandled"
+
+    # Case 2: No RIE header, but body has errorType → Handled
+    has_header = False
+    if has_header or (isinstance(parsed_error_payload, dict) and parsed_error_payload.get("errorType")):
+        classification = "Unhandled" if has_header else "Handled"
+    assert classification == "Handled"

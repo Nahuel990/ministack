@@ -91,18 +91,20 @@ logger = logging.getLogger("apigateway_v1")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
 # ---- Module-level state ----
+# All per-tenant state uses AccountScopedDict so the same REST API id in two
+# different accounts never collides and list operations don't leak cross-account.
 _rest_apis = AccountScopedDict()           # rest_api_id -> RestApi
 _resources = AccountScopedDict()           # rest_api_id -> {resource_id -> Resource}
-_stages_v1: dict = {}           # rest_api_id -> {stage_name -> Stage}
-_deployments_v1: dict = {}      # rest_api_id -> {deployment_id -> Deployment}
-_authorizers_v1: dict = {}      # rest_api_id -> {authorizer_id -> Authorizer}
+_stages_v1 = AccountScopedDict()           # rest_api_id -> {stage_name -> Stage}
+_deployments_v1 = AccountScopedDict()      # rest_api_id -> {deployment_id -> Deployment}
+_authorizers_v1 = AccountScopedDict()      # rest_api_id -> {authorizer_id -> Authorizer}
 _models = AccountScopedDict()              # rest_api_id -> {model_id -> Model}
 _api_keys = AccountScopedDict()            # key_id -> ApiKey
 _usage_plans = AccountScopedDict()         # plan_id -> UsagePlan
 _usage_plan_keys = AccountScopedDict()     # plan_id -> {key_id -> UsagePlanKey}
 _domain_names = AccountScopedDict()        # domain_name -> DomainName
 _base_path_mappings = AccountScopedDict()  # domain_name -> {base_path -> BasePathMapping}
-_v1_tags: dict = {}             # resource_arn -> {key -> value}
+_v1_tags = AccountScopedDict()             # resource_arn -> {key -> value}
 
 
 # ---- Helpers ----

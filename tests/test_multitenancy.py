@@ -138,3 +138,97 @@ def test_ssm_parameter_arn_uses_dynamic_account():
         assert "048408301323" in arn, f"Expected account in ARN: {arn}"
     finally:
         ssm.delete_parameter(Name="/mt-test/param1")
+
+
+# ─────────────────── Cross-account isolation (1.3.3 CRITICAL fixes) ───────────────────
+# Each test below creates the same resource name in two accounts and asserts
+# list/describe operations in one account do NOT see the other account's data.
+
+
+def test_cloudwatch_metrics_isolated_per_account():
+    """PutMetricData from account A is invisible to ListMetrics in account B."""
+    import uuid
+    ns = f"ms-mt-{uuid.uuid4().hex[:8]}"
+    cw_a = _client("cloudwatch", access_key="111111111111")
+    cw_b = _client("cloudwatch", access_key="222222222222")
+    cw_a.put_metric_data(Namespace=ns, MetricData=[{"MetricName": "leak", "Value": 1.0}])
+    metrics_a = cw_a.list_metrics(Namespace=ns)["Metrics"]
+    metrics_b = cw_b.list_metrics(Namespace=ns)["Metrics"]
+    assert any(m["MetricName"] == "leak" for m in metrics_a)
+    assert all(m["MetricName"] != "leak" for m in metrics_b), \
+        f"CRITICAL: CloudWatch metrics leaking cross-account; B saw: {metrics_b}"
+
+
+def test_athena_workgroups_isolated_per_account():
+    """CreateWorkGroup in account A does NOT appear in ListWorkGroups for account B."""
+    import uuid
+    wg = f"mt-wg-{uuid.uuid4().hex[:8]}"
+    a = _client("athena", access_key="111111111111")
+    b = _client("athena", access_key="222222222222")
+    try:
+        a.create_work_group(Name=wg, Description="A's workgroup")
+        names_a = [w["Name"] for w in a.list_work_groups()["WorkGroups"]]
+        names_b = [w["Name"] for w in b.list_work_groups()["WorkGroups"]]
+        assert wg in names_a
+        assert wg not in names_b, \
+            f"CRITICAL: Athena workgroup leaking cross-account; B saw: {names_b}"
+    finally:
+        try: a.delete_work_group(WorkGroup=wg)
+        except Exception: pass
+
+
+def test_ses_sent_emails_isolated_per_account():
+    """Account A's sent emails must not appear in account B's GetSendStatistics."""
+    a = _client("ses", access_key="111111111111")
+    b = _client("ses", access_key="222222222222")
+    # Verify identity first
+    a.verify_email_identity(EmailAddress="mt-a@example.com")
+    b.verify_email_identity(EmailAddress="mt-b@example.com")
+    a.send_email(
+        Source="mt-a@example.com",
+        Destination={"ToAddresses": ["recip@example.com"]},
+        Message={"Subject": {"Data": "A"}, "Body": {"Text": {"Data": "A"}}},
+    )
+    stats_a = a.get_send_statistics()["SendDataPoints"]
+    stats_b = b.get_send_statistics()["SendDataPoints"]
+    attempts_a = sum(p.get("DeliveryAttempts", 0) for p in stats_a)
+    attempts_b = sum(p.get("DeliveryAttempts", 0) for p in stats_b)
+    assert attempts_a >= 1
+    assert attempts_b == 0, \
+        f"CRITICAL: SES send stats leaking cross-account; B saw {attempts_b} attempts"
+
+
+def test_eventbridge_default_bus_has_caller_account_arn():
+    """Each account's 'default' bus ARN must reflect the caller's account id."""
+    a = _client("events", access_key="111111111111")
+    b = _client("events", access_key="222222222222")
+    arn_a = a.describe_event_bus(Name="default")["Arn"]
+    arn_b = b.describe_event_bus(Name="default")["Arn"]
+    assert ":111111111111:" in arn_a
+    assert ":222222222222:" in arn_b
+    assert arn_a != arn_b
+
+
+def test_apigateway_v1_stages_isolated_per_account():
+    """Account A's REST API stages are invisible to account B."""
+    import uuid
+    name = f"mt-api-{uuid.uuid4().hex[:8]}"
+    a = _client("apigateway", access_key="111111111111")
+    b = _client("apigateway", access_key="222222222222")
+    a_api = a.create_rest_api(name=name)["id"]
+    try:
+        # Must create a deployment before a stage
+        a_res = a.get_resources(restApiId=a_api)["items"][0]["id"]
+        a.put_method(restApiId=a_api, resourceId=a_res, httpMethod="GET", authorizationType="NONE")
+        a.put_integration(restApiId=a_api, resourceId=a_res, httpMethod="GET", type="MOCK")
+        dep = a.create_deployment(restApiId=a_api, stageName="prod")
+        # A can see its stage
+        stages_a = a.get_stages(restApiId=a_api)["item"]
+        assert any(s["stageName"] == "prod" for s in stages_a)
+        # B MUST NOT see A's api at all
+        apis_b = b.get_rest_apis()["items"]
+        assert all(api["id"] != a_api for api in apis_b), \
+            f"CRITICAL: APIGW v1 REST api leaking cross-account; B saw: {apis_b}"
+    finally:
+        try: a.delete_rest_api(restApiId=a_api)
+        except Exception: pass
