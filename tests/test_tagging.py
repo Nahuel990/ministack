@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from botocore.exceptions import ClientError
 

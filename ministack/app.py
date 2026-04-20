@@ -1058,8 +1058,16 @@ def _reset_all_state():
 
     from ministack.core.persistence import PERSIST_STATE, STATE_DIR
 
-    for service_config in SERVICE_REGISTRY.values():
-        mod_name = service_config["module"]
+    # Stateful modules that don't have a routing entry in SERVICE_REGISTRY but
+    # still need reset() — REST API v1 (served via the apigateway module),
+    # SES v2 (served via the ses module), and EventBridge Pipes (CFN-only
+    # provisioner with a background poller thread that reset() must stop).
+    _extra_reset_modules = ("apigateway_v1", "ses_v2", "pipes")
+
+    module_names = {cfg["module"] for cfg in SERVICE_REGISTRY.values()}
+    module_names.update(_extra_reset_modules)
+
+    for mod_name in module_names:
         if mod_name in _loaded_modules:
             mod = _loaded_modules[mod_name]
             try:
