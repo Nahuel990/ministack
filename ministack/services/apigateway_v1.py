@@ -120,7 +120,11 @@ def _v1_response(data, status=200):
 
 
 def _v1_error(code, message, status):
-    return status, {"Content-Type": "application/json"}, json.dumps({"message": message, "type": code}, ensure_ascii=False).encode("utf-8")
+    # AWS API Gateway errors use __type (double underscore), matching every
+    # other JSON-protocol AWS service. boto3 reads this to populate
+    # ``ClientError.response["Error"]["Code"]``; with plain "type" it falls
+    # back to the numeric HTTP status as the code.
+    return status, {"Content-Type": "application/json"}, json.dumps({"message": message, "__type": code}, ensure_ascii=False).encode("utf-8")
 
 
 def _rest_api_arn(api_id):
@@ -226,20 +230,25 @@ def _match_recursive(resources, parent_id, segments, params):
     return None, params
 
 
-async def _call_lambda(func_name, event):
-    """Invoke a Lambda function and return the parsed response dict."""
+async def _call_lambda(func_name, event, qualifier=None):
+    """Invoke a Lambda function and return the parsed response dict.
+
+    ``qualifier`` may be a version number or alias name; aliases resolve to
+    their target version via ``_get_func_record_for_qualifier`` so aliased
+    integration URIs (arn:...:function:<name>:<alias>) invoke correctly (#407)."""
     from ministack.core.lambda_runtime import get_or_create_worker
     from ministack.services import lambda_svc
 
-    if func_name not in lambda_svc._functions:
-        return None, f"Lambda function '{func_name}' not found"
+    func_data, func_config = lambda_svc._get_func_record_for_qualifier(func_name, qualifier)
+    if func_data is None:
+        label = f"{func_name}:{qualifier}" if qualifier else func_name
+        return None, f"Lambda function '{label}' not found"
 
-    func_data = lambda_svc._functions[func_name]
     code_zip = func_data.get("code_zip")
-
-    runtime = func_data["config"].get("Runtime", "")
+    runtime = func_config.get("Runtime", "")
     if code_zip and runtime.startswith(("python", "nodejs")):
-        worker = get_or_create_worker(func_name, func_data["config"], code_zip)
+        worker_key = f"{func_name}:{qualifier}" if qualifier else func_name
+        worker = get_or_create_worker(worker_key, func_config, code_zip)
         result = await asyncio.to_thread(worker.invoke, event, new_uuid())
         if result.get("status") == "error":
             return None, result.get("error", "Lambda invocation error")
@@ -608,13 +617,17 @@ async def _invoke_lambda_proxy_v1(integration, api_id, stage_name, stage, resour
     """Invoke Lambda with API Gateway v1 payload format 1.0."""
     uri = integration.get("uri", "")
     # Supported URI formats:
-    #   1. arn:aws:apigateway:{region}:lambda:path/2015-03-31/functions/arn:aws:lambda:{region}:{acct}:function:{name}/invocations
-    #   2. arn:aws:lambda:{region}:{acct}:function:{name}
-    #   3. plain function name: MyFunction
+    #   1. arn:aws:apigateway:{region}:lambda:path/2015-03-31/functions/arn:aws:lambda:{region}:{acct}:function:{name}[:{qualifier}]/invocations
+    #   2. arn:aws:lambda:{region}:{acct}:function:{name}[:{qualifier}]
+    #   3. plain function name: MyFunction[:{qualifier}]
+    from ministack.services import lambda_svc as _lambda_svc
     if "function:" in uri:
-        func_name = uri.split("function:")[-1].split("/")[0].split(":")[0]
+        # Strip wrapper up through 'function:' and any trailing /invocations.
+        tail = uri.split("function:")[-1].split("/")[0]
+        # tail is now "<name>" or "<name>:<qualifier>".
+        func_name, qualifier = _lambda_svc._resolve_name_and_qualifier(tail)
     else:
-        func_name = uri
+        func_name, qualifier = _lambda_svc._resolve_name_and_qualifier(uri)
 
     qs_params = {k: v[0] for k, v in query_params.items()} if query_params else None
     mv_qs_params = {k: list(v) for k, v in query_params.items()} if query_params else None
@@ -662,7 +675,7 @@ async def _invoke_lambda_proxy_v1(integration, api_id, stage_name, stage, resour
         "isBase64Encoded": False,
     }
 
-    lambda_response, err = await _call_lambda(func_name, event)
+    lambda_response, err = await _call_lambda(func_name, event, qualifier=qualifier)
     if err:
         return 502, {"Content-Type": "application/json"}, json.dumps({"message": err}).encode()
 
@@ -746,8 +759,39 @@ def _invoke_mock_v1(integration):
 
 # ---- Control plane: REST APIs ----
 
+def _resolve_custom_rest_api_id(tags: dict) -> tuple[str | None, tuple | None]:
+    """Return (api_id_or_None, error_response_or_None).
+
+    Reads the ministack-native ``ms-custom-id`` tag (issue #400). If the
+    LocalStack ``ls-custom-id`` tag is set (and ``ms-custom-id`` is not), the
+    caller gets a clear ``BadRequestException`` so the ministack-native key is
+    the only supported contract."""
+    if not isinstance(tags, dict):
+        return None, None
+    if "ls-custom-id" in tags and "ms-custom-id" not in tags:
+        return None, _v1_error(
+            "BadRequestException",
+            "ls-custom-id tag is not supported; use 'ms-custom-id' instead",
+            400,
+        )
+    custom = tags.get("ms-custom-id")
+    if not custom:
+        return None, None
+    if custom in _rest_apis:
+        return None, _v1_error(
+            "ConflictException",
+            f"REST API id '{custom}' (from ms-custom-id tag) is already in use",
+            409,
+        )
+    return str(custom), None
+
+
 def _create_rest_api(data):
-    api_id = _new_id()[:8]
+    tags = data.get("tags", {})
+    custom_id, err = _resolve_custom_rest_api_id(tags)
+    if err is not None:
+        return err
+    api_id = custom_id or _new_id()[:8]
     api = {
         "id": api_id,
         "name": data.get("name", "unnamed"),

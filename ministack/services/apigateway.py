@@ -287,11 +287,74 @@ async def handle_request(method, path, headers, body, query_params):
 
 # ---- Data plane ----
 
+def _cors_response_headers(cors_cfg: dict, origin: str) -> dict:
+    """Build CORS response headers for a non-OPTIONS dispatched response.
+
+    Per AWS (https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-cors.html):
+      - If Origin matches allow_origins (or allow_origins contains "*"), echo
+        the caller's Origin back (or "*"); else omit CORS headers entirely.
+      - allow_credentials is only emitted when true, and requires a concrete
+        origin — never paired with "*".
+      - expose_headers / max_age / etc. are attached if configured.
+    """
+    if not cors_cfg:
+        return {}
+    allowed_origins = [o.lower() for o in cors_cfg.get("allowOrigins", [])]
+    origin_lc = (origin or "").lower()
+    if allowed_origins == ["*"]:
+        allow_origin_value = "*"
+    elif origin_lc and origin_lc in allowed_origins:
+        allow_origin_value = origin  # echo exact caller-supplied casing
+    else:
+        return {}
+
+    out: dict = {"Access-Control-Allow-Origin": allow_origin_value}
+    if cors_cfg.get("allowCredentials") and allow_origin_value != "*":
+        out["Access-Control-Allow-Credentials"] = "true"
+    if cors_cfg.get("exposeHeaders"):
+        out["Access-Control-Expose-Headers"] = ",".join(cors_cfg["exposeHeaders"])
+    if "Origin" not in out.get("Vary", ""):
+        out["Vary"] = "Origin"
+    return out
+
+
+def _cors_preflight_response(cors_cfg: dict, origin: str) -> tuple:
+    """Build the full OPTIONS preflight response from corsConfiguration."""
+    if not cors_cfg:
+        # AWS behaviour: API without CORS configured returns 403 on preflight.
+        return 403, {"Content-Type": "application/json"}, json.dumps(
+            {"message": "CORS not configured"}
+        ).encode()
+
+    base = _cors_response_headers(cors_cfg, origin)
+    if not base:
+        # Origin not in allow_origins — 403, no CORS headers echoed back.
+        return 403, {"Content-Type": "application/json"}, json.dumps(
+            {"message": "CORS origin denied"}
+        ).encode()
+
+    if cors_cfg.get("allowMethods"):
+        base["Access-Control-Allow-Methods"] = ",".join(cors_cfg["allowMethods"])
+    if cors_cfg.get("allowHeaders"):
+        base["Access-Control-Allow-Headers"] = ",".join(cors_cfg["allowHeaders"])
+    if cors_cfg.get("maxAge") is not None:
+        base["Access-Control-Max-Age"] = str(cors_cfg["maxAge"])
+    base["Content-Length"] = "0"
+    return 204, base, b""
+
+
 async def handle_execute(api_id, stage, path, method, headers, body, query_params):
     """Execute an API request through a deployed API (data plane)."""
     api = _apis.get(api_id)
     if not api:
         return 404, {"Content-Type": "application/json"}, json.dumps({"message": "Not Found"}).encode()
+
+    # CORS preflight: served from the API's corsConfiguration before any route
+    # matching, because AWS responds to OPTIONS itself without invoking the
+    # integration. (#406)
+    cors_cfg = api.get("corsConfiguration") or {}
+    if method == "OPTIONS":
+        return _cors_preflight_response(cors_cfg, headers.get("origin") or headers.get("Origin", ""))
 
     api_stages = _stages.get(api_id, {})
     if stage not in api_stages and stage != "$default":
@@ -314,11 +377,19 @@ async def handle_execute(api_id, stage, path, method, headers, body, query_param
         rk_parts = route_key.split(" ", 1)
         if len(rk_parts) == 2:
             path_params = _extract_path_params(rk_parts[1], path) or None
-        return await _invoke_lambda_proxy(integration, api_id, stage, path, method, headers, body, query_params, route_key, path_params)
+        response = await _invoke_lambda_proxy(integration, api_id, stage, path, method, headers, body, query_params, route_key, path_params)
     elif integration_type == "HTTP_PROXY":
-        return await _invoke_http_proxy(integration, path, method, headers, body, query_params)
+        response = await _invoke_http_proxy(integration, path, method, headers, body, query_params)
     else:
         return 500, {"Content-Type": "application/json"}, json.dumps({"message": f"Unsupported integration type: {integration_type}"}).encode()
+
+    # Decorate dispatched response with per-API CORS headers (#406) — AWS adds
+    # these in front of the integration response for non-OPTIONS requests.
+    if cors_cfg:
+        status, resp_headers, resp_body = response
+        resp_headers.update(_cors_response_headers(cors_cfg, headers.get("origin") or headers.get("Origin", "")))
+        response = status, resp_headers, resp_body
+    return response
 
 
 def _match_route(api_id, method, path):
@@ -380,14 +451,19 @@ async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers
     from ministack.core.lambda_runtime import get_or_create_worker
     from ministack.services import lambda_svc
 
-    uri = integration.get("integrationUri", "")
-    # integrationUri is a Lambda ARN; the function name is the last segment
-    func_name = uri.split(":")[-1] if ":" in uri else uri
-    # Strip /invocations suffix emitted by some SDKs
-    func_name = func_name.replace("/invocations", "")
-
-    if func_name not in lambda_svc._functions:
-        return 502, {"Content-Type": "application/json"}, json.dumps({"message": f"Lambda function '{func_name}' not found"}).encode()
+    # integrationUri is typically a Lambda ARN; strip the trailing /invocations
+    # that the apigateway:lambda:path form appends, then parse name + qualifier.
+    # Qualified aliases (arn:...:function:<name>:<alias>) must resolve to the
+    # alias's target version, not be treated as the function name itself (#407).
+    uri = integration.get("integrationUri", "").replace("/invocations", "")
+    func_name, qualifier = lambda_svc._resolve_name_and_qualifier(uri)
+    func_data, func_config = lambda_svc._get_func_record_for_qualifier(func_name, qualifier)
+    if func_data is None:
+        return 502, {"Content-Type": "application/json"}, json.dumps({
+            "message": f"Lambda function '{func_name}'" +
+                       (f" (qualifier '{qualifier}')" if qualifier else "") +
+                       " not found"
+        }).encode()
 
     # Build API Gateway v2 proxy event (payload format 2.0)
     # AWS API Gateway v2 joins multi-value query params with commas
@@ -422,12 +498,13 @@ async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers
         "isBase64Encoded": False,
     }
 
-    func_data = lambda_svc._functions[func_name]
     code_zip = func_data.get("code_zip")
-
-    runtime = func_data["config"].get("Runtime", "")
+    runtime = func_config.get("Runtime", "")
     if code_zip and runtime.startswith(("python", "nodejs")):
-        worker = get_or_create_worker(func_name, func_data["config"], code_zip)
+        # Key the worker by name+qualifier so versioned / aliased invocations
+        # use their own cached process, matching Lambda.Invoke semantics.
+        worker_key = f"{func_name}:{qualifier}" if qualifier else func_name
+        worker = get_or_create_worker(worker_key, func_config, code_zip)
         result = await asyncio.to_thread(worker.invoke, event, new_uuid())
         if result.get("status") == "error":
             return 502, {"Content-Type": "application/json"}, json.dumps({"message": result.get("error")}).encode()
@@ -469,8 +546,42 @@ async def _invoke_http_proxy(integration, path, method, headers, body, query_par
 
 # ---- Control plane: APIs ----
 
+def _resolve_custom_api_id(tags: dict, existing: "AccountScopedDict") -> str | None:
+    """Return a caller-pinned API id from the ``ms-custom-id`` tag, or None
+    if no tag is set (issue #400).
+
+    Raises ``ValueError`` if the requested id is already in use in the caller's
+    account, so misconfigs surface immediately instead of silently falling back
+    to a random id.
+
+    ``ls-custom-id`` (LocalStack's tag) is intentionally NOT supported — callers
+    hitting it get a clear ``BadRequestException`` pointing them at
+    ``ms-custom-id`` so the ministack-native key is the only contract."""
+    if not isinstance(tags, dict):
+        return None
+    if "ls-custom-id" in tags and "ms-custom-id" not in tags:
+        raise ValueError(
+            "ls-custom-id tag is not supported; use 'ms-custom-id' instead"
+        )
+    custom = tags.get("ms-custom-id")
+    if not custom:
+        return None
+    if custom in existing:
+        raise ValueError(
+            f"API id '{custom}' (from ms-custom-id tag) is already in use"
+        )
+    return str(custom)
+
+
 def _create_api(data):
-    api_id = new_uuid()[:8]
+    tags = data.get("tags", {})
+    try:
+        api_id = _resolve_custom_api_id(tags, _apis) or new_uuid()[:8]
+    except ValueError as exc:
+        msg = str(exc)
+        if "already in use" in msg:
+            return _apigw_error("ConflictException", msg, 409)
+        return _apigw_error("BadRequestException", msg, 400)
     protocol = data.get("protocolType", "HTTP")
     # AWS defaults: HTTP → "$request.method $request.path"; WEBSOCKET → "$request.body.action".
     default_rse = "$request.body.action" if protocol == "WEBSOCKET" else "$request.method $request.path"
@@ -1012,10 +1123,11 @@ async def _invoke_ws_lambda(api_id: str, account_id: str, route: dict, stage: st
         )
         return None
 
-    uri = integration.get("integrationUri", "")
-    func_name = uri.split(":")[-1] if ":" in uri else uri
-    func_name = func_name.replace("/invocations", "")
-    if func_name not in lambda_svc._functions:
+    # Parse name + qualifier so alias ARNs resolve to their target version (#407).
+    uri = integration.get("integrationUri", "").replace("/invocations", "")
+    func_name, qualifier = lambda_svc._resolve_name_and_qualifier(uri)
+    func_data, func_config = lambda_svc._get_func_record_for_qualifier(func_name, qualifier)
+    if func_data is None:
         return None
 
     request_context = {
@@ -1061,11 +1173,11 @@ async def _invoke_ws_lambda(api_id: str, account_id: str, route: dict, stage: st
             event["queryStringParameters"] = None
             event["multiValueQueryStringParameters"] = None
 
-    func_data = lambda_svc._functions[func_name]
-    runtime = func_data["config"].get("Runtime", "")
+    runtime = func_config.get("Runtime", "")
     code_zip = func_data.get("code_zip")
     if code_zip and runtime.startswith(("python", "nodejs")):
-        worker = get_or_create_worker(func_name, func_data["config"], code_zip)
+        worker_key = f"{func_name}:{qualifier}" if qualifier else func_name
+        worker = get_or_create_worker(worker_key, func_config, code_zip)
         result = await asyncio.to_thread(worker.invoke, event, message_id)
         if result.get("status") == "error":
             return {"statusCode": 500, "body": result.get("error", "")}
@@ -1102,9 +1214,18 @@ async def handle_websocket(scope, receive, send, api_id: str, path_override: str
 
     # Stage parsing: Host-based URLs look like wss://{apiId}.execute-api.../stage;
     # path-based compat URLs (#401) use path_override with the rewritten path.
+    # If the first segment isn't a configured stage name but the API has a
+    # ``$default`` stage, route to it (issue #404).
     path = path_override if path_override is not None else scope.get("path", "")
     path_parts = path.lstrip("/").split("/", 1)
-    stage = path_parts[0] if path_parts and path_parts[0] else "$default"
+    tentative = path_parts[0] if path_parts and path_parts[0] else "$default"
+    configured_stages = _stages.get(api_id, {})
+    if tentative in configured_stages:
+        stage = tentative
+    elif "$default" in configured_stages:
+        stage = "$default"
+    else:
+        stage = tentative  # pass through; downstream will handle unknown-stage
 
     headers = {}
     for name, value in scope.get("headers", []):

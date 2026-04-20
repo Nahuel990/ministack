@@ -2106,3 +2106,55 @@ Outputs:
     # And the bucket was actually created with that name.
     buckets = [b["Name"] for b in s3_us2.list_buckets()["Buckets"]]
     assert "rgn-test-us-east-2" in buckets
+
+
+def test_cfn_cognito_user_pool_client_generate_secret(cfn, cognito_idp):
+    """CFN AWS::Cognito::UserPoolClient with GenerateSecret=true creates a
+    ClientSecret; GenerateSecret=false/absent leaves it None (#403)."""
+    template = """
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  Pool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: cfn-upc-secret-pool
+  ClientWithSecret:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref Pool
+      ClientName: with-secret
+      GenerateSecret: true
+  ClientWithoutSecret:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref Pool
+      ClientName: no-secret
+      GenerateSecret: false
+Outputs:
+  PoolId:
+    Value: !Ref Pool
+  ClientWithSecretId:
+    Value: !Ref ClientWithSecret
+  ClientWithoutSecretId:
+    Value: !Ref ClientWithoutSecret
+"""
+    stack_name = "cfn-upc-secret"
+    try:
+        cfn.delete_stack(StackName=stack_name)
+    except Exception:
+        pass
+    cfn.create_stack(StackName=stack_name, TemplateBody=template)
+    _wait_stack(cfn, stack_name)
+
+    stack = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    pool_id = outputs["PoolId"]
+
+    with_resp = cognito_idp.describe_user_pool_client(
+        UserPoolId=pool_id, ClientId=outputs["ClientWithSecretId"],
+    )
+    without_resp = cognito_idp.describe_user_pool_client(
+        UserPoolId=pool_id, ClientId=outputs["ClientWithoutSecretId"],
+    )
+    assert with_resp["UserPoolClient"].get("ClientSecret"), "GenerateSecret=true should produce a non-empty ClientSecret"
+    assert not without_resp["UserPoolClient"].get("ClientSecret"), "GenerateSecret=false should leave ClientSecret empty"

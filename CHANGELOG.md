@@ -7,6 +7,22 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.6] — 2026-04-20
+
+### Added
+- **API Gateway path-based data plane** — REST + HTTP + WebSocket APIs are now reachable without `*.execute-api.localhost` Host overrides: `http(s)://localhost:4566/_aws/execute-api/{apiId}/{stage}/{path}` (v1 + v2 HTTP + v2 WS) and the LocalStack-legacy `http://localhost:4566/restapis/{apiId}/{stage}/_user_request_/{path}` (v1). Unblocks macOS browsers (no `*.localhost` DNS resolution) and strict HTTP clients with no Host override. 
+- **Custom/predictable API Gateway IDs** — `aws_apigatewayv2_api` and `aws_apigateway_rest_api` honour an `ms-custom-id` tag on `CreateApi` / `CreateRestApi` and pin the generated `apiId` / REST API id to the tag value. Duplicates in the same account return `ConflictException` (409). The LocalStack `ls-custom-id` tag is intentionally rejected with a clear `BadRequestException` (400) pointing callers at the ministack-native key. Reported by @whittin3. Fixes #400
+- **Cognito `AWS::Cognito::UserPoolClient` CFN `GenerateSecret`** — CloudFormation-provisioned user pool clients now generate a client secret when `GenerateSecret: true`, matching the native Cognito API path. Contributed by @mgius-ae (#403)
+
+### Fixed
+- **API Gateway v2 HTTP API — `$default` stage treated first path segment as stage name** — an API configured with the `$default` stage returned `404 "Stage 'X' not found"` for any request because the dispatcher always stripped a stage prefix from the URL. Stage resolution now checks the API's configured stages: strip the first segment only if it matches a real stage, otherwise route to `$default` with the full path (matching AWS). Same fix applies to the WebSocket scope handler. Reported by @whittin3. Fixes #404
+- **API Gateway v2 HTTP API — `corsConfiguration` ignored** — every OPTIONS preflight returned a hard-coded wildcard `Access-Control-Allow-Origin: *`, breaking browsers using `credentials: "include"`, and non-OPTIONS responses had the wildcard spliced in over whatever the Lambda set. API Gateway now serves preflights from the per-API `corsConfiguration` (403 if origin isn't in `allowOrigins`, `Access-Control-Allow-Credentials: true` only when configured and paired with a concrete origin), and dispatched responses carry per-config CORS headers instead of the wildcard. Reported by @whittin3. Fixes #406
+- **Lambda alias qualifier parsed as function name** — integrations (v1 REST, v2 HTTP, v2 WebSocket) and event source mappings wired to a qualified ARN (`arn:...:function:<name>:<alias>`) invoked a function whose name was the qualifier (`live`) and returned `502 "Lambda function 'live' not found"`. All three dispatchers now use `_resolve_name_and_qualifier` + `_get_func_record_for_qualifier` to resolve aliases to their target version before invocation; worker pool keyed by `name:qualifier` so aliased vs unqualified calls don't share process state. ESM pollers (SQS, Kinesis, DDB Streams) store the qualifier on the mapping and use it on every batch. Reported by @whittin3. Fixes #407
+- **API Gateway v1 error responses used `type` instead of `__type`** — boto3 fell back to the numeric HTTP status as the error code (`ClientError.response["Error"]["Code"] == "409"` instead of `"ConflictException"`). Every JSON-protocol AWS service uses `__type`; v1 now matches.
+- **SQS singular `DeleteMessage` / `ChangeMessageVisibility` silently succeeded on invalid ReceiptHandle** — real AWS returns `ReceiptHandleIsInvalid` (400); batch variants already did. Singular operations now raise the same error. Contributed by @nigel-campbell (#405)
+
+---
+
 ## [1.3.5] — 2026-04-20
 
 ### Added

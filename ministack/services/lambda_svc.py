@@ -3581,7 +3581,9 @@ def _esm_response(esm: dict) -> dict:
 
 def _create_esm(data: dict):
     esm_id = new_uuid()
-    func_name = _resolve_name(data.get("FunctionName", ""))
+    # Preserve the alias/version qualifier if the caller supplied one so
+    # poller invocations route to the correct target (#407).
+    func_name, qualifier = _resolve_name_and_qualifier(data.get("FunctionName", ""))
     event_source_arn = data.get("EventSourceArn", "")
 
     enabled = data.get("Enabled", True)
@@ -3590,8 +3592,9 @@ def _create_esm(data: dict):
     esm = {
         "UUID": esm_id,
         "EventSourceArn": event_source_arn,
-        "FunctionArn": _func_arn(func_name),
+        "FunctionArn": _func_arn(func_name) + (f":{qualifier}" if qualifier else ""),
         "FunctionName": func_name,
+        "Qualifier": qualifier,
         "State": "Enabled" if enabled else "Disabled",
         "StateTransitionReason": "USER_INITIATED",
         "BatchSize": data.get("BatchSize", 10),
@@ -3739,7 +3742,9 @@ def _poll_sqs():
             continue
 
         func_name = esm["FunctionName"]
-        if func_name not in _functions:
+        qualifier = esm.get("Qualifier")
+        func_rec, _cfg = _get_func_record_for_qualifier(func_name, qualifier)
+        if func_rec is None:
             continue
 
         queue_name = source_arn.split(":")[-1]
@@ -3786,7 +3791,7 @@ def _poll_sqs():
             continue
 
         event = {"Records": records}
-        result = _execute_function(_functions[func_name], event)
+        result = _execute_function(func_rec, event)
 
         if result.get("error"):
             err_body = result.get("body") or {}
@@ -3848,7 +3853,9 @@ def _poll_kinesis():
             continue
 
         func_name = esm["FunctionName"]
-        if func_name not in _functions:
+        qualifier = esm.get("Qualifier")
+        func_rec, _cfg = _get_func_record_for_qualifier(func_name, qualifier)
+        if func_rec is None:
             continue
 
         stream_name = source_arn.split("/")[-1]
@@ -3920,7 +3927,7 @@ def _poll_kinesis():
                 continue
 
             event = {"Records": records}
-            result = _execute_function(_functions[func_name], event)
+            result = _execute_function(func_rec, event)
 
             if result.get("error"):
                 err_body = result.get("body") or {}
@@ -3959,7 +3966,9 @@ def _poll_dynamodb_streams():
             continue
 
         func_name = esm["FunctionName"]
-        if func_name not in _functions:
+        qualifier = esm.get("Qualifier")
+        func_rec, _cfg = _get_func_record_for_qualifier(func_name, qualifier)
+        if func_rec is None:
             continue
 
         table_arn = source_arn.split("/stream/")[0]
@@ -3991,7 +4000,7 @@ def _poll_dynamodb_streams():
             continue
 
         event = {"Records": batch}
-        result = _execute_function(_functions[func_name], event)
+        result = _execute_function(func_rec, event)
 
         if result.get("error"):
             err_body = result.get("body") or {}

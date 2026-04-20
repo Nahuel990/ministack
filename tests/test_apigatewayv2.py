@@ -1442,3 +1442,220 @@ def test_apigwv1_path_based_restapi_legacy_user_request(apigw_v1, lam):
     url = f"http://localhost:{_EXECUTE_PORT}/restapis/{api_id}/prod/_user_request_/hello"
     r = urllib.request.urlopen(url, timeout=5)
     assert r.status == 200
+
+
+# ========== Custom/predictable API IDs via tags (issue #400) ==========
+
+def test_apigwv2_custom_id_via_ms_custom_id_tag(apigw):
+    """ms-custom-id tag pins the apiId to the caller-supplied value."""
+    resp = apigw.create_api(
+        Name="ms-custom-id-test", ProtocolType="HTTP",
+        Tags={"ms-custom-id": "mypinnedid"},
+    )
+    assert resp["ApiId"] == "mypinnedid"
+    assert "mypinnedid.execute-api" in resp["ApiEndpoint"]
+
+
+def test_apigwv2_custom_id_rejects_ls_custom_id(apigw):
+    """ls-custom-id (LocalStack's tag) is not supported. Callers get a clear
+    BadRequestException pointing them at the ministack-native 'ms-custom-id'."""
+    with pytest.raises(ClientError) as exc_info:
+        apigw.create_api(
+            Name="ls-reject-test", ProtocolType="HTTP",
+            Tags={"ls-custom-id": "should-fail"},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "BadRequestException"
+    assert "ms-custom-id" in exc_info.value.response["Error"]["Message"]
+
+
+def test_apigwv2_custom_id_duplicate_rejected(apigw):
+    """Second CreateApi with the same ms-custom-id in the same account is rejected."""
+    apigw.create_api(
+        Name="dup-1", ProtocolType="HTTP",
+        Tags={"ms-custom-id": "duplicated"},
+    )
+    with pytest.raises(ClientError) as exc_info:
+        apigw.create_api(
+            Name="dup-2", ProtocolType="HTTP",
+            Tags={"ms-custom-id": "duplicated"},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "ConflictException"
+    assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
+
+
+def test_apigwv2_custom_id_absent_uses_random(apigw):
+    """CreateApi without the tag continues to produce a random apiId."""
+    resp = apigw.create_api(Name="random-id", ProtocolType="HTTP")
+    assert len(resp["ApiId"]) == 8
+
+
+# ========== Lambda alias qualifier in integrationUri (issue #407) ==========
+
+def test_apigwv2_integration_uri_with_alias_qualifier_resolves_to_alias_target(apigw, lam):
+    """HTTP integration pointing at arn:...:function:<name>:<alias> must resolve
+    the alias to its target version, not try to invoke a function literally
+    named after the alias (#407)."""
+    import urllib.request
+
+    # 1) Publish a Lambda that returns a distinctive string.
+    code = """
+def handler(event, context):
+    return {'statusCode': 200, 'body': 'hello-from-alias'}
+"""
+    fn_name = f"alias-target-fn-{uuid.uuid4().hex[:6]}"
+    try:
+        lam.delete_function(FunctionName=fn_name)
+    except Exception:
+        pass
+    lam.create_function(
+        FunctionName=fn_name, Runtime="python3.12", Role=_LAMBDA_ROLE,
+        Handler="index.handler", Code={"ZipFile": _make_zip(code)}, Publish=True,
+    )
+    # Publishing on create yields version 1; create an alias pointing at it.
+    lam.create_alias(FunctionName=fn_name, Name="live", FunctionVersion="1")
+
+    # 2) Wire an HTTP API integration URI to the qualified ARN.
+    api_id = apigw.create_api(Name="alias-integ", ProtocolType="HTTP")["ApiId"]
+    qualified_arn = f"arn:aws:lambda:us-east-1:000000000000:function:{fn_name}:live"
+    integ = apigw.create_integration(
+        ApiId=api_id, IntegrationType="AWS_PROXY",
+        IntegrationUri=qualified_arn, IntegrationMethod="POST",
+    )
+    apigw.create_route(
+        ApiId=api_id, RouteKey="GET /hello",
+        Target=f"integrations/{integ['IntegrationId']}",
+    )
+    apigw.create_stage(ApiId=api_id, StageName="live")
+
+    # 3) Hit the route — before the fix this returned 502 "'live' not found".
+    url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/live/hello"
+    req = urllib.request.Request(url)
+    req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+    r = urllib.request.urlopen(req, timeout=5)
+    assert r.status == 200
+    assert r.read() == b"hello-from-alias"
+
+
+# ========== CORS configuration respected (issue #406) ==========
+
+def _create_cors_api(apigw, *, name: str, cors: dict | None):
+    kwargs = {"Name": name, "ProtocolType": "HTTP"}
+    if cors is not None:
+        kwargs["CorsConfiguration"] = cors
+    api_id = apigw.create_api(**kwargs)["ApiId"]
+    # Default stage so execute_path parsing works at the root.
+    apigw.create_stage(ApiId=api_id, StageName="$default", AutoDeploy=True)
+    return api_id
+
+
+def test_apigwv2_cors_preflight_echoes_configured_origin(apigw):
+    """OPTIONS preflight returns allow_origin from cors_configuration, not wildcard (#406)."""
+    import urllib.request
+    api_id = _create_cors_api(apigw, name="cors-origin", cors={
+        "AllowOrigins": ["http://localhost:3000"],
+        "AllowMethods": ["GET", "POST", "OPTIONS"],
+        "AllowHeaders": ["content-type", "cookie"],
+        "AllowCredentials": True,
+        "MaxAge": 600,
+    })
+    req = urllib.request.Request(
+        f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/",
+        method="OPTIONS",
+    )
+    req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+    req.add_header("Origin", "http://localhost:3000")
+    req.add_header("Access-Control-Request-Method", "GET")
+    r = urllib.request.urlopen(req, timeout=5)
+    assert r.status == 204
+    assert r.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+    assert r.headers["Access-Control-Allow-Credentials"] == "true"
+    assert r.headers["Access-Control-Max-Age"] == "600"
+    # methods/headers should reflect config
+    assert "GET" in r.headers["Access-Control-Allow-Methods"]
+    assert "cookie" in r.headers["Access-Control-Allow-Headers"].lower()
+
+
+def test_apigwv2_cors_preflight_denies_non_allowlisted_origin(apigw):
+    """OPTIONS from an origin not in allow_origins returns 403 with no CORS headers."""
+    import urllib.request, urllib.error
+    api_id = _create_cors_api(apigw, name="cors-deny", cors={
+        "AllowOrigins": ["http://localhost:3000"],
+        "AllowMethods": ["GET"],
+    })
+    req = urllib.request.Request(
+        f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/",
+        method="OPTIONS",
+    )
+    req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+    req.add_header("Origin", "http://evil.example.com")
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc_info.value.code == 403
+
+
+def test_apigwv2_cors_preflight_403_when_no_configuration(apigw):
+    """API without CorsConfiguration returns 403 on OPTIONS (AWS default)."""
+    import urllib.request, urllib.error
+    api_id = _create_cors_api(apigw, name="no-cors", cors=None)
+    req = urllib.request.Request(
+        f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/",
+        method="OPTIONS",
+    )
+    req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+    req.add_header("Origin", "http://localhost:3000")
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc_info.value.code == 403
+
+
+# ========== $default stage routing (issue #404) ==========
+
+def test_apigwv2_default_stage_serves_from_root(apigw, lam):
+    """v2 HTTP API with $default stage must route /api/hello to GET /api/hello —
+    the first segment is NOT the stage name (#404)."""
+    import urllib.request
+
+    fn_name = f"default-stage-fn-{uuid.uuid4().hex[:6]}"
+    arn = _make_fn(lam, fn_name, _ECHO_CODE)
+
+    api_id = apigw.create_api(Name="default-stage-test", ProtocolType="HTTP")["ApiId"]
+    integ = apigw.create_integration(
+        ApiId=api_id, IntegrationType="AWS_PROXY",
+        IntegrationUri=arn, IntegrationMethod="POST",
+    )
+    apigw.create_route(
+        ApiId=api_id, RouteKey="GET /api/hello",
+        Target=f"integrations/{integ['IntegrationId']}",
+    )
+    apigw.create_stage(ApiId=api_id, StageName="$default", AutoDeploy=True)
+
+    url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/api/hello"
+    req = urllib.request.Request(url)
+    req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+    r = urllib.request.urlopen(req, timeout=5)
+    assert r.status == 200
+
+
+def test_apigwv2_named_stage_still_requires_prefix(apigw, lam):
+    """APIs with a named stage (not $default) still require the stage in the path."""
+    import urllib.request
+
+    fn_name = f"named-stage-fn-{uuid.uuid4().hex[:6]}"
+    arn = _make_fn(lam, fn_name, _ECHO_CODE)
+
+    api_id = apigw.create_api(Name="named-stage-test", ProtocolType="HTTP")["ApiId"]
+    integ = apigw.create_integration(
+        ApiId=api_id, IntegrationType="AWS_PROXY",
+        IntegrationUri=arn, IntegrationMethod="POST",
+    )
+    apigw.create_route(
+        ApiId=api_id, RouteKey="GET /api/hello",
+        Target=f"integrations/{integ['IntegrationId']}",
+    )
+    apigw.create_stage(ApiId=api_id, StageName="live", AutoDeploy=True)
+
+    url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/live/api/hello"
+    req = urllib.request.Request(url)
+    req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+    r = urllib.request.urlopen(req, timeout=5)
+    assert r.status == 200

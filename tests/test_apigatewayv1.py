@@ -1025,3 +1025,39 @@ def test_apigwv1_created_date_is_unix_timestamp(apigw_v1):
         f"createdDate should be datetime (parsed from Unix int), got {type(created)}"
     )
     apigw_v1.delete_rest_api(restApiId=resp["id"])
+
+
+# ========== Custom/predictable REST API IDs via tags (issue #400) ==========
+
+def test_apigwv1_custom_id_via_ms_custom_id_tag(apigw_v1):
+    resp = apigw_v1.create_rest_api(
+        name="ms-custom-v1", tags={"ms-custom-id": "v1pinned"},
+    )
+    assert resp["id"] == "v1pinned"
+
+
+def test_apigwv1_custom_id_rejects_ls_custom_id(apigw_v1):
+    """ls-custom-id is not supported; caller must use ms-custom-id."""
+    with pytest.raises(ClientError) as exc_info:
+        apigw_v1.create_rest_api(
+            name="ls-reject-v1", tags={"ls-custom-id": "should-fail"},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "BadRequestException"
+    assert "ms-custom-id" in exc_info.value.response["Error"]["Message"]
+
+
+def test_apigwv1_custom_id_duplicate_rejected(apigw_v1):
+    apigw_v1.create_rest_api(
+        name="v1-dup-1", tags={"ms-custom-id": "v1dup"},
+    )
+    with pytest.raises(ClientError) as exc_info:
+        apigw_v1.create_rest_api(
+            name="v1-dup-2", tags={"ms-custom-id": "v1dup"},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "ConflictException"
+
+
+def test_apigwv1_custom_id_absent_uses_random(apigw_v1):
+    resp = apigw_v1.create_rest_api(name="v1-random")
+    # _new_id() returns up to 10 hex chars; trimmed to [:8] in _create_rest_api.
+    assert 8 <= len(resp["id"]) <= 10

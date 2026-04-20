@@ -433,8 +433,13 @@ async def _handle_admin_reset(path: str, method: str, query_params: dict):
 
 async def _handle_pre_body_request(method: str, path: str, headers: dict, query_params: dict, request_id: str):
     """Handle fast-path routes that do not require request body parsing."""
+    # OPTIONS on an execute-api host / path MUST flow through apigateway.handle_execute
+    # so the API's own corsConfiguration is applied (#406). Skip the generic wildcard
+    # preflight in that case.
+    host = headers.get("host", "")
+    is_execute_api = _parse_execute_api_url(host, path) is not None
     for response in (
-        _handle_options_request(method, request_id),
+        None if is_execute_api else _handle_options_request(method, request_id),
         _handle_health_request(path, request_id),
         _handle_ready_request(path, request_id),
         _handle_lambda_download_request(path, method),
@@ -634,20 +639,54 @@ def _parse_execute_api_url(host: str, path: str) -> tuple[str, str, str] | None:
     return None
 
 
+def _resolve_stage_and_path(api_id: str, tentative_stage: str, execute_path: str) -> tuple[str, str]:
+    """Pick (stage, execute_path) based on the API's configured stages.
+
+    AWS v2 HTTP / WebSocket APIs configured with the ``$default`` stage serve
+    from the root of the execute-api URL — no stage segment in the path. v1
+    REST APIs always carry the stage as the first path segment. We can't tell
+    from the URL alone which pattern applies, so we check the API's configured
+    stages and route accordingly (issue #404).
+
+    Rules:
+      - If the tentative first segment IS a configured stage name, strip it.
+      - Else if the API has a ``$default`` stage, use that and treat the
+        whole original path (including ``tentative_stage``) as ``execute_path``.
+      - Else fall through (``handle_execute`` will return "Stage not found").
+    """
+    apigw_v1 = _get_module("apigateway_v1")
+    if api_id in apigw_v1._rest_apis:
+        stages_map = apigw_v1._stages_v1.get(api_id, {})
+    else:
+        stages_map = _get_module("apigateway")._stages.get(api_id, {})
+
+    if tentative_stage in stages_map:
+        return tentative_stage, execute_path
+    if "$default" in stages_map:
+        if execute_path == "/":
+            resolved_path = "/" + tentative_stage if tentative_stage else "/"
+        else:
+            resolved_path = "/" + tentative_stage + execute_path
+        return "$default", resolved_path
+    # No match — let handle_execute report the stage miss verbatim.
+    return tentative_stage, execute_path
+
+
 async def _handle_execute_api_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
     """Handle API Gateway execute-api data plane requests (Host-based + path-based)."""
     parsed = _parse_execute_api_url(host, path)
     if parsed is None:
         return None
-    api_id, stage, execute_path = parsed
+    api_id, tentative_stage, execute_path = parsed
     try:
-        # WebSocket @connections management API — /{stage}/@connections/{id} in
-        # the Host-based form resolves to execute_path == "/@connections/{id}".
+        # WebSocket @connections management API — /{stage}/@connections/{id}.
+        # The @connections prefix is authoritative; skip $default resolution.
         if execute_path.startswith("/@connections/"):
             connection_id = execute_path[len("/@connections/"):].split("/", 1)[0]
             return await _get_module("apigateway").handle_connections_api(
-                method, api_id, stage, connection_id, body, headers
+                method, api_id, tentative_stage, connection_id, body, headers
             )
+        stage, execute_path = _resolve_stage_and_path(api_id, tentative_stage, execute_path)
         if api_id in _get_module("apigateway_v1")._rest_apis:
             return await _get_module("apigateway_v1").handle_execute(
                 api_id, stage, method, execute_path, headers, body, query_params
@@ -722,16 +761,21 @@ async def _handle_s3_vhost_request(host: str, path: str, method: str, headers: d
         )
 
 
-def _with_data_plane_headers(response, request_id: str, include_s3_id: bool = False):
-    """Attach common data-plane CORS and request ID headers to a response tuple."""
+def _with_data_plane_headers(response, request_id: str, include_s3_id: bool = False, wildcard_cors: bool = True):
+    """Attach common data-plane request-id headers to a response tuple.
+
+    ``wildcard_cors`` controls whether a wildcard ``Access-Control-Allow-Origin: *``
+    is added. API Gateway owns its own CORS (per-API ``corsConfiguration``,
+    issue #406) so the caller passes ``wildcard_cors=False`` there to avoid
+    clobbering the per-config value. Respects any ``Access-Control-Allow-Origin``
+    already set by the upstream handler."""
     if response is None:
         return None
     status, headers, body = response
-    headers.update({
-        "Access-Control-Allow-Origin": "*",
-        "x-amzn-requestid": request_id,
-        "x-amz-request-id": request_id,
-    })
+    if wildcard_cors and "Access-Control-Allow-Origin" not in headers:
+        headers["Access-Control-Allow-Origin"] = "*"
+    headers["x-amzn-requestid"] = request_id
+    headers["x-amz-request-id"] = request_id
     if include_s3_id:
         headers["x-amz-id-2"] = base64.b64encode(os.urandom(48)).decode()
     return status, headers, body
@@ -755,7 +799,7 @@ async def _handle_special_data_plane_request(
 
     host = headers.get("host", "")
     if response := await _handle_execute_api_request(host, path, method, headers, body, query_params):
-        return _with_data_plane_headers(response, request_id)
+        return _with_data_plane_headers(response, request_id, wildcard_cors=False)
     if response := await _handle_s3_vhost_request(host, path, method, headers, body, query_params):
         return _with_data_plane_headers(response, request_id, include_s3_id=True)
     if response := await _handle_alb_request(host, path, method, headers, body, query_params):
