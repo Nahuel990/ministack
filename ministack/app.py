@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -19,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote
 
 _MINISTACK_HOST = os.environ.get("MINISTACK_HOST", "localhost")
 _MINISTACK_PORT = os.environ.get("GATEWAY_PORT", "4566")
@@ -42,11 +43,24 @@ _S3_VHOST_RE = re.compile(
     r"^([^.]+)(?:\.s3)?\." + re.escape(_MINISTACK_HOST) + r"(?::\d+)?$"
 )
 _S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache|s3-control)\.")
+_HEALTH_PATHS = ("/_ministack/health", "/_localstack/health", "/health")
+_BODY_METHODS = ("POST", "PUT", "PATCH")
+_COGNITO_USERINFO_PATHS = ("/oauth2/userInfo", "/oauth2/userinfo")
+_RDS_DATA_PATHS = ("/Execute", "/BeginTransaction", "/CommitTransaction", "/RollbackTransaction", "/BatchExecute")
+_S3_CONTROL_PREFIX = "/v20180820/"
+_SES_V2_PREFIX = "/v2/email"
+_ALB_PATH_PREFIX = "/_alb/"
+_NON_S3_VHOST_NAMES = frozenset({
+    "s3", "s3-control", "sqs", "sns", "dynamodb", "lambda", "iam", "sts",
+    "secretsmanager", "logs", "ssm", "events", "kinesis", "monitoring", "ses",
+    "states", "ecs", "rds", "rds-data", "elasticache", "glue", "athena",
+    "apigateway", "cloudformation", "autoscaling", "codebuild", "transfer",
+})
 
 from ministack.core.hypercorn_compat import install as _install_hypercorn_compat
 from ministack.core.persistence import PERSIST_STATE, load_state, save_all
 from ministack.core.responses import set_request_account_id
-from ministack.core.router import detect_service, extract_access_key_id, extract_account_id, extract_region
+from ministack.core.router import detect_service, extract_access_key_id, extract_region
 
 # Must run before hypercorn emits its first Expect: 100-continue reply.
 # See ministack/core/hypercorn_compat.py for the rationale (issue #389).
@@ -237,439 +251,60 @@ def _get_reset_lock() -> asyncio.Lock:
     return _reset_lock
 
 
-async def app(scope, receive, send):
-    """ASGI application entry point."""
-    if scope["type"] == "lifespan":
-        await _handle_lifespan(scope, receive, send)
-        return
+# ---------------------------------------------------------------------------
+# Request I/O helpers
+# ---------------------------------------------------------------------------
 
-    if scope["type"] != "http":
-        return
+def _decode_aws_chunked_body(body: bytes, headers: dict) -> bytes:
+    """Decode AWS chunked request bodies and normalize content-encoding headers."""
+    sha256_header = headers.get("x-amz-content-sha256", "")
+    content_encoding = headers.get("content-encoding", "")
+    if not (
+        sha256_header.startswith("STREAMING-")
+        or "aws-chunked" in content_encoding
+        or headers.get("x-amz-decoded-content-length")
+    ):
+        return body
 
-    method = scope["method"]
-    path = scope["path"]
-    query_string = scope.get("query_string", b"").decode("utf-8")
-    query_params = parse_qs(query_string, keep_blank_values=True)
-
-    headers = {}
-    for name, value in scope.get("headers", []):
+    decoded = b""
+    remaining = body
+    while remaining:
+        crlf = remaining.find(b"\r\n")
+        if crlf == -1:
+            break
+        chunk_header = remaining[:crlf].decode("ascii", errors="replace")
+        size_hex = chunk_header.split(";")[0].strip()
         try:
-            headers[name.decode("latin-1").lower()] = value.decode("utf-8")
-        except UnicodeDecodeError:
-            headers[name.decode("latin-1").lower()] = value.decode("latin-1")
+            chunk_size = int(size_hex, 16)
+        except ValueError:
+            break
+        if chunk_size == 0:
+            break
+        data_start = crlf + 2
+        decoded += remaining[data_start:data_start + chunk_size]
+        remaining = remaining[data_start + chunk_size + 2:]  # skip trailing \r\n
 
+    if decoded or not body:
+        body = decoded
+    if "aws-chunked" in content_encoding:
+        encodings = [p.strip() for p in content_encoding.split(",") if p.strip() != "aws-chunked"]
+        if encodings:
+            headers["content-encoding"] = ", ".join(encodings)
+        else:
+            headers.pop("content-encoding", None)
+    return body
+
+
+async def _read_request_body(receive, method: str, headers: dict) -> bytes:
+    """Read and decode the request body only for methods or headers that can carry one."""
     body = b""
-    has_body = headers.get("content-length") or headers.get("transfer-encoding")
-    if has_body or method in ("POST", "PUT", "PATCH"):
+    if headers.get("content-length") or headers.get("transfer-encoding") or method in _BODY_METHODS:
         while True:
             message = await receive()
             body += message.get("body", b"")
             if not message.get("more_body", False):
                 break
-
-    # AWS SDK v2 sends PutObject with Transfer-Encoding: chunked and
-    # x-amz-content-sha256: STREAMING-AWS4-HMAC-SHA256-PAYLOAD[-TRAILER].
-    # Decode the AWS chunked format: each chunk is "<hex>;chunk-signature=...\r\n<data>\r\n"
-    # terminated by "0;chunk-signature=...\r\n".
-    sha256_header = headers.get("x-amz-content-sha256", "")
-    content_encoding = headers.get("content-encoding", "")
-    if sha256_header.startswith("STREAMING-") or "aws-chunked" in content_encoding or headers.get("x-amz-decoded-content-length"):
-        decoded = b""
-        remaining = body
-        while remaining:
-            crlf = remaining.find(b"\r\n")
-            if crlf == -1:
-                break
-            chunk_header = remaining[:crlf].decode("ascii", errors="replace")
-            size_hex = chunk_header.split(";")[0].strip()
-            try:
-                chunk_size = int(size_hex, 16)
-            except ValueError:
-                break
-            if chunk_size == 0:
-                break
-            data_start = crlf + 2
-            decoded += remaining[data_start:data_start + chunk_size]
-            remaining = remaining[data_start + chunk_size + 2:]  # skip trailing \r\n
-        if decoded or not body:
-            body = decoded
-        if "aws-chunked" in content_encoding:
-            ce = [p.strip() for p in content_encoding.split(",") if p.strip() != "aws-chunked"]
-            if ce:
-                headers["content-encoding"] = ", ".join(ce)
-            else:
-                headers.pop("content-encoding", None)
-
-    request_id = str(uuid.uuid4())
-
-    # If a /_ministack/reset is in flight, wait for it to finish before
-    # serving this request. The lock is uncontended in steady state
-    # (acquire/release is near-free); during a reset, new requests block
-    # until state-wipe completes so no test can observe a half-reset server.
-    if path != "/_ministack/reset":
-        async with _get_reset_lock():
-            pass
-
-    # Set per-request account ID from credentials (multi-tenancy support).
-    # If the access key is a 12-digit number, it becomes the account ID.
-    _access_key = extract_access_key_id(headers)
-    if _access_key:
-        set_request_account_id(_access_key)
-
-    # Lambda layer content download: /_ministack/lambda-layers/{name}/{ver}/content
-    if path.startswith("/_ministack/lambda-layers/") and method == "GET":
-        lp = path.split("/")  # ['', '_ministack', 'lambda-layers', name, ver, 'content']
-        if len(lp) >= 6 and lp[5] == "content" and lp[4].isdigit():
-            status, resp_headers, resp_body = _get_module("lambda_svc").serve_layer_content(lp[3], int(lp[4]))
-            await _send_response(send, status, resp_headers, resp_body)
-            return
-
-    # Lambda function code download (pre-signed-style URL target for
-    # GetFunction's Code.Location): /_ministack/lambda-code/{fn}
-    if path.startswith("/_ministack/lambda-code/") and method == "GET":
-        lp = path.split("/")  # ['', '_ministack', 'lambda-code', fn]
-        if len(lp) >= 4:
-            status, resp_headers, resp_body = _get_module("lambda_svc").serve_function_code(lp[3])
-            await _send_response(send, status, resp_headers, resp_body)
-            return
-
-    # Cognito JWKS / OpenID Configuration well-known endpoints
-    # Path: /{poolId}/.well-known/jwks.json  or  /{poolId}/.well-known/openid-configuration
-    if "/.well-known/" in path and method == "GET":
-        if path.endswith("/.well-known/jwks.json"):
-            _pool_id = path.rsplit("/.well-known/jwks.json", 1)[0].lstrip("/")
-            if _pool_id:
-                _region = extract_region(headers) or "us-east-1"
-                status, resp_headers, resp_body = _get_module("cognito").well_known_jwks(_pool_id)
-                await _send_response(send, status, resp_headers, resp_body)
-                return
-        elif path.endswith("/.well-known/openid-configuration"):
-            _pool_id = path.rsplit("/.well-known/openid-configuration", 1)[0].lstrip("/")
-            if _pool_id:
-                _region = extract_region(headers) or "us-east-1"
-                status, resp_headers, resp_body = _get_module("cognito").well_known_openid_configuration(_pool_id, _region)
-                await _send_response(send, status, resp_headers, resp_body)
-                return
-
-    # Cognito OAuth2 / Managed Login UI endpoints
-    if path == "/oauth2/authorize" and method == "GET":
-        status, resp_headers, resp_body = _get_module("cognito").handle_oauth2_authorize(method, path, headers, query_params)
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-    if path in ("/oauth2/login", "/login") and method == "POST":
-        status, resp_headers, resp_body = _get_module("cognito").handle_login_submit(method, path, headers, body, query_params)
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-    if path == "/oauth2/token" and method == "POST":
-        status, resp_headers, resp_body = _get_module("cognito").handle_oauth2_token(method, path, headers, body, query_params)
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-    if path in ("/oauth2/userInfo", "/oauth2/userinfo") and method in ("GET", "POST"):
-        status, resp_headers, resp_body = _get_module("cognito").handle_oauth2_userinfo(method, path, headers, body, query_params)
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-    if path == "/logout" and method == "GET":
-        status, resp_headers, resp_body = _get_module("cognito").handle_logout(method, path, headers, query_params)
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-
-    # Admin endpoints — no wildcard CORS headers (return early, before CORS block)
-    if path == "/_ministack/reset" and method == "POST":
-        # Hold the reset lock exclusively so in-flight requests drain first
-        # and no new requests can interleave with service state wipes.
-        async with _get_reset_lock():
-            await asyncio.to_thread(_reset_all_state)
-        run_init = query_params.get("init", [""])[0] == "1"
-        if run_init:
-            _run_init_scripts()
-        await _send_response(send, 200, {"Content-Type": "application/json"},
-                             json.dumps({"reset": "ok"}).encode())
-        if run_init:
-            _ready_scripts_state.update({"status": "pending", "total": 0, "completed": 0, "failed": 0})
-            asyncio.create_task(_run_ready_scripts())
-        return
-
-    if path == "/_ministack/config" and method == "POST":
-        _ALLOWED_CONFIG_KEYS = {
-            "athena.ATHENA_ENGINE", "athena.ATHENA_DATA_DIR",
-            "stepfunctions._sfn_mock_config",
-            "stepfunctions._SFN_WAIT_SCALE",
-            "lambda_svc.LAMBDA_EXECUTOR",
-        }
-        try:
-            config = json.loads(body) if body else {}
-        except json.JSONDecodeError:
-            config = {}
-        applied = {}
-        for key, value in config.items():
-            if key not in _ALLOWED_CONFIG_KEYS:
-                logger.warning("/_ministack/config: rejected key %s (not in whitelist)", key)
-                continue
-            if "." in key:
-                mod_name, var_name = key.rsplit(".", 1)
-                try:
-                    mod = __import__(f"ministack.services.{mod_name}", fromlist=[var_name])
-                    # Validate SFN_WAIT_SCALE before applying
-                    if key == "stepfunctions._SFN_WAIT_SCALE":
-                        try:
-                            fv = float(value)
-                        except (ValueError, TypeError):
-                            logger.warning("/_ministack/config: invalid SFN_WAIT_SCALE=%r", value)
-                            continue
-                        if not __import__("math").isfinite(fv) or fv < 0:
-                            logger.warning("/_ministack/config: invalid SFN_WAIT_SCALE=%r", value)
-                            continue
-                        value = fv
-                    setattr(mod, var_name, value)
-                    applied[key] = value
-                except (ImportError, AttributeError) as e:
-                    logger.warning("/_ministack/config: failed to set %s: %s", key, e)
-        await _send_response(send, 200, {"Content-Type": "application/json"},
-                             json.dumps({"applied": applied}).encode())
-        return
-
-    # S3 Control API — /v20180820/... with x-amz-account-id header
-    if path.startswith("/v20180820/"):
-        if path.startswith("/v20180820/tags/"):
-            from urllib.parse import unquote
-            raw_arn = path[len("/v20180820/tags/"):]
-            arn = unquote(raw_arn)
-            # ARN format: arn:aws:s3:::bucket-name  or  arn:aws:s3:::bucket-name/object-key
-            bucket_name = arn.split(":::")[-1].split("/")[0] if ":::" in arn else arn.split("/")[0]
-
-            if method == "GET":
-                # ListTagsForResource — return real tags from _get_module("s3")._bucket_tags
-                tags = _get_module("s3")._bucket_tags.get(bucket_name, {})
-                tag_members = "".join(
-                    f"<member><Key>{k}</Key><Value>{v}</Value></member>"
-                    for k, v in tags.items()
-                )
-                xml_body = (
-                    '<?xml version="1.0" encoding="UTF-8"?>'
-                    '<ListTagsForResourceResult xmlns="https://awss3control.amazonaws.com/doc/2018-08-20/">'
-                    f"<Tags>{tag_members}</Tags>"
-                    "</ListTagsForResourceResult>"
-                ).encode()
-                await _send_response(send, 200, {
-                    "Content-Type": "application/xml",
-                    "x-amzn-requestid": request_id,
-                }, xml_body)
-            elif method == "PUT":
-                # TagResource — merge tags into _get_module("s3")._bucket_tags
-                try:
-                    payload = json.loads(body) if body else {}
-                    new_tags = {t["Key"]: t["Value"] for t in payload.get("Tags", [])}
-                    existing = _get_module("s3")._bucket_tags.get(bucket_name, {})
-                    existing.update(new_tags)
-                    _get_module("s3")._bucket_tags[bucket_name] = existing
-                except Exception as e:
-                    logger.warning("S3 Control TagResource parse error: %s", e)
-                await _send_response(send, 204, {
-                    "x-amzn-requestid": request_id,
-                }, b"")
-            elif method == "DELETE":
-                # UntagResource — remove specified keys
-                keys_to_remove = query_params.get("tagKeys", [])
-                if isinstance(keys_to_remove, str):
-                    keys_to_remove = [keys_to_remove]
-                tags = _get_module("s3")._bucket_tags.get(bucket_name, {})
-                for k in keys_to_remove:
-                    tags.pop(k, None)
-                _get_module("s3")._bucket_tags[bucket_name] = tags
-                await _send_response(send, 204, {
-                    "x-amzn-requestid": request_id,
-                }, b"")
-            else:
-                await _send_response(send, 200, {
-                    "Content-Type": "application/json",
-                    "x-amzn-requestid": request_id,
-                }, b"{}")
-        else:
-            # All other S3 Control operations — accept silently
-            await _send_response(send, 200, {
-                "Content-Type": "application/json",
-                "x-amzn-requestid": request_id,
-            }, b"{}")
-        return
-
-    # RDS Data API — /Execute, /BeginTransaction, /CommitTransaction, /RollbackTransaction, /BatchExecute
-    if path in ("/Execute", "/BeginTransaction", "/CommitTransaction", "/RollbackTransaction", "/BatchExecute"):
-        status, resp_headers, resp_body = await _get_module("rds_data").handle_request(method, path, headers, body, query_params)
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-
-    # SES v2 REST API — /v2/email/...
-    if path.startswith("/v2/email"):
-        status, resp_headers, resp_body = await _get_module("ses_v2").handle_request(method, path, headers, body, query_params)
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-
-    if path in ("/_localstack/health", "/health", "/_ministack/health"):
-        await _send_response(send, 200, {
-            "Content-Type": "application/json",
-            "x-amzn-requestid": request_id,
-        }, json.dumps({
-            "services": {s: "available" for s in SERVICE_HANDLERS},
-            "edition": "light",
-            "version": _VERSION,
-            "ready_scripts": dict(_ready_scripts_state),
-        }).encode())
-        return
-
-    # Readiness endpoint — returns 503 until all ready.d scripts finish, then 200.
-    # Point a compose healthcheck here to gate depends_on: service_healthy on script completion.
-    if path == "/_ministack/ready":
-        ready = _ready_scripts_state["status"] == "completed"
-        status = 200 if ready else 503
-        await _send_response(send, status, {
-            "Content-Type": "application/json",
-            "x-amzn-requestid": request_id,
-        }, json.dumps(dict(_ready_scripts_state)).encode())
-        return
-
-    if method == "OPTIONS":
-        await _send_response(send, 200, {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Expose-Headers": "*",
-            "Access-Control-Max-Age": "86400",
-            "Content-Length": "0",
-            "x-amzn-requestid": request_id,
-        }, b"")
-        return
-
-    # API Gateway execute-api data plane: host = {apiId}.execute-api.localhost[:{port}]
-    host = headers.get("host", "")
-    _execute_match = _EXECUTE_API_RE.match(host)
-    if _execute_match:
-        api_id = _execute_match.group(1)
-        # Path format: /{stage}/{proxy+}  or just /{proxy+} if stage is $default
-        path_parts = path.lstrip("/").split("/", 1)
-        stage = path_parts[0] if path_parts else "$default"
-        execute_path = "/" + path_parts[1] if len(path_parts) > 1 else "/"
-        try:
-            if api_id in _get_module("apigateway_v1")._rest_apis:
-                status, resp_headers, resp_body = await _get_module("apigateway_v1").handle_execute(
-                    api_id, stage, method, execute_path, headers, body, query_params
-                )
-            else:
-                status, resp_headers, resp_body = await _get_module("apigateway").handle_execute(
-                    api_id, stage, execute_path, method, headers, body, query_params
-                )
-        except Exception as e:
-            logger.exception("Error in execute-api dispatch: %s", e)
-            status, resp_headers, resp_body = 500, {"Content-Type": "application/json"}, json.dumps({"message": str(e)}).encode()
-        resp_headers.update({
-            "Access-Control-Allow-Origin": "*",
-            "x-amzn-requestid": request_id,
-            "x-amz-request-id": request_id,
-        })
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-
-    # ALB data-plane — two addressing modes:
-    #   1. Host header matches a configured ALB DNS name or {lb-name}.alb.localhost
-    #   2. Path prefix /_alb/{lb-name}/...  (no DNS config needed for local testing)
-    _alb_lb = _get_module("alb").find_lb_for_host(host)
-    if _alb_lb is None and path.startswith("/_alb/"):
-        _alb_path_parts = path[6:].split("/", 1)
-        _alb_lb = _get_module("alb")._find_lb_by_name(_alb_path_parts[0])
-        if _alb_lb:
-            path = "/" + _alb_path_parts[1] if len(_alb_path_parts) > 1 else "/"
-
-    if _alb_lb:
-        _alb_port = 80
-        if ":" in host:
-            try:
-                _alb_port = int(host.rsplit(":", 1)[-1])
-            except ValueError:
-                pass
-        try:
-            status, resp_headers, resp_body = await _get_module("alb").dispatch_request(
-                _alb_lb, method, path, headers, body, query_params, _alb_port
-            )
-        except Exception as e:
-            logger.exception("Error in ALB data-plane dispatch: %s", e)
-            status, resp_headers, resp_body = (
-                500, {"Content-Type": "application/json"},
-                json.dumps({"message": str(e)}).encode(),
-            )
-        resp_headers.update({
-            "Access-Control-Allow-Origin": "*",
-            "x-amzn-requestid": request_id,
-            "x-amz-request-id": request_id,
-        })
-        await _send_response(send, status, resp_headers, resp_body)
-        return
-
-    # Virtual-hosted S3: {bucket}.localhost[:{port}] — rewrite to path-style and forward to S3
-    _s3_vhost = _S3_VHOST_RE.match(host)
-    if _s3_vhost and not _execute_match and not _S3_VHOST_EXCLUDE_RE.search(host):
-        bucket = _s3_vhost.group(1)
-        _non_s3_hosts = {"s3", "s3-control", "sqs", "sns", "dynamodb", "lambda", "iam", "sts",
-                         "secretsmanager", "logs", "ssm", "events", "kinesis",
-                         "monitoring", "ses", "states", "ecs", "rds", "rds-data", "elasticache",
-                         "glue", "athena", "apigateway", "cloudformation", "autoscaling", "codebuild", "transfer"}
-        if bucket not in _non_s3_hosts:
-            vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
-            try:
-                status, resp_headers, resp_body = await _get_module("s3").handle_request(
-                    method, vhost_path, headers, body, query_params
-                )
-            except Exception as e:
-                logger.exception("Error handling virtual-hosted S3 request: %s", e)
-                from xml.sax.saxutils import escape as _xml_esc
-                status, resp_headers, resp_body = 500, {"Content-Type": "application/xml"}, (
-                    f"<Error><Code>InternalError</Code><Message>{_xml_esc(str(e))}</Message></Error>".encode()
-                )
-            resp_headers.update({
-                "Access-Control-Allow-Origin": "*",
-                "x-amzn-requestid": request_id,
-                "x-amz-request-id": request_id,
-                "x-amz-id-2": base64.b64encode(os.urandom(48)).decode(),
-            })
-            await _send_response(send, status, resp_headers, resp_body)
-            return
-
-    # For unsigned form-encoded requests (e.g. STS AssumeRoleWithWebIdentity),
-    # Action is in the body not the query string — merge it in for routing only.
-    routing_params = query_params
-    if not query_params.get("Action") and headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
-        body_params = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
-        if body_params.get("Action"):
-            routing_params = {**query_params, "Action": body_params["Action"]}
-
-    service = detect_service(method, path, headers, routing_params)
-    region = extract_region(headers)
-
-    logger.debug("%s %s -> service=%s region=%s", method, path, service, region)
-
-    handler = SERVICE_HANDLERS.get(service)
-    if not handler:
-        await _send_response(send, 400, {"Content-Type": "application/json"},
-            json.dumps({"error": f"Unsupported service: {service}"}).encode())
-        return
-
-    try:
-        status, resp_headers, resp_body = await handler(method, path, headers, body, query_params)
-    except Exception as e:
-        logger.exception("Error handling %s request: %s", service, e)
-        await _send_response(send, 500, {"Content-Type": "application/json"},
-            json.dumps({"__type": "InternalError", "message": str(e)}).encode())
-        return
-
-    resp_headers.update({
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
-        "Access-Control-Allow-Headers": "*",
-        "Access-Control-Expose-Headers": "*",
-        "x-amzn-requestid": request_id,
-        "x-amz-request-id": request_id,
-        "x-amz-id-2": base64.b64encode(os.urandom(48)).decode(),
-    })
-
-    await _send_response(send, status, resp_headers, resp_body)
+    return _decode_aws_chunked_body(body, headers)
 
 
 async def _send_response(send, status, headers, body):
@@ -695,6 +330,504 @@ async def _send_response(send, status, headers, body):
         "more_body": False,
     })
 
+
+async def _send_if_handled(send, response) -> bool:
+    """Send a response tuple and report whether the request was handled."""
+    if response is None:
+        return False
+    await _send_response(send, *response)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 — Pre-body handlers (no request body needed)
+# ---------------------------------------------------------------------------
+
+def _handle_options_request(method: str, request_id: str):
+    """Return the standard CORS preflight response when applicable."""
+    if method != "OPTIONS":
+        return None
+    return 200, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "*",
+        "Access-Control-Max-Age": "86400",
+        "Content-Length": "0",
+        "x-amzn-requestid": request_id,
+    }, b""
+
+
+def _handle_health_request(path: str, request_id: str):
+    """Return health responses for MiniStack and LocalStack-compatible endpoints."""
+    if path not in _HEALTH_PATHS:
+        return None
+    return 200, {
+        "Content-Type": "application/json",
+        "x-amzn-requestid": request_id,
+    }, json.dumps({
+        "services": {s: "available" for s in SERVICE_HANDLERS},
+        "edition": "light",
+        "version": _VERSION,
+        "ready_scripts": dict(_ready_scripts_state),
+    }).encode()
+
+
+def _handle_ready_request(path: str, request_id: str):
+    """Return readiness state once ready.d scripts have completed."""
+    if path != "/_ministack/ready":
+        return None
+    ready = _ready_scripts_state["status"] == "completed"
+    status = 200 if ready else 503
+    return status, {
+        "Content-Type": "application/json",
+        "x-amzn-requestid": request_id,
+    }, json.dumps(dict(_ready_scripts_state)).encode()
+
+
+def _handle_lambda_download_request(path: str, method: str):
+    """Serve MiniStack's Lambda layer and function-code download endpoints."""
+    if path.startswith("/_ministack/lambda-layers/") and method == "GET":
+        path_parts = path.split("/")
+        if len(path_parts) >= 6 and path_parts[5] == "content" and path_parts[4].isdigit():
+            return _get_module("lambda_svc").serve_layer_content(path_parts[3], int(path_parts[4]))
+
+    if path.startswith("/_ministack/lambda-code/") and method == "GET":
+        path_parts = path.split("/")
+        if len(path_parts) >= 4:
+            return _get_module("lambda_svc").serve_function_code(path_parts[3])
+    return None
+
+
+async def _handle_cognito_get_request(method: str, path: str, headers: dict, query_params: dict):
+    """Handle Cognito GET endpoints that do not require request body parsing."""
+    if "/.well-known/" in path and method == "GET":
+        if path.endswith("/.well-known/jwks.json"):
+            pool_id = path.rsplit("/.well-known/jwks.json", 1)[0].lstrip("/")
+            if pool_id:
+                return _get_module("cognito").well_known_jwks(pool_id)
+        elif path.endswith("/.well-known/openid-configuration"):
+            pool_id = path.rsplit("/.well-known/openid-configuration", 1)[0].lstrip("/")
+            if pool_id:
+                region = extract_region(headers) or "us-east-1"
+                return _get_module("cognito").well_known_openid_configuration(pool_id, region)
+
+    if path == "/oauth2/authorize" and method == "GET":
+        return _get_module("cognito").handle_oauth2_authorize(method, path, headers, query_params)
+    if path in _COGNITO_USERINFO_PATHS and method == "GET":
+        return _get_module("cognito").handle_oauth2_userinfo(method, path, headers, b"", query_params)
+    if path == "/logout" and method == "GET":
+        return _get_module("cognito").handle_logout(method, path, headers, query_params)
+    return None
+
+
+async def _handle_admin_reset(path: str, method: str, query_params: dict):
+    """Handle reset requests before request body parsing."""
+    if path != "/_ministack/reset" or method != "POST":
+        return None
+
+    async with _get_reset_lock():
+        await asyncio.to_thread(_reset_all_state)
+
+    run_init = query_params.get("init", [""])[0] == "1"
+    if run_init:
+        _run_init_scripts()
+        _ready_scripts_state.update({"status": "pending", "total": 0, "completed": 0, "failed": 0})
+        asyncio.create_task(_run_ready_scripts())
+    return 200, {"Content-Type": "application/json"}, json.dumps({"reset": "ok"}).encode()
+
+
+async def _handle_pre_body_request(method: str, path: str, headers: dict, query_params: dict, request_id: str):
+    """Handle fast-path routes that do not require request body parsing."""
+    for response in (
+        _handle_options_request(method, request_id),
+        _handle_health_request(path, request_id),
+        _handle_ready_request(path, request_id),
+        _handle_lambda_download_request(path, method),
+    ):
+        if response is not None:
+            return response
+
+    response = await _handle_cognito_get_request(method, path, headers, query_params)
+    if response is not None:
+        return response
+    return await _handle_admin_reset(path, method, query_params)
+
+
+# ---------------------------------------------------------------------------
+# Tier 2 — Post-body shortcuts (body required, before generic routing)
+# ---------------------------------------------------------------------------
+
+async def _handle_cognito_body_request(method: str, path: str, headers: dict, body: bytes, query_params: dict):
+    """Handle Cognito routes that require the parsed request body."""
+    if path in ("/oauth2/login", "/login") and method == "POST":
+        return _get_module("cognito").handle_login_submit(method, path, headers, body, query_params)
+    if path == "/oauth2/token" and method == "POST":
+        return _get_module("cognito").handle_oauth2_token(method, path, headers, body, query_params)
+    if path in _COGNITO_USERINFO_PATHS and method == "POST":
+        return _get_module("cognito").handle_oauth2_userinfo(method, path, headers, body, query_params)
+    return None
+
+
+async def _handle_admin_config_request(path: str, method: str, body: bytes):
+    """Apply whitelisted runtime config changes through the admin endpoint."""
+    if path != "/_ministack/config" or method != "POST":
+        return None
+
+    allowed_config_keys = {
+        "athena.ATHENA_ENGINE", "athena.ATHENA_DATA_DIR",
+        "stepfunctions._sfn_mock_config",
+        "stepfunctions._SFN_WAIT_SCALE",
+        "lambda_svc.LAMBDA_EXECUTOR",
+    }
+    try:
+        config = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        config = {}
+
+    applied = {}
+    for key, value in config.items():
+        if key not in allowed_config_keys:
+            logger.warning("/_ministack/config: rejected key %s (not in whitelist)", key)
+            continue
+        if "." not in key:
+            continue
+
+        mod_name, var_name = key.rsplit(".", 1)
+        try:
+            mod = __import__(f"ministack.services.{mod_name}", fromlist=[var_name])
+            if key == "stepfunctions._SFN_WAIT_SCALE":
+                try:
+                    float_value = float(value)
+                except (ValueError, TypeError):
+                    logger.warning("/_ministack/config: invalid SFN_WAIT_SCALE=%r", value)
+                    continue
+                if not math.isfinite(float_value) or float_value < 0:
+                    logger.warning("/_ministack/config: invalid SFN_WAIT_SCALE=%r", value)
+                    continue
+                value = float_value
+            setattr(mod, var_name, value)
+            applied[key] = value
+        except (ImportError, AttributeError) as e:
+            logger.warning("/_ministack/config: failed to set %s: %s", key, e)
+    return 200, {"Content-Type": "application/json"}, json.dumps({"applied": applied}).encode()
+
+
+async def _handle_post_body_shortcuts(method: str, path: str, headers: dict, body: bytes, query_params: dict):
+    """Handle body-dependent routes before the generic service router."""
+    response = await _handle_cognito_body_request(method, path, headers, body, query_params)
+    if response is not None:
+        return response
+    return await _handle_admin_config_request(path, method, body)
+
+
+# ---------------------------------------------------------------------------
+# Tier 3 — Special data-plane handlers (host/path-based routing)
+# ---------------------------------------------------------------------------
+
+async def _handle_s3_control_request(path: str, method: str, body: bytes, query_params: dict, request_id: str):
+    """Handle S3 Control operations addressed via the /v20180820 path prefix."""
+    if not path.startswith(_S3_CONTROL_PREFIX):
+        return None
+
+    if path.startswith("/v20180820/tags/"):
+        raw_arn = path[len("/v20180820/tags/"):]
+        arn = unquote(raw_arn)
+        bucket_name = arn.split(":::")[-1].split("/")[0] if ":::" in arn else arn.split("/")[0]
+
+        if method == "GET":
+            tags = _get_module("s3")._bucket_tags.get(bucket_name, {})
+            tag_members = "".join(
+                f"<member><Key>{k}</Key><Value>{v}</Value></member>"
+                for k, v in tags.items()
+            )
+            xml_body = (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<ListTagsForResourceResult xmlns="https://awss3control.amazonaws.com/doc/2018-08-20/">'
+                f"<Tags>{tag_members}</Tags>"
+                "</ListTagsForResourceResult>"
+            ).encode()
+            return 200, {
+                "Content-Type": "application/xml",
+                "x-amzn-requestid": request_id,
+            }, xml_body
+
+        if method == "PUT":
+            try:
+                payload = json.loads(body) if body else {}
+                new_tags = {t["Key"]: t["Value"] for t in payload.get("Tags", [])}
+                existing = _get_module("s3")._bucket_tags.get(bucket_name, {})
+                existing.update(new_tags)
+                _get_module("s3")._bucket_tags[bucket_name] = existing
+            except Exception as e:
+                logger.warning("S3 Control TagResource parse error: %s", e)
+            return 204, {"x-amzn-requestid": request_id}, b""
+
+        if method == "DELETE":
+            keys_to_remove = query_params.get("tagKeys", [])
+            if isinstance(keys_to_remove, str):
+                keys_to_remove = [keys_to_remove]
+            tags = _get_module("s3")._bucket_tags.get(bucket_name, {})
+            for key in keys_to_remove:
+                tags.pop(key, None)
+            _get_module("s3")._bucket_tags[bucket_name] = tags
+            return 204, {"x-amzn-requestid": request_id}, b""
+
+        return 200, {
+            "Content-Type": "application/json",
+            "x-amzn-requestid": request_id,
+        }, b"{}"
+
+    return 200, {
+        "Content-Type": "application/json",
+        "x-amzn-requestid": request_id,
+    }, b"{}"
+
+
+async def _handle_rds_data_request(method: str, path: str, headers: dict, body: bytes, query_params: dict):
+    """Handle RDS Data API operations before generic routing."""
+    if path not in _RDS_DATA_PATHS:
+        return None
+    return await _get_module("rds_data").handle_request(method, path, headers, body, query_params)
+
+
+async def _handle_ses_v2_request(method: str, path: str, headers: dict, body: bytes, query_params: dict):
+    """Handle SES v2 REST API operations before generic routing."""
+    if not path.startswith(_SES_V2_PREFIX):
+        return None
+    return await _get_module("ses_v2").handle_request(method, path, headers, body, query_params)
+
+
+async def _handle_execute_api_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
+    """Handle API Gateway execute-api data plane requests."""
+    execute_match = _EXECUTE_API_RE.match(host)
+    if not execute_match:
+        return None
+
+    api_id = execute_match.group(1)
+    path_parts = path.lstrip("/").split("/", 1)
+    stage = path_parts[0] if path_parts else "$default"
+    execute_path = "/" + path_parts[1] if len(path_parts) > 1 else "/"
+    try:
+        if api_id in _get_module("apigateway_v1")._rest_apis:
+            return await _get_module("apigateway_v1").handle_execute(
+                api_id, stage, method, execute_path, headers, body, query_params
+            )
+        return await _get_module("apigateway").handle_execute(
+            api_id, stage, execute_path, method, headers, body, query_params
+        )
+    except Exception as e:
+        logger.exception("Error in execute-api dispatch: %s", e)
+        return 500, {"Content-Type": "application/json"}, json.dumps({"message": str(e)}).encode()
+
+
+def _is_potential_alb_request(host: str, path: str) -> bool:
+    """Cheap ALB gate so ordinary requests avoid loading the ALB module."""
+    hostname = host.split(":")[0].lower()
+    return path.startswith(_ALB_PATH_PREFIX) or hostname.endswith(".elb.amazonaws.com") or hostname.endswith(".alb.localhost")
+
+
+async def _handle_alb_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
+    """Handle ALB data-plane requests for host-based and /_alb-prefixed addressing."""
+    if not _is_potential_alb_request(host, path):
+        return None
+
+    alb_module = _get_module("alb")
+    load_balancer = alb_module.find_lb_for_host(host)
+    dispatch_path = path
+
+    if load_balancer is None and path.startswith(_ALB_PATH_PREFIX):
+        path_parts = path[len(_ALB_PATH_PREFIX):].split("/", 1)
+        load_balancer = alb_module._find_lb_by_name(path_parts[0])
+        if load_balancer:
+            dispatch_path = "/" + path_parts[1] if len(path_parts) > 1 else "/"
+
+    if load_balancer is None:
+        return None
+
+    alb_port = 80
+    if ":" in host:
+        try:
+            alb_port = int(host.rsplit(":", 1)[-1])
+        except ValueError:
+            pass
+
+    try:
+        return await alb_module.dispatch_request(
+            load_balancer, method, dispatch_path, headers, body, query_params, alb_port
+        )
+    except Exception as e:
+        logger.exception("Error in ALB data-plane dispatch: %s", e)
+        return 500, {"Content-Type": "application/json"}, json.dumps({"message": str(e)}).encode()
+
+
+async def _handle_s3_vhost_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
+    """Handle virtual-hosted S3 requests before generic routing."""
+    s3_vhost = _S3_VHOST_RE.match(host)
+    if not s3_vhost or _S3_VHOST_EXCLUDE_RE.search(host):
+        return None
+
+    bucket = s3_vhost.group(1)
+    if bucket in _NON_S3_VHOST_NAMES:
+        return None
+
+    vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
+    try:
+        return await _get_module("s3").handle_request(method, vhost_path, headers, body, query_params)
+    except Exception as e:
+        logger.exception("Error handling virtual-hosted S3 request: %s", e)
+        from xml.sax.saxutils import escape as _xml_esc
+
+        return 500, {"Content-Type": "application/xml"}, (
+            f"<Error><Code>InternalError</Code><Message>{_xml_esc(str(e))}</Message></Error>".encode()
+        )
+
+
+def _with_data_plane_headers(response, request_id: str, include_s3_id: bool = False):
+    """Attach common data-plane CORS and request ID headers to a response tuple."""
+    if response is None:
+        return None
+    status, headers, body = response
+    headers.update({
+        "Access-Control-Allow-Origin": "*",
+        "x-amzn-requestid": request_id,
+        "x-amz-request-id": request_id,
+    })
+    if include_s3_id:
+        headers["x-amz-id-2"] = base64.b64encode(os.urandom(48)).decode()
+    return status, headers, body
+
+
+async def _handle_special_data_plane_request(
+    method: str,
+    path: str,
+    headers: dict,
+    body: bytes,
+    query_params: dict,
+    request_id: str,
+):
+    """Handle special-case service entrypoints before the generic router."""
+    if response := await _handle_s3_control_request(path, method, body, query_params, request_id):
+        return response
+    if response := await _handle_rds_data_request(method, path, headers, body, query_params):
+        return response
+    if response := await _handle_ses_v2_request(method, path, headers, body, query_params):
+        return response
+
+    host = headers.get("host", "")
+    if response := await _handle_execute_api_request(host, path, method, headers, body, query_params):
+        return _with_data_plane_headers(response, request_id)
+    if response := await _handle_s3_vhost_request(host, path, method, headers, body, query_params):
+        return _with_data_plane_headers(response, request_id, include_s3_id=True)
+    if response := await _handle_alb_request(host, path, method, headers, body, query_params):
+        return _with_data_plane_headers(response, request_id)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Tier 4 — Generic service dispatch
+# ---------------------------------------------------------------------------
+
+def _routing_params(method: str, path: str, headers: dict, body: bytes, query_params: dict) -> dict:
+    """Augment routing params for unsigned form-encoded requests whose Action lives in the body."""
+    routing_params = query_params
+    if not query_params.get("Action") and headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+        body_params = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+        if body_params.get("Action"):
+            routing_params = {**query_params, "Action": body_params["Action"]}
+    return routing_params
+
+
+async def _dispatch_service_request(method: str, path: str, headers: dict, body: bytes, query_params: dict, request_id: str):
+    """Dispatch a request through the generic service router."""
+    routing_params = _routing_params(method, path, headers, body, query_params)
+    service = detect_service(method, path, headers, routing_params)
+    region = extract_region(headers)
+
+    logger.debug("%s %s -> service=%s region=%s", method, path, service, region)
+
+    handler = SERVICE_HANDLERS.get(service)
+    if not handler:
+        return 400, {"Content-Type": "application/json"}, json.dumps({"error": f"Unsupported service: {service}"}).encode()
+
+    try:
+        status, resp_headers, resp_body = await handler(method, path, headers, body, query_params)
+    except Exception as e:
+        logger.exception("Error handling %s request: %s", service, e)
+        return 500, {"Content-Type": "application/json"}, json.dumps({"__type": "InternalError", "message": str(e)}).encode()
+
+    resp_headers.update({
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Expose-Headers": "*",
+        "x-amzn-requestid": request_id,
+        "x-amz-request-id": request_id,
+        "x-amz-id-2": base64.b64encode(os.urandom(48)).decode(),
+    })
+    return status, resp_headers, resp_body
+
+
+# ---------------------------------------------------------------------------
+# ASGI entry point
+# ---------------------------------------------------------------------------
+
+async def app(scope, receive, send):
+    """ASGI application entry point."""
+    if scope["type"] == "lifespan":
+        await _handle_lifespan(scope, receive, send)
+        return
+
+    if scope["type"] != "http":
+        return
+
+    method = scope["method"]
+    path = scope["path"]
+    query_string = scope.get("query_string", b"").decode("utf-8")
+    query_params = parse_qs(query_string, keep_blank_values=True)
+
+    headers = {}
+    for name, value in scope.get("headers", []):
+        try:
+            headers[name.decode("latin-1").lower()] = value.decode("utf-8")
+        except UnicodeDecodeError:
+            headers[name.decode("latin-1").lower()] = value.decode("latin-1")
+
+    request_id = str(uuid.uuid4())
+
+    # If a /_ministack/reset is in flight, wait for it to finish before
+    # serving this request. The lock is uncontended in steady state
+    # (acquire/release is near-free); during a reset, new requests block
+    # until state-wipe completes so no test can observe a half-reset server.
+    if path != "/_ministack/reset":
+        async with _get_reset_lock():
+            pass
+
+    # Set per-request account ID from credentials (multi-tenancy support).
+    # If the access key is a 12-digit number, it becomes the account ID.
+    _access_key = extract_access_key_id(headers)
+    if _access_key:
+        set_request_account_id(_access_key)
+
+    if await _send_if_handled(send, await _handle_pre_body_request(method, path, headers, query_params, request_id)):
+        return
+
+    body = await _read_request_body(receive, method, headers)
+
+    if await _send_if_handled(send, await _handle_post_body_shortcuts(method, path, headers, body, query_params)):
+        return
+
+    if await _send_if_handled(send, await _handle_special_data_plane_request(
+        method, path, headers, body, query_params, request_id
+    )):
+        return
+
+    await _send_response(send, *await _dispatch_service_request(method, path, headers, body, query_params, request_id))
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle, init scripts, and server administration
+# ---------------------------------------------------------------------------
 
 async def _handle_lifespan(scope, receive, send):
     """Handle ASGI lifespan events."""
@@ -1012,8 +1145,6 @@ def main():
     try:
         # Suppress health-check access logs at INFO level (reported by @McDoit).
         # Visible when LOG_LEVEL=DEBUG.
-        _HEALTH_PATHS = ("/_ministack/health", "/_localstack/health", "/health")
-
         class _HealthLogFilter(logging.Filter):
             def filter(self, record):
                 if LOG_LEVEL == "DEBUG":
