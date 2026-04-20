@@ -17,7 +17,7 @@ import os
 import re
 import time
 
-from ministack.core.responses import AccountScopedDict, get_account_id
+from ministack.core.responses import AccountScopedDict, get_account_id, get_region
 
 logger = logging.getLogger("scheduler")
 
@@ -61,11 +61,11 @@ def _now():
 
 
 def _schedule_arn(group, name):
-    return f"arn:aws:scheduler:{REGION}:{get_account_id()}:schedule/{group}/{name}"
+    return f"arn:aws:scheduler:{get_region()}:{get_account_id()}:schedule/{group}/{name}"
 
 
 def _group_arn(name):
-    return f"arn:aws:scheduler:{REGION}:{get_account_id()}:schedule-group/{name}"
+    return f"arn:aws:scheduler:{get_region()}:{get_account_id()}:schedule-group/{name}"
 
 
 def _json_resp(status, body):

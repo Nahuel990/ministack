@@ -19,7 +19,7 @@ import threading
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("glue")
 
@@ -76,7 +76,7 @@ if _restored:
 
 
 def _arn(resource_type, name):
-    return f"arn:aws:glue:{REGION}:{get_account_id()}:{resource_type}/{name}"
+    return f"arn:aws:glue:{get_region()}:{get_account_id()}:{resource_type}/{name}"
 
 
 async def handle_request(method, path, headers, body, query_params):

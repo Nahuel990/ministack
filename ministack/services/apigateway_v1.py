@@ -77,7 +77,7 @@ import time
 import urllib.error
 import urllib.request
 
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 
 
 def _now_unix():
@@ -124,7 +124,7 @@ def _v1_error(code, message, status):
 
 
 def _rest_api_arn(api_id):
-    return f"arn:aws:apigateway:{REGION}::/restapis/{api_id}"
+    return f"arn:aws:apigateway:{get_region()}::/restapis/{api_id}"
 
 
 def _compute_path(api_id, resource_id):
@@ -1448,7 +1448,7 @@ def _create_domain_name(data):
         "certificateName": data.get("certificateName", ""),
         "certificateArn": data.get("certificateArn", ""),
         "distributionDomainName": f"{domain_name}.cloudfront.net",
-        "regionalDomainName": f"{domain_name}.execute-api.{REGION}.amazonaws.com",
+        "regionalDomainName": f"{domain_name}.execute-api.{get_region()}.amazonaws.com",
         "regionalHostedZoneId": "Z1UJRXOUMOOFQ8",
         "endpointConfiguration": data.get("endpointConfiguration", {"types": ["REGIONAL"]}),
         "tags": data.get("tags", {}),

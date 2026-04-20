@@ -19,7 +19,7 @@ import os
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("s3files")
 
@@ -70,7 +70,7 @@ def reset():
 
 
 def _arn(resource_type, resource_id):
-    return f"arn:aws:s3files:{REGION}:{get_account_id()}:{resource_type}/{resource_id}"
+    return f"arn:aws:s3files:{get_region()}:{get_account_id()}:{resource_type}/{resource_id}"
 
 
 def _now_iso():
@@ -239,7 +239,7 @@ def _create_mount_target(data):
         "LifeCycleState": "available",
         "IpAddress": data.get("IpAddress", "10.0.0.1"),
         "VpcId": data.get("VpcId", "vpc-00000001"),
-        "AvailabilityZone": data.get("AvailabilityZone", f"{REGION}a"),
+        "AvailabilityZone": data.get("AvailabilityZone", f"{get_region()}a"),
     }
     _mount_targets[mt_id] = mt
     logger.info("Created mount target %s for fs %s", mt_id, fs_id)

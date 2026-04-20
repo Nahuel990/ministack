@@ -25,7 +25,7 @@ import re
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("appsync")
 
@@ -64,7 +64,7 @@ def _now():
 
 
 def _api_arn(api_id):
-    return f"arn:aws:appsync:{REGION}:{get_account_id()}:apis/{api_id}"
+    return f"arn:aws:appsync:{get_region()}:{get_account_id()}:apis/{api_id}"
 
 
 def _json(status, body):
@@ -96,8 +96,8 @@ def _create_graphql_api(body):
         "authenticationType": auth_type,
         "arn": arn,
         "uris": {
-            "GRAPHQL": f"https://{api_id}.appsync-api.{REGION}.amazonaws.com/graphql",
-            "REALTIME": f"wss://{api_id}.appsync-realtime-api.{REGION}.amazonaws.com/graphql",
+            "GRAPHQL": f"https://{api_id}.appsync-api.{get_region()}.amazonaws.com/graphql",
+            "REALTIME": f"wss://{api_id}.appsync-realtime-api.{get_region()}.amazonaws.com/graphql",
         },
         "additionalAuthenticationProviders": additional_auth,
         "xrayEnabled": xray,

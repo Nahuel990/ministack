@@ -19,7 +19,7 @@ import os
 import time
 from collections import defaultdict
 
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, now_iso
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, now_iso, get_region
 
 logger = logging.getLogger("autoscaling")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
@@ -98,7 +98,7 @@ def _error(code, message, status=400):
 
 
 def _asg_arn(name):
-    return f"arn:aws:autoscaling:{REGION}:{get_account_id()}:autoScalingGroup:{new_uuid()}:autoScalingGroupName/{name}"
+    return f"arn:aws:autoscaling:{get_region()}:{get_account_id()}:autoScalingGroup:{new_uuid()}:autoScalingGroupName/{name}"
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ def _create_asg(p):
         "MaxSize": int(_p(p, "MaxSize") or 0),
         "DesiredCapacity": int(_p(p, "DesiredCapacity") or _p(p, "MinSize") or 0),
         "DefaultCooldown": int(_p(p, "DefaultCooldown") or 300),
-        "AvailabilityZones": _parse_member_list(p, "AvailabilityZones") or [f"{REGION}a"],
+        "AvailabilityZones": _parse_member_list(p, "AvailabilityZones") or [f"{get_region()}a"],
         "HealthCheckType": _p(p, "HealthCheckType") or "EC2",
         "HealthCheckGracePeriod": int(_p(p, "HealthCheckGracePeriod") or 300),
         "Instances": [],
@@ -256,7 +256,7 @@ def _create_lc(p):
         return _error("ValidationError", "LaunchConfigurationName is required")
     if name in _launch_configs:
         return _error("AlreadyExistsFault", f"LaunchConfiguration {name} already exists")
-    arn = f"arn:aws:autoscaling:{REGION}:{get_account_id()}:launchConfiguration:{new_uuid()}:launchConfigurationName/{name}"
+    arn = f"arn:aws:autoscaling:{get_region()}:{get_account_id()}:launchConfiguration:{new_uuid()}:launchConfigurationName/{name}"
     _launch_configs[name] = {
         "LaunchConfigurationName": name,
         "LaunchConfigurationARN": arn,
@@ -304,7 +304,7 @@ def _put_scaling_policy(p):
     policy_name = _p(p, "PolicyName")
     if not policy_name:
         return _error("ValidationError", "PolicyName is required")
-    arn = f"arn:aws:autoscaling:{REGION}:{get_account_id()}:scalingPolicy:{new_uuid()}:autoScalingGroupName/{asg_name}:policyName/{policy_name}"
+    arn = f"arn:aws:autoscaling:{get_region()}:{get_account_id()}:scalingPolicy:{new_uuid()}:autoScalingGroupName/{asg_name}:policyName/{policy_name}"
     key = f"{asg_name}/{policy_name}"
     _policies[key] = {
         "PolicyARN": arn,
@@ -406,7 +406,7 @@ def _put_scheduled_action(p):
     asg_name = _p(p, "AutoScalingGroupName")
     action_name = _p(p, "ScheduledActionName")
     key = f"{asg_name}/{action_name}"
-    arn = f"arn:aws:autoscaling:{REGION}:{get_account_id()}:scheduledUpdateGroupAction:{new_uuid()}:autoScalingGroupName/{asg_name}:scheduledActionName/{action_name}"
+    arn = f"arn:aws:autoscaling:{get_region()}:{get_account_id()}:scheduledUpdateGroupAction:{new_uuid()}:autoScalingGroupName/{asg_name}:scheduledActionName/{action_name}"
     _scheduled_actions[key] = {
         "ScheduledActionARN": arn,
         "ScheduledActionName": action_name,

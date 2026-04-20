@@ -27,7 +27,7 @@ _HOST = os.environ.get("MINISTACK_HOST", "localhost")
 _PORT = os.environ.get("GATEWAY_PORT", "4566")
 
 import ministack.services.lambda_svc as _lambda_svc
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 from ministack.services import sqs as _sqs
 
 logger = logging.getLogger("sns")
@@ -147,7 +147,7 @@ def _create_topic(params):
     if is_fifo and "ContentBasedDeduplication" not in explicit_attrs:
         explicit_attrs["ContentBasedDeduplication"] = "false"
 
-    arn = f"arn:aws:sns:{REGION}:{get_account_id()}:{name}"
+    arn = f"arn:aws:sns:{get_region()}:{get_account_id()}:{name}"
     if arn not in _topics:
         default_policy = json.dumps({
             "Version": "2008-10-17",
@@ -984,7 +984,7 @@ def _create_platform_application(params):
     if not name or not platform:
         return _error("InvalidParameterException", "Name and Platform are required", 400)
 
-    arn = f"arn:aws:sns:{REGION}:{get_account_id()}:app/{platform}/{name}"
+    arn = f"arn:aws:sns:{get_region()}:{get_account_id()}:app/{platform}/{name}"
     attrs = {}
     i = 1
     while _p(params, f"Attributes.entry.{i}.key"):
@@ -1262,7 +1262,7 @@ def _build_envelope(topic_arn: str, msg_id: str, message: str, subject: str,
         "SignatureVersion": "1",
         "Signature": "FAKE",
         "SigningCertURL": "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-fake.pem",
-        "UnsubscribeURL": f"http://{_HOST}:{_PORT}/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:{REGION}:{get_account_id()}:example",
+        "UnsubscribeURL": f"http://{_HOST}:{_PORT}/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:{get_region()}:{get_account_id()}:example",
     }
 
     if message_attributes:

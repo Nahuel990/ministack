@@ -15,7 +15,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("ssm")
 
@@ -54,7 +54,7 @@ def _now_epoch() -> float:
 
 
 def _param_arn(name: str) -> str:
-    return f"arn:aws:ssm:{REGION}:{get_account_id()}:parameter{name}"
+    return f"arn:aws:ssm:{get_region()}:{get_account_id()}:parameter{name}"
 
 
 def _encode_next_token(index: int) -> str:

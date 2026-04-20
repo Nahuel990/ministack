@@ -24,6 +24,7 @@ denormalise on write.
 import json
 import logging
 import os
+from ministack.core.responses import get_region
 
 logger = logging.getLogger("tagging")
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
@@ -69,7 +70,7 @@ def _collect_s3():
 def _collect_lambda():
     import ministack.services.lambda_svc as svc
     for name, fn in svc._functions.items():
-        arn = f"arn:aws:lambda:{REGION}:{_account()}:function:{name}"
+        arn = f"arn:aws:lambda:{get_region()}:{_account()}:function:{name}"
         yield arn, _normalise_flat(fn.get("tags", {}))
 
 
@@ -114,14 +115,14 @@ def _collect_eventbridge():
 def _collect_kms():
     import ministack.services.kms as svc
     for key_id, rec in svc._keys.items():
-        arn = f"arn:aws:kms:{REGION}:{_account()}:key/{key_id}"
+        arn = f"arn:aws:kms:{get_region()}:{_account()}:key/{key_id}"
         yield arn, _normalise_kms(rec.get("Tags", []))
 
 
 def _collect_ecr():
     import ministack.services.ecr as svc
     for name, repo in svc._repositories.items():
-        arn = f"arn:aws:ecr:{REGION}:{_account()}:repository/{name}"
+        arn = f"arn:aws:ecr:{get_region()}:{_account()}:repository/{name}"
         yield arn, _normalise_list(repo.get("tags", []))
 
 
@@ -140,10 +141,10 @@ def _collect_glue():
 def _collect_cognito():
     import ministack.services.cognito as svc
     for pool_id, pool in svc._user_pools.items():
-        arn = f"arn:aws:cognito-idp:{REGION}:{_account()}:userpool/{pool_id}"
+        arn = f"arn:aws:cognito-idp:{get_region()}:{_account()}:userpool/{pool_id}"
         yield arn, _normalise_flat(pool.get("UserPoolTags", {}))
     for pool_id, tags in svc._identity_tags.items():
-        arn = f"arn:aws:cognito-identity:{REGION}:{_account()}:identitypool/{pool_id}"
+        arn = f"arn:aws:cognito-identity:{get_region()}:{_account()}:identitypool/{pool_id}"
         yield arn, _normalise_flat(tags)
 
 
@@ -168,10 +169,10 @@ def _collect_cloudfront():
 def _collect_efs():
     import ministack.services.efs as svc
     for fs_id, fs in svc._file_systems.items():
-        arn = f"arn:aws:elasticfilesystem:{REGION}:{_account()}:file-system/{fs_id}"
+        arn = f"arn:aws:elasticfilesystem:{get_region()}:{_account()}:file-system/{fs_id}"
         yield arn, _normalise_list(fs.get("Tags", []))
     for ap_id, ap in svc._access_points.items():
-        arn = f"arn:aws:elasticfilesystem:{REGION}:{_account()}:access-point/{ap_id}"
+        arn = f"arn:aws:elasticfilesystem:{get_region()}:{_account()}:access-point/{ap_id}"
         yield arn, _normalise_list(ap.get("Tags", []))
 
 

@@ -35,7 +35,7 @@ import time
 from urllib.parse import parse_qs
 from urllib.parse import quote as _url_quote
 
-from ministack.core.responses import AccountScopedDict, get_account_id, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, json_response, new_uuid, get_region
 
 logger = logging.getLogger("iam")
 

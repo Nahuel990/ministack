@@ -35,7 +35,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import AccountScopedDict, get_account_id, md5_hash, new_uuid, now_iso
+from ministack.core.responses import AccountScopedDict, get_account_id, md5_hash, new_uuid, now_iso, get_region
 
 logger = logging.getLogger("sqs")
 
@@ -188,7 +188,7 @@ def _act_create_queue(data: dict, _u: str) -> dict:
     q: dict = {
         "name": name, "url": url, "is_fifo": is_fifo,
         "attributes": {
-            "QueueArn": f"arn:aws:sqs:{REGION}:{get_account_id()}:{name}",
+            "QueueArn": f"arn:aws:sqs:{get_region()}:{get_account_id()}:{name}",
             "CreatedTimestamp": ts,
             "LastModifiedTimestamp": ts,
             "VisibilityTimeout": "30",

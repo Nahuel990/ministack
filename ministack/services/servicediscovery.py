@@ -10,7 +10,7 @@ import os
 import time
 import xml.etree.ElementTree as ET
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 from ministack.services import route53
 
 logger = logging.getLogger("servicediscovery")
@@ -123,11 +123,11 @@ async def handle_request(method, path, headers, body, query_params):
 
 
 def _namespace_arn(ns_id: str) -> str:
-    return f"arn:aws:servicediscovery:{REGION}:{get_account_id()}:namespace/{ns_id}"
+    return f"arn:aws:servicediscovery:{get_region()}:{get_account_id()}:namespace/{ns_id}"
 
 
 def _service_arn(svc_id: str) -> str:
-    return f"arn:aws:servicediscovery:{REGION}:{get_account_id()}:service/{svc_id}"
+    return f"arn:aws:servicediscovery:{get_region()}:{get_account_id()}:service/{svc_id}"
 
 
 def _create_operation(op_type: str, targets=None):

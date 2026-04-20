@@ -39,6 +39,7 @@ from ministack.core.responses import (
     json_response,
     new_uuid,
     now_iso,
+    get_region,
 )
 
 logger = logging.getLogger("states")
@@ -258,7 +259,7 @@ def _create_state_machine(data):
     if not name:
         return error_response_json("ValidationException", "name is required", 400)
 
-    arn = f"arn:aws:states:{REGION}:{get_account_id()}:stateMachine:{name}"
+    arn = f"arn:aws:states:{get_region()}:{get_account_id()}:stateMachine:{name}"
     if arn in _state_machines:
         return error_response_json(
             "StateMachineAlreadyExists",
@@ -367,7 +368,7 @@ def _start_execution(data):
 
     sm = _state_machines[sm_arn]
     name = data.get("name") or new_uuid()
-    exec_arn = (f"arn:aws:states:{REGION}:{get_account_id()}"
+    exec_arn = (f"arn:aws:states:{get_region()}:{get_account_id()}"
                 f":execution:{sm['name']}:{name}")
 
     # Reject duplicate execution names
@@ -515,7 +516,7 @@ def _start_sync_execution(data):
 
     sm = _state_machines[sm_arn]
     name = data.get("name") or new_uuid()
-    exec_arn = (f"arn:aws:states:{REGION}:{get_account_id()}"
+    exec_arn = (f"arn:aws:states:{get_region()}:{get_account_id()}"
                 f":execution:{sm['name']}:{name}")
 
     start_date = now_iso()
@@ -642,7 +643,7 @@ def _create_activity(data):
     if not name:
         return error_response_json("ValidationException", "name is required", 400)
 
-    arn = f"arn:aws:states:{REGION}:{get_account_id()}:activity:{name}"
+    arn = f"arn:aws:states:{get_region()}:{get_account_id()}:activity:{name}"
     if arn in _activities:
         return error_response_json(
             "ActivityAlreadyExists", f"Activity already exists: {arn}", 400)
@@ -811,7 +812,7 @@ def _test_state(data):
             ctx = {}
     else:
         ctx = {}
-    ctx.setdefault("Execution", {"Id": f"arn:aws:states:{REGION}:{get_account_id()}:execution:test:{new_uuid()}", "Name": "test", "StartTime": now_iso()})
+    ctx.setdefault("Execution", {"Id": f"arn:aws:states:{get_region()}:{get_account_id()}:execution:test:{new_uuid()}", "Name": "test", "StartTime": now_iso()})
     ctx.setdefault("StateMachine", {"Id": "test", "Name": "test"})
     ctx["State"] = {"Name": state_name, "EnteredTime": now_iso()}
 
@@ -2310,9 +2311,9 @@ def _dispatch_aws_sdk_json(service_info, service_name, action, input_data):
     headers = {
         "x-amz-target": target,
         "content-type": "application/x-amz-json-1.0",
-        "host": f"{service_key}.{REGION}.amazonaws.com",
+        "host": f"{service_key}.{get_region()}.amazonaws.com",
         "authorization": (
-            f"AWS4-HMAC-SHA256 Credential=test/20260101/{REGION}/{service_key}/aws4_request"
+            f"AWS4-HMAC-SHA256 Credential=test/20260101/{get_region()}/{service_key}/aws4_request"
         ),
     }
 
@@ -2596,9 +2597,9 @@ def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
 
     headers = {
         "content-type": "application/x-www-form-urlencoded",
-        "host": f"{service_key}.{REGION}.amazonaws.com",
+        "host": f"{service_key}.{get_region()}.amazonaws.com",
         "authorization": (
-            f"AWS4-HMAC-SHA256 Credential=test/20260101/{REGION}/{service_key}/aws4_request"
+            f"AWS4-HMAC-SHA256 Credential=test/20260101/{get_region()}/{service_key}/aws4_request"
         ),
     }
 
@@ -2698,9 +2699,9 @@ def _dispatch_aws_sdk_rest_json(service_info, service_name, action, input_data):
     body = json.dumps(wire_data).encode("utf-8")
     headers = {
         "content-type": "application/json",
-        "host": f"{service_key}.{REGION}.amazonaws.com",
+        "host": f"{service_key}.{get_region()}.amazonaws.com",
         "authorization": (
-            f"AWS4-HMAC-SHA256 Credential=test/20260101/{REGION}/{service_key}/aws4_request"
+            f"AWS4-HMAC-SHA256 Credential=test/20260101/{get_region()}/{service_key}/aws4_request"
         ),
     }
 

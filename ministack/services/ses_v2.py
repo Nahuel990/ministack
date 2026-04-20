@@ -15,7 +15,7 @@ import os
 import re
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, json_response, new_uuid, now_iso
+from ministack.core.responses import AccountScopedDict, get_account_id, json_response, new_uuid, now_iso, get_region
 from ministack.services.ses import _build_mime_message, _smtp_relay
 
 logger = logging.getLogger("ses-v2")

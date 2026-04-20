@@ -23,7 +23,7 @@ import string
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("emr")
 
@@ -92,7 +92,7 @@ def _run_job_flow(data):
         return error_response_json("ValidationException", "Name is required", 400)
 
     cluster_id = _cluster_id()
-    arn = f"arn:aws:elasticmapreduce:{REGION}:{get_account_id()}:cluster/{cluster_id}"
+    arn = f"arn:aws:elasticmapreduce:{get_region()}:{get_account_id()}:cluster/{cluster_id}"
     instances = data.get("Instances", {})
     keep_alive = instances.get("KeepJobFlowAliveWhenNoSteps", False)
     tags = data.get("Tags", [])
@@ -181,7 +181,7 @@ def _run_job_flow(data):
         "Ec2InstanceAttributes": {
             "Ec2KeyName": instances.get("Ec2KeyName", ""),
             "Ec2SubnetId": instances.get("Ec2SubnetId", ""),
-            "Ec2AvailabilityZone": f"{REGION}a",
+            "Ec2AvailabilityZone": f"{get_region()}a",
             "IamInstanceProfile": job_flow_role,
             "EmrManagedMasterSecurityGroup": instances.get("EmrManagedMasterSecurityGroup", ""),
             "EmrManagedSlaveSecurityGroup": instances.get("EmrManagedSlaveSecurityGroup", ""),

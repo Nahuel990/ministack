@@ -27,7 +27,7 @@ import time
 from urllib.parse import parse_qs
 
 from ministack.core.persistence import load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 
 logger = logging.getLogger("elasticache")
 
@@ -122,23 +122,23 @@ def _get_docker():
 
 
 def _arn_cluster(cluster_id):
-    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:cluster:{cluster_id}"
+    return f"arn:aws:elasticache:{get_region()}:{get_account_id()}:cluster:{cluster_id}"
 
 
 def _arn_replication_group(rg_id):
-    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:replicationgroup:{rg_id}"
+    return f"arn:aws:elasticache:{get_region()}:{get_account_id()}:replicationgroup:{rg_id}"
 
 
 def _arn_subnet_group(name):
-    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:subnetgroup:{name}"
+    return f"arn:aws:elasticache:{get_region()}:{get_account_id()}:subnetgroup:{name}"
 
 
 def _arn_param_group(name):
-    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:parametergroup:{name}"
+    return f"arn:aws:elasticache:{get_region()}:{get_account_id()}:parametergroup:{name}"
 
 
 def _arn_snapshot(name):
-    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:snapshot:{name}"
+    return f"arn:aws:elasticache:{get_region()}:{get_account_id()}:snapshot:{name}"
 
 
 def _record_event(source_id, source_type, message):
@@ -266,7 +266,7 @@ def _create_cache_cluster(p):
         "CacheNodeType": node_type,
         "NumCacheNodes": num_nodes,
         "CacheClusterCreateTime": time.time(),
-        "PreferredAvailabilityZone": f"{REGION}a",
+        "PreferredAvailabilityZone": f"{get_region()}a",
         "CacheParameterGroup": {
             "CacheParameterGroupName": param_group_name,
             "ParameterApplyStatus": "in-sync",
@@ -412,7 +412,7 @@ def _create_replication_group(p):
                 "CacheClusterId": f"{rg_id}-{ng_id}-{r + 1:03d}",
                 "CacheNodeId": "0001",
                 "CurrentRole": role,
-                "PreferredAvailabilityZone": f"{REGION}{'abcdef'[r % 6]}",
+                "PreferredAvailabilityZone": f"{get_region()}{'abcdef'[r % 6]}",
                 "ReadEndpoint": {"Address": endpoint_host, "Port": endpoint_port},
             })
         node_groups.append({
@@ -528,7 +528,7 @@ def _increase_replica_count(p):
                 "CacheClusterId": f"{rg_id}-{ng['NodeGroupId']}-{current:03d}",
                 "CacheNodeId": "0001",
                 "CurrentRole": "replica",
-                "PreferredAvailabilityZone": f"{REGION}a",
+                "PreferredAvailabilityZone": f"{get_region()}a",
                 "ReadEndpoint": {"Address": endpoint_host, "Port": endpoint_port},
             })
     rg["_replicas_per_node_group"] = new_count
@@ -572,7 +572,7 @@ def _create_subnet_group(p):
     while _p(p, f"SubnetIds.member.{idx}"):
         subnets.append({
             "SubnetIdentifier": _p(p, f"SubnetIds.member.{idx}"),
-            "SubnetAvailabilityZone": {"Name": f"{REGION}{'abcdef'[(idx - 1) % 6]}"},
+            "SubnetAvailabilityZone": {"Name": f"{get_region()}{'abcdef'[(idx - 1) % 6]}"},
         })
         idx += 1
 
@@ -644,7 +644,7 @@ def _modify_subnet_group(p):
     while _p(p, f"SubnetIds.member.{idx}"):
         subnets.append({
             "SubnetIdentifier": _p(p, f"SubnetIds.member.{idx}"),
-            "SubnetAvailabilityZone": {"Name": f"{REGION}{'abcdef'[(idx - 1) % 6]}"},
+            "SubnetAvailabilityZone": {"Name": f"{get_region()}{'abcdef'[(idx - 1) % 6]}"},
         })
         idx += 1
     if subnets:
@@ -992,11 +992,11 @@ def _describe_events(p):
 # ---- Users (Redis ACL) ----
 
 def _arn_user(user_id):
-    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:user:{user_id}"
+    return f"arn:aws:elasticache:{get_region()}:{get_account_id()}:user:{user_id}"
 
 
 def _arn_user_group(group_id):
-    return f"arn:aws:elasticache:{REGION}:{get_account_id()}:usergroup:{group_id}"
+    return f"arn:aws:elasticache:{get_region()}:{get_account_id()}:usergroup:{group_id}"
 
 
 def _create_user(p):

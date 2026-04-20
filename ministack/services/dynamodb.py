@@ -27,6 +27,7 @@ from ministack.core.responses import (
     json_response,
     new_uuid,
     now_iso,
+    get_region,
 )
 
 logger = logging.getLogger("dynamodb")
@@ -93,7 +94,7 @@ def _emit_stream_event(table_name: str, event_name: str, old_item: dict | None, 
         "eventName": event_name,
         "eventVersion": "1.1",
         "eventSource": "aws:dynamodb",
-        "awsRegion": REGION,
+        "awsRegion": get_region(),
         "dynamodb": {
             "ApproximateCreationDateTime": int(time.time()),
             "Keys": {},
@@ -241,11 +242,11 @@ def _create_table(data):
     for gsi in gsis:
         gsi.setdefault("IndexStatus", "ACTIVE")
         gsi.setdefault("ProvisionedThroughput", gsi_default_throughput)
-        gsi["IndexArn"] = f"arn:aws:dynamodb:{REGION}:{get_account_id()}:table/{name}/index/{gsi['IndexName']}"
+        gsi["IndexArn"] = f"arn:aws:dynamodb:{get_region()}:{get_account_id()}:table/{name}/index/{gsi['IndexName']}"
         gsi["IndexSizeBytes"] = 0
         gsi["ItemCount"] = 0
     for lsi in lsis:
-        lsi["IndexArn"] = f"arn:aws:dynamodb:{REGION}:{get_account_id()}:table/{name}/index/{lsi['IndexName']}"
+        lsi["IndexArn"] = f"arn:aws:dynamodb:{get_region()}:{get_account_id()}:table/{name}/index/{lsi['IndexName']}"
         lsi["IndexSizeBytes"] = 0
         lsi["ItemCount"] = 0
 
@@ -260,7 +261,7 @@ def _create_table(data):
         "CreationDateTime": int(time.time()),
         "ItemCount": 0,
         "TableSizeBytes": 0,
-        "TableArn": f"arn:aws:dynamodb:{REGION}:{get_account_id()}:table/{name}",
+        "TableArn": f"arn:aws:dynamodb:{get_region()}:{get_account_id()}:table/{name}",
         "TableId": new_uuid(),
         "GlobalSecondaryIndexes": gsis,
         "LocalSecondaryIndexes": lsis,
@@ -341,7 +342,7 @@ def _update_table(data):
                 if current_billing == "PAY_PER_REQUEST"
                 else {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
             )
-            gsi_def["IndexArn"] = f"arn:aws:dynamodb:{REGION}:{get_account_id()}:table/{name}/index/{gsi_def['IndexName']}"
+            gsi_def["IndexArn"] = f"arn:aws:dynamodb:{get_region()}:{get_account_id()}:table/{name}/index/{gsi_def['IndexName']}"
             gsi_def["IndexSizeBytes"] = 0
             gsi_def["ItemCount"] = 0
             table["GlobalSecondaryIndexes"].append(gsi_def)

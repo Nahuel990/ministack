@@ -22,6 +22,7 @@ from ministack.core.responses import (
     json_response,
     new_uuid,
     now_iso,
+    get_region,
 )
 
 logger = logging.getLogger("transfer")
@@ -70,11 +71,11 @@ def _key_id():
 
 
 def _server_arn(server_id):
-    return f"arn:aws:transfer:{REGION}:{get_account_id()}:server/{server_id}"
+    return f"arn:aws:transfer:{get_region()}:{get_account_id()}:server/{server_id}"
 
 
 def _user_arn(server_id, user_name):
-    return f"arn:aws:transfer:{REGION}:{get_account_id()}:user/{server_id}/{user_name}"
+    return f"arn:aws:transfer:{get_region()}:{get_account_id()}:user/{server_id}/{user_name}"
 
 
 def _user_key(server_id, user_name):

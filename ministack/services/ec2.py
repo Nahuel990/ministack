@@ -64,7 +64,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 
 logger = logging.getLogger("ec2")
 
@@ -187,9 +187,9 @@ def _init_defaults():
             "MainRouteTableId": _DEFAULT_RTB_ID,
         }
     _default_subnets = [
-        (_DEFAULT_SUBNET_ID, "172.31.0.0/20", f"{REGION}a"),
-        (_DEFAULT_SUBNET_ID_B, "172.31.16.0/20", f"{REGION}b"),
-        (_DEFAULT_SUBNET_ID_C, "172.31.32.0/20", f"{REGION}c"),
+        (_DEFAULT_SUBNET_ID, "172.31.0.0/20", f"{get_region()}a"),
+        (_DEFAULT_SUBNET_ID_B, "172.31.16.0/20", f"{get_region()}b"),
+        (_DEFAULT_SUBNET_ID_C, "172.31.32.0/20", f"{get_region()}c"),
     ]
     for subnet_id, cidr, az in _default_subnets:
         if subnet_id not in _subnets:
@@ -323,7 +323,7 @@ def _run_instances(p):
             "RootDeviceName": "/dev/xvda",
             "Hypervisor": "xen",
             "Virtualization": "hvm",
-            "Placement": {"AvailabilityZone": f"{REGION}a", "Tenancy": "default"},
+            "Placement": {"AvailabilityZone": f"{get_region()}a", "Tenancy": "default"},
             "Monitoring": {"State": "disabled"},
             "AmiLaunchIndex": 0,
             "UserData": user_data,
@@ -973,7 +973,7 @@ def _create_default_vpc(p):
         subnet_id = _new_subnet_id()
         _subnets[subnet_id] = {
             "SubnetId": subnet_id, "VpcId": vpc_id, "CidrBlock": sub_cidr,
-            "AvailabilityZone": f"{REGION}{az_suffix}",
+            "AvailabilityZone": f"{get_region()}{az_suffix}",
             "AvailableIpAddressCount": 4091, "State": "available",
             "DefaultForAz": True, "MapPublicIpOnLaunch": True,
             "OwnerId": get_account_id(),
@@ -1033,7 +1033,7 @@ def _matches_subnet_filters(subnet, filters):
 def _create_subnet(p):
     vpc_id = _p(p, "VpcId") or _DEFAULT_VPC_ID
     cidr = _p(p, "CidrBlock") or "10.0.1.0/24"
-    az = _p(p, "AvailabilityZone") or f"{REGION}a"
+    az = _p(p, "AvailabilityZone") or f"{get_region()}a"
     subnet_id = _new_subnet_id()
     _subnets[subnet_id] = {
         "SubnetId": subnet_id,
@@ -1342,7 +1342,7 @@ def _create_network_interface(p):
         sg_ids = [_DEFAULT_SG_ID]
     eni_id = "eni-" + "".join(random.choices(string.hexdigits[:16], k=17))
     private_ip = _random_ip("10.0")
-    az = _subnets.get(subnet_id, {}).get("AvailabilityZone", f"{REGION}a")
+    az = _subnets.get(subnet_id, {}).get("AvailabilityZone", f"{get_region()}a")
     _network_interfaces[eni_id] = {
         "NetworkInterfaceId": eni_id,
         "SubnetId": subnet_id,
@@ -1461,11 +1461,11 @@ def _describe_vpc_endpoints(p):
 # ---------------------------------------------------------------------------
 
 def _describe_availability_zones(p):
-    azs = [f"{REGION}a", f"{REGION}b", f"{REGION}c"]
+    azs = [f"{get_region()}a", f"{get_region()}b", f"{get_region()}c"]
     items = "".join(f"""<item>
         <zoneName>{az}</zoneName>
         <zoneState>available</zoneState>
-        <regionName>{REGION}</regionName>
+        <regionName>{get_region()}</regionName>
         <zoneId>{az}</zoneId>
     </item>""" for az in azs)
     return _xml(200, "DescribeAvailabilityZonesResponse",
@@ -1630,7 +1630,7 @@ def _new_snapshot_id():
 
 def _create_volume(p):
     vol_id = _new_volume_id()
-    az = _p(p, "AvailabilityZone") or f"{REGION}a"
+    az = _p(p, "AvailabilityZone") or f"{get_region()}a"
     size = int(_p(p, "Size") or "8")
     vol_type = _p(p, "VolumeType") or "gp2"
     snapshot_id = _p(p, "SnapshotId") or ""
@@ -2072,7 +2072,7 @@ def _vpc_xml(vpc):
 def _subnet_fields_xml(subnet, tag="item"):
     return f"""<{tag}>
         <subnetId>{subnet['SubnetId']}</subnetId>
-        <subnetArn>arn:aws:ec2:{REGION}:{get_account_id()}:subnet/{subnet['SubnetId']}</subnetArn>
+        <subnetArn>arn:aws:ec2:{get_region()}:{get_account_id()}:subnet/{subnet['SubnetId']}</subnetArn>
         <state>{subnet['State']}</state>
         <vpcId>{subnet['VpcId']}</vpcId>
         <cidrBlock>{subnet['CidrBlock']}</cidrBlock>
@@ -2163,7 +2163,7 @@ def _eni_fields_xml(eni, tag="item"):
         <networkInterfaceId>{eni['NetworkInterfaceId']}</networkInterfaceId>
         <subnetId>{eni['SubnetId']}</subnetId>
         <vpcId>{eni['VpcId']}</vpcId>
-        <availabilityZone>{eni.get('AvailabilityZone', REGION + 'a')}</availabilityZone>
+        <availabilityZone>{eni.get('AvailabilityZone', get_region() + 'a')}</availabilityZone>
         <description>{eni['Description']}</description>
         <ownerId>{eni['OwnerId']}</ownerId>
         <status>{eni['Status']}</status>
@@ -2705,13 +2705,13 @@ def _create_vpc_peering_connection(params):
     vpc_id = _p(params, "VpcId")
     peer_vpc_id = _p(params, "PeerVpcId")
     peer_owner_id = _p(params, "PeerOwnerId") or get_account_id()
-    peer_region = _p(params, "PeerRegion") or REGION
+    peer_region = _p(params, "PeerRegion") or get_region()
     if not vpc_id or not peer_vpc_id:
         return _error("MissingParameter", "VpcId and PeerVpcId are required", 400)
     pcx_id = "pcx-" + "".join(random.choices(string.hexdigits[:16], k=17))
     record = {
         "VpcPeeringConnectionId": pcx_id,
-        "RequesterVpcInfo": {"VpcId": vpc_id, "OwnerId": get_account_id(), "Region": REGION},
+        "RequesterVpcInfo": {"VpcId": vpc_id, "OwnerId": get_account_id(), "Region": get_region()},
         "AccepterVpcInfo": {"VpcId": peer_vpc_id, "OwnerId": peer_owner_id, "Region": peer_region},
         "Status": {"Code": "pending-acceptance", "Message": "Pending Acceptance by " + peer_owner_id},
         "ExpirationTime": _now_ts(),
@@ -2720,7 +2720,7 @@ def _create_vpc_peering_connection(params):
     _vpc_peering[pcx_id] = record
     inner = f"""<vpcPeeringConnection>
         <vpcPeeringConnectionId>{pcx_id}</vpcPeeringConnectionId>
-        <requesterVpcInfo><vpcId>{vpc_id}</vpcId><ownerId>{get_account_id()}</ownerId><region>{REGION}</region></requesterVpcInfo>
+        <requesterVpcInfo><vpcId>{vpc_id}</vpcId><ownerId>{get_account_id()}</ownerId><region>{get_region()}</region></requesterVpcInfo>
         <accepterVpcInfo><vpcId>{peer_vpc_id}</vpcId><ownerId>{peer_owner_id}</ownerId><region>{peer_region}</region></accepterVpcInfo>
         <status><code>pending-acceptance</code></status>
         <tagSet/>
@@ -2992,8 +2992,8 @@ def _describe_prefix_lists(p):
     items = ""
     # Built-in AWS service prefix lists
     for tpl_svc, (pl_id, tpl_name) in _AWS_PREFIX_LISTS.items():
-        svc = tpl_svc.replace("{region}", REGION)
-        name = tpl_name.replace("{region}", REGION)
+        svc = tpl_svc.replace("{region}", get_region())
+        name = tpl_name.replace("{region}", get_region())
         if filter_ids and pl_id not in filter_ids:
             continue
         if filters.get("prefix-list-name") and name not in filters["prefix-list-name"]:
@@ -3037,7 +3037,7 @@ def _create_managed_prefix_list(p):
         "PrefixListId": pl_id, "PrefixListName": name, "State": "create-complete",
         "AddressFamily": af, "MaxEntries": max_entries, "Version": 1,
         "Entries": entries, "Tags": tags, "OwnerId": get_account_id(),
-        "PrefixListArn": f"arn:aws:ec2:{REGION}:{get_account_id()}:prefix-list/{pl_id}",
+        "PrefixListArn": f"arn:aws:ec2:{get_region()}:{get_account_id()}:prefix-list/{pl_id}",
     }
     if tags:
         _tags[pl_id] = tags

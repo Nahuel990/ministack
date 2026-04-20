@@ -68,7 +68,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring as xml_tostring
 from defusedxml.ElementTree import fromstring as safe_xml_parse
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("cognito")
 
@@ -125,7 +125,7 @@ def well_known_jwks(pool_id: str):
 
 def well_known_openid_configuration(pool_id: str, region: str | None = None):
     """Return OpenID Connect discovery document."""
-    r = region or REGION
+    r = region or get_region()
     issuer = f"https://cognito-idp.{r}.amazonaws.com/{pool_id}"
     doc = {
         "issuer": issuer,
@@ -244,12 +244,12 @@ def _now_epoch() -> float:
 
 
 def _pool_arn(pool_id: str) -> str:
-    return f"arn:aws:cognito-idp:{REGION}:{get_account_id()}:userpool/{pool_id}"
+    return f"arn:aws:cognito-idp:{get_region()}:{get_account_id()}:userpool/{pool_id}"
 
 
 def _pool_id() -> str:
     suffix = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(26))
-    return f"{REGION}_{suffix[:9]}"
+    return f"{get_region()}_{suffix[:9]}"
 
 
 def _client_id() -> str:
@@ -261,11 +261,11 @@ def _client_secret() -> str:
 
 
 def _identity_pool_id() -> str:
-    return f"{REGION}:{new_uuid()}"
+    return f"{get_region()}:{new_uuid()}"
 
 
 def _identity_id(pool_id: str) -> str:
-    return f"{REGION}:{new_uuid()}"
+    return f"{get_region()}:{new_uuid()}"
 
 
 def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "access",
@@ -279,7 +279,7 @@ def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "acces
     origin_jti = new_uuid()
     claims = {
         "sub": sub,
-        "iss": f"https://cognito-idp.{REGION}.amazonaws.com/{pool_id}",
+        "iss": f"https://cognito-idp.{get_region()}.amazonaws.com/{pool_id}",
         "token_use": token_type,
         "iat": now,
         "exp": now + 3600,
@@ -1806,7 +1806,7 @@ def _create_user_pool_domain(data):
         return error_response_json("InvalidParameterException", f"Domain {domain} already exists.", 400)
     pool["Domain"] = domain
     _pool_domain_map[domain] = pid
-    return json_response({"CloudFrontDomain": f"{domain}.auth.{REGION}.amazoncognito.com"})
+    return json_response({"CloudFrontDomain": f"{domain}.auth.{get_region()}.amazoncognito.com"})
 
 
 def _delete_user_pool_domain(data):
@@ -1832,7 +1832,7 @@ def _describe_user_pool_domain(data):
             "AWSAccountId": get_account_id(),
             "Domain": domain,
             "S3Bucket": "",
-            "CloudFrontDistribution": f"{domain}.auth.{REGION}.amazoncognito.com",
+            "CloudFrontDistribution": f"{domain}.auth.{get_region()}.amazoncognito.com",
             "Version": "1",
             "Status": "ACTIVE",
             "CustomDomainConfig": {},

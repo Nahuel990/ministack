@@ -22,7 +22,7 @@ import threading
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("athena")
 
@@ -144,11 +144,11 @@ _DUCKDB_TYPE_MAP = {
 
 
 def _arn_workgroup(name):
-    return f"arn:aws:athena:{REGION}:{get_account_id()}:workgroup/{name}"
+    return f"arn:aws:athena:{get_region()}:{get_account_id()}:workgroup/{name}"
 
 
 def _arn_datacatalog(name):
-    return f"arn:aws:athena:{REGION}:{get_account_id()}:datacatalog/{name}"
+    return f"arn:aws:athena:{get_region()}:{get_account_id()}:datacatalog/{name}"
 
 
 async def handle_request(method, path, headers, body, query_params):

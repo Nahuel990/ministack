@@ -34,7 +34,7 @@ import time
 import uuid
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id
+from ministack.core.responses import AccountScopedDict, get_account_id, get_region
 
 logger = logging.getLogger("appconfig")
 
@@ -98,24 +98,24 @@ def _now_iso():
 
 
 def _app_arn(app_id):
-    return f"arn:aws:appconfig:{REGION}:{get_account_id()}:application/{app_id}"
+    return f"arn:aws:appconfig:{get_region()}:{get_account_id()}:application/{app_id}"
 
 
 def _env_arn(app_id, env_id):
-    return f"arn:aws:appconfig:{REGION}:{get_account_id()}:application/{app_id}/environment/{env_id}"
+    return f"arn:aws:appconfig:{get_region()}:{get_account_id()}:application/{app_id}/environment/{env_id}"
 
 
 def _profile_arn(app_id, profile_id):
-    return f"arn:aws:appconfig:{REGION}:{get_account_id()}:application/{app_id}/configurationprofile/{profile_id}"
+    return f"arn:aws:appconfig:{get_region()}:{get_account_id()}:application/{app_id}/configurationprofile/{profile_id}"
 
 
 def _strategy_arn(strategy_id):
-    return f"arn:aws:appconfig:{REGION}:{get_account_id()}:deploymentstrategy/{strategy_id}"
+    return f"arn:aws:appconfig:{get_region()}:{get_account_id()}:deploymentstrategy/{strategy_id}"
 
 
 def _deployment_arn(app_id, env_id, deploy_num):
     return (
-        f"arn:aws:appconfig:{REGION}:{get_account_id()}:"
+        f"arn:aws:appconfig:{get_region()}:{get_account_id()}:"
         f"application/{app_id}/environment/{env_id}/deployment/{deploy_num}"
     )
 

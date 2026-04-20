@@ -21,7 +21,7 @@ import re
 import threading
 import time
 
-from ministack.core.responses import AccountScopedDict, get_account_id, json_response, error_response_json, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, json_response, error_response_json, new_uuid, get_region
 
 logger = logging.getLogger("eks")
 
@@ -100,11 +100,11 @@ def _next_port():
 
 
 def _cluster_arn(name):
-    return f"arn:aws:eks:{REGION}:{get_account_id()}:cluster/{name}"
+    return f"arn:aws:eks:{get_region()}:{get_account_id()}:cluster/{name}"
 
 
 def _nodegroup_arn(cluster_name, ng_name):
-    return f"arn:aws:eks:{REGION}:{get_account_id()}:nodegroup/{cluster_name}/{ng_name}/{new_uuid()[:8]}"
+    return f"arn:aws:eks:{get_region()}:{get_account_id()}:nodegroup/{cluster_name}/{ng_name}/{new_uuid()[:8]}"
 
 
 def _now():
@@ -232,7 +232,7 @@ def _create_cluster(body):
         },
         "logging": body.get("logging", {"clusterLogging": []}),
         "identity": {
-            "oidc": {"issuer": f"https://oidc.eks.{REGION}.amazonaws.com/id/{new_uuid()[:32].replace('-', '').upper()}"}
+            "oidc": {"issuer": f"https://oidc.eks.{get_region()}.amazonaws.com/id/{new_uuid()[:32].replace('-', '').upper()}"}
         },
         "status": "CREATING",
         "certificateAuthority": {"data": ""},

@@ -28,7 +28,7 @@ import time
 from urllib.parse import parse_qs
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 
 logger = logging.getLogger("alb")
 
@@ -230,7 +230,7 @@ def _attrs_xml(attrs):
 
 def _lb_xml(lb):
     azs = "".join(
-        f"<member><ZoneName>{REGION}a</ZoneName><SubnetId>{s}</SubnetId>"
+        f"<member><ZoneName>{get_region()}a</ZoneName><SubnetId>{s}</SubnetId>"
         f"<LoadBalancerAddresses/></member>"
         for s in lb.get("Subnets", [])
     )
@@ -348,11 +348,11 @@ def _create_lb(params):
             return _error("DuplicateLoadBalancerName",
                           f"A load balancer with name '{name}' already exists.")
     lid = _short_id()
-    arn = f"arn:aws:elasticloadbalancing:{REGION}:{get_account_id()}:loadbalancer/app/{name}/{lid}"
+    arn = f"arn:aws:elasticloadbalancing:{get_region()}:{get_account_id()}:loadbalancer/app/{name}/{lid}"
     lb = {
         "LoadBalancerArn": arn,
         "LoadBalancerName": name,
-        "DNSName": f"{name}-{lid[:8]}.{REGION}.elb.amazonaws.com",
+        "DNSName": f"{name}-{lid[:8]}.{get_region()}.elb.amazonaws.com",
         "Scheme": _p(params, "Scheme", "internet-facing"),
         "VpcId": _p(params, "VpcId", "vpc-00000001"),
         "State": "active",
@@ -440,7 +440,7 @@ def _create_tg(params):
             return _error("DuplicateTargetGroupName",
                           f"A target group with name '{name}' already exists.")
     tid = _short_id()
-    arn = f"arn:aws:elasticloadbalancing:{REGION}:{get_account_id()}:targetgroup/{name}/{tid}"
+    arn = f"arn:aws:elasticloadbalancing:{get_region()}:{get_account_id()}:targetgroup/{name}/{tid}"
     tg = {
         "TargetGroupArn": arn,
         "TargetGroupName": name,
@@ -567,7 +567,7 @@ def _create_listener(params):
     lb = _lbs[lb_arn]
     lb_name = lb["LoadBalancerName"]
     lb_id = lb_arn.split("/")[-1]
-    l_arn = (f"arn:aws:elasticloadbalancing:{REGION}:{get_account_id()}"
+    l_arn = (f"arn:aws:elasticloadbalancing:{get_region()}:{get_account_id()}"
              f":listener/app/{lb_name}/{lb_id}/{lid}")
     actions = _parse_actions(params, "DefaultActions")
     for action in actions:
@@ -588,7 +588,7 @@ def _create_listener(params):
     _tags[l_arn] = _parse_tags(params)
     # auto-create default rule
     rule_id = _short_id()
-    rule_arn = (f"arn:aws:elasticloadbalancing:{REGION}:{get_account_id()}"
+    rule_arn = (f"arn:aws:elasticloadbalancing:{get_region()}:{get_account_id()}"
                 f":listener-rule/app/{lb_name}/{lb_id}/{lid}/{rule_id}")
     _rules[rule_arn] = {
         "RuleArn": rule_arn, "ListenerArn": l_arn,
@@ -684,7 +684,7 @@ def _create_rule(params):
     lb_id = lb_arn.split("/")[-1]
     l_id = l_arn.split("/")[-1]
     rule_id = _short_id()
-    rule_arn = (f"arn:aws:elasticloadbalancing:{REGION}:{get_account_id()}"
+    rule_arn = (f"arn:aws:elasticloadbalancing:{get_region()}:{get_account_id()}"
                 f":listener-rule/app/{lb_name}/{lb_id}/{l_id}/{rule_id}")
     rule = {
         "RuleArn": rule_arn, "ListenerArn": l_arn,

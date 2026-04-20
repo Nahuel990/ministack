@@ -15,7 +15,7 @@ import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, now_iso
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, now_iso, get_region
 
 logger = logging.getLogger("acm")
 
@@ -52,7 +52,7 @@ def _epoch(iso_or_epoch):
 
 
 def _cert_arn():
-    return f"arn:aws:acm:{REGION}:{get_account_id()}:certificate/{new_uuid()}"
+    return f"arn:aws:acm:{get_region()}:{get_account_id()}:certificate/{new_uuid()}"
 
 
 def _validation_options(domain, method):

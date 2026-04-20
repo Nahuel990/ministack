@@ -37,6 +37,7 @@ from ministack.core.responses import (
     json_response,
     new_uuid,
     now_iso,
+    get_region,
 )
 
 logger = logging.getLogger("ecs")
@@ -272,7 +273,7 @@ def _create_cluster(data):
     if name in _clusters and _clusters[name]["status"] == "ACTIVE":
         return json_response({"cluster": _clusters[name]})
 
-    arn = f"arn:aws:ecs:{REGION}:{get_account_id()}:cluster/{name}"
+    arn = f"arn:aws:ecs:{get_region()}:{get_account_id()}:cluster/{name}"
     cluster = {
         "clusterArn": arn,
         "clusterName": name,
@@ -326,7 +327,7 @@ def _describe_clusters(data):
             })
             result.append(c)
         else:
-            arn = ref if ref.startswith("arn:") else f"arn:aws:ecs:{REGION}:{get_account_id()}:cluster/{ref}"
+            arn = ref if ref.startswith("arn:") else f"arn:aws:ecs:{get_region()}:{get_account_id()}:cluster/{ref}"
             failures.append({"arn": arn, "reason": "MISSING"})
     return json_response({"clusters": result, "failures": failures})
 
@@ -386,7 +387,7 @@ def _register_task_definition(data):
     rev = _task_def_latest.get(family, 0) + 1
     _task_def_latest[family] = rev
     td_key = f"{family}:{rev}"
-    arn = f"arn:aws:ecs:{REGION}:{get_account_id()}:task-definition/{td_key}"
+    arn = f"arn:aws:ecs:{get_region()}:{get_account_id()}:task-definition/{td_key}"
 
     compat = data.get("requiresCompatibilities", ["EC2"])
     network_mode = data.get("networkMode", "awsvpc" if "FARGATE" in compat else "bridge")
@@ -583,7 +584,7 @@ def _create_service(data):
     td_arn = _task_defs[td_key]["taskDefinitionArn"] if td_key in _task_defs else td_ref
 
     desired = data.get("desiredCount", 1)
-    arn = f"arn:aws:ecs:{REGION}:{get_account_id()}:service/{cluster_name}/{name}"
+    arn = f"arn:aws:ecs:{get_region()}:{get_account_id()}:service/{cluster_name}/{name}"
     now = _iso()
     launch_type = data.get("launchType", "EC2")
 
@@ -684,7 +685,7 @@ def _describe_services(data):
             result.append(_sanitize(s))
         else:
             arn = ref if ref.startswith("arn:") else \
-                f"arn:aws:ecs:{REGION}:{get_account_id()}:service/{cluster_name}/{ref}"
+                f"arn:aws:ecs:{get_region()}:{get_account_id()}:service/{cluster_name}/{ref}"
             failures.append({"arn": arn, "reason": "MISSING"})
     return json_response({"services": result, "failures": failures})
 
@@ -785,7 +786,7 @@ def _build_task_containers(td, container_overrides):
         env.update(env_override)
 
         containers.append({
-            "containerArn": f"arn:aws:ecs:{REGION}:{get_account_id()}:container/{new_uuid()}",
+            "containerArn": f"arn:aws:ecs:{get_region()}:{get_account_id()}:container/{new_uuid()}",
             "taskArn": "",
             "name": cdef["name"],
             "image": cdef.get("image", ""),
@@ -827,7 +828,7 @@ def _run_task(data):
 
     for _ in range(count):
         task_id = new_uuid()
-        task_arn = f"arn:aws:ecs:{REGION}:{get_account_id()}:task/{cluster_name}/{task_id}"
+        task_arn = f"arn:aws:ecs:{get_region()}:{get_account_id()}:task/{cluster_name}/{task_id}"
         now = _iso()
 
         containers = _build_task_containers(td, container_overrides)
@@ -838,7 +839,7 @@ def _run_task(data):
             "taskArn": task_arn,
             "clusterArn": _clusters[cluster_name]["clusterArn"],
             "taskDefinitionArn": td["taskDefinitionArn"],
-            "containerInstanceArn": f"arn:aws:ecs:{REGION}:{get_account_id()}:container-instance/{cluster_name}/{new_uuid()}",
+            "containerInstanceArn": f"arn:aws:ecs:{get_region()}:{get_account_id()}:container-instance/{cluster_name}/{new_uuid()}",
             "overrides": data.get("overrides", {"containerOverrides": [], "inferenceAcceleratorOverrides": []}),
             "lastStatus": "RUNNING",
             "desiredStatus": "RUNNING",
@@ -862,7 +863,7 @@ def _run_task(data):
             "version": 1,
             "containers": containers,
             "attachments": [],
-            "availabilityZone": f"{REGION}a",
+            "availabilityZone": f"{get_region()}a",
             "enableExecuteCommand": enable_exec,
             "tags": req_tags,
             "healthStatus": "UNKNOWN",
@@ -982,7 +983,7 @@ def _describe_tasks(data):
             result.append(t)
         else:
             arn = ref if ref.startswith("arn:") else \
-                f"arn:aws:ecs:{REGION}:{get_account_id()}:task/{cluster_name}/{ref}"
+                f"arn:aws:ecs:{get_region()}:{get_account_id()}:task/{cluster_name}/{ref}"
             failures.append({"arn": arn, "reason": "MISSING"})
     return json_response({"tasks": result, "failures": failures})
 
@@ -1036,7 +1037,7 @@ def _maybe_mark_stopped(task):
 
 def _list_tasks(data):
     cluster_name = _resolve_cluster_name(data.get("cluster", "default"))
-    cluster_arn = f"arn:aws:ecs:{REGION}:{get_account_id()}:cluster/{cluster_name}"
+    cluster_arn = f"arn:aws:ecs:{get_region()}:{get_account_id()}:cluster/{cluster_name}"
     status_filter = data.get("desiredStatus", "RUNNING")
     family = data.get("family", "")
     service_name = data.get("serviceName", "")
@@ -1143,7 +1144,7 @@ def _execute_command(data):
         "interactive": data.get("interactive", True),
         "session": {
             "sessionId": new_uuid(),
-            "streamUrl": f"wss://ssmmessages.{REGION}.amazonaws.com/v1/data-channel/{new_uuid()}",
+            "streamUrl": f"wss://ssmmessages.{get_region()}.amazonaws.com/v1/data-channel/{new_uuid()}",
             "tokenValue": new_uuid(),
         },
     })
@@ -1197,7 +1198,7 @@ def _describe_capacity_providers(data):
     for p in defaults:
         if not names or p["name"] in names:
             cp = {
-                "capacityProviderArn": f"arn:aws:ecs:{REGION}:{get_account_id()}:capacity-provider/{p['name']}",
+                "capacityProviderArn": f"arn:aws:ecs:{get_region()}:{get_account_id()}:capacity-provider/{p['name']}",
                 "name": p["name"],
                 "status": p["status"],
                 "autoScalingGroupProvider": p["autoScalingGroupProvider"],
@@ -1225,7 +1226,7 @@ def _create_capacity_provider(data):
         return error_response_json("InvalidParameterException",
             f"Capacity provider {name} already exists.", 400)
 
-    arn = f"arn:aws:ecs:{REGION}:{get_account_id()}:capacity-provider/{name}"
+    arn = f"arn:aws:ecs:{get_region()}:{get_account_id()}:capacity-provider/{name}"
     asg_provider = data.get("autoScalingGroupProvider", {})
 
     cp = {
@@ -1350,7 +1351,7 @@ def _resolve_task(ref, cluster_name="default"):
     task = _tasks.get(ref)
     if task:
         return task
-    cluster_arn = f"arn:aws:ecs:{REGION}:{get_account_id()}:cluster/{cluster_name}"
+    cluster_arn = f"arn:aws:ecs:{get_region()}:{get_account_id()}:cluster/{cluster_name}"
     for arn, t in _tasks.items():
         if t.get("clusterArn") != cluster_arn:
             continue

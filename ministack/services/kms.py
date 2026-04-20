@@ -13,7 +13,7 @@ import logging
 import os
 import time
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
 
 logger = logging.getLogger("kms")
 
@@ -107,7 +107,7 @@ if _restored:
 
 
 def _arn(key_id):
-    return f"arn:aws:kms:{REGION}:{get_account_id()}:key/{key_id}"
+    return f"arn:aws:kms:{get_region()}:{get_account_id()}:key/{key_id}"
 
 
 def _key_metadata(rec):
@@ -749,7 +749,7 @@ def _list_aliases(data):
                 continue
         items.append({
             "AliasName": alias_name,
-            "AliasArn": f"arn:aws:kms:{REGION}:{get_account_id()}:{alias_name}",
+            "AliasArn": f"arn:aws:kms:{get_region()}:{get_account_id()}:{alias_name}",
             "TargetKeyId": target_id,
         })
     return json_response({"Aliases": items, "Truncated": False})

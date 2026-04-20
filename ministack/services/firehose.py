@@ -31,6 +31,7 @@ from ministack.core.responses import (
     json_response,
     new_uuid,
     now_epoch,
+    get_region,
 )
 
 logger = logging.getLogger("firehose")
@@ -69,7 +70,7 @@ if _restored:
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 def _stream_arn(name: str) -> str:
-    return f"arn:aws:firehose:{REGION}:{get_account_id()}:deliverystream/{name}"
+    return f"arn:aws:firehose:{get_region()}:{get_account_id()}:deliverystream/{name}"
 
 
 def _next_dest_id() -> str:

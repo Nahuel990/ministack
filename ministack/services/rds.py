@@ -35,7 +35,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 
 logger = logging.getLogger("rds")
 
@@ -251,7 +251,7 @@ def _create_db_instance(p):
     storage_type = _p(p, "StorageType") or "gp2"
     subnet_group_name = _p(p, "DBSubnetGroupName") or "default"
 
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:db:{db_id}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:db:{db_id}"
     dbi_resource_id = f"db-{new_uuid().replace('-', '')[:20].upper()}"
     endpoint_host = "localhost"
     endpoint_port = port
@@ -339,7 +339,7 @@ def _create_db_instance(p):
         "SubnetGroupStatus": "Complete",
         "Subnets": [],
         "VpcId": "vpc-00000000",
-        "DBSubnetGroupArn": f"arn:aws:rds:{REGION}:{get_account_id()}:subgrp:{subnet_group_name}",
+        "DBSubnetGroupArn": f"arn:aws:rds:{get_region()}:{get_account_id()}:subgrp:{subnet_group_name}",
     })
 
     instance = {
@@ -365,7 +365,7 @@ def _create_db_instance(p):
             "DBParameterGroupName": param_group_name,
             "ParameterApplyStatus": "in-sync",
         }],
-        "AvailabilityZone": _p(p, "AvailabilityZone") or f"{REGION}a",
+        "AvailabilityZone": _p(p, "AvailabilityZone") or f"{get_region()}a",
         "DBSubnetGroup": subnet_group,
         "PreferredMaintenanceWindow": "sun:05:00-sun:06:00",
         "PendingModifiedValues": {},
@@ -656,7 +656,7 @@ def _create_read_replica(p):
     if replica_id in _instances:
         return _error("DBInstanceAlreadyExistsFault", f"DBInstance {replica_id} already exists.", 400)
 
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:db:{replica_id}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:db:{replica_id}"
     replica = dict(source)
     replica.update({
         "DBInstanceIdentifier": replica_id,
@@ -701,7 +701,7 @@ def _restore_from_snapshot(p):
     if not snap:
         return _error("DBSnapshotNotFound", f"DBSnapshot {snap_id} not found.", 404)
 
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:db:{db_id}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:db:{db_id}"
     instance = {
         "DBInstanceIdentifier": db_id,
         "DBInstanceClass": _p(p, "DBInstanceClass") or snap.get("DBInstanceClass", "db.t3.micro"),
@@ -725,7 +725,7 @@ def _restore_from_snapshot(p):
             "DBParameterGroupName": f"default.{snap.get('Engine', 'postgres')}",
             "ParameterApplyStatus": "in-sync",
         }],
-        "AvailabilityZone": _p(p, "AvailabilityZone") or f"{REGION}a",
+        "AvailabilityZone": _p(p, "AvailabilityZone") or f"{get_region()}a",
         "DBSubnetGroup": {"DBSubnetGroupName": _p(p, "DBSubnetGroupName") or "default",
                           "SubnetGroupStatus": "Complete", "Subnets": [], "VpcId": "vpc-00000000",
                           "DBSubnetGroupArn": ""},
@@ -774,7 +774,7 @@ def _create_db_cluster(p):
     engine_version = _p(p, "EngineVersion") or _default_engine_version(engine)
     port = int(_p(p, "Port") or _default_port(engine))
     master_user = _p(p, "MasterUsername") or "admin"
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:cluster:{cluster_id}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:cluster:{cluster_id}"
     unique_suffix = new_uuid()[:8]
     now_ts = time.time()
 
@@ -782,7 +782,7 @@ def _create_db_cluster(p):
     vpc_sg_list = [{"VpcSecurityGroupId": sg, "Status": "active"} for sg in vpc_sgs] if vpc_sgs else []
     az_list = _parse_member_list(p, "AvailabilityZones")
     if not az_list:
-        az_list = [f"{REGION}a", f"{REGION}b", f"{REGION}c"]
+        az_list = [f"{get_region()}a", f"{get_region()}b", f"{get_region()}c"]
 
     master_pass = _p(p, "MasterUserPassword") or "password"
 
@@ -796,8 +796,8 @@ def _create_db_cluster(p):
         "MasterUsername": master_user,
         "_MasterUserPassword": master_pass,
         "DatabaseName": _p(p, "DatabaseName") or "",
-        "Endpoint": f"{cluster_id}.cluster-{unique_suffix}.{REGION}.rds.amazonaws.com",
-        "ReaderEndpoint": f"{cluster_id}.cluster-ro-{unique_suffix}.{REGION}.rds.amazonaws.com",
+        "Endpoint": f"{cluster_id}.cluster-{unique_suffix}.{get_region()}.rds.amazonaws.com",
+        "ReaderEndpoint": f"{cluster_id}.cluster-ro-{unique_suffix}.{get_region()}.rds.amazonaws.com",
         "Port": port,
         "MultiAZ": _p(p, "MultiAZ") == "true",
         "AvailabilityZones": az_list,
@@ -961,7 +961,7 @@ def _modify_db_cluster(p):
 
 def _create_snapshot_internal(snap_id, instance):
     """Internal helper — creates a snapshot dict from an instance."""
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:snapshot:{snap_id}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:snapshot:{snap_id}"
     now_ts = time.time()
     snap = {
         "DBSnapshotIdentifier": snap_id,
@@ -973,7 +973,7 @@ def _create_snapshot_internal(snap_id, instance):
         "InstanceCreateTime": instance.get("InstanceCreateTime", _format_time(now_ts)),
         "Status": "available",
         "AllocatedStorage": instance.get("AllocatedStorage", 20),
-        "AvailabilityZone": instance.get("AvailabilityZone", f"{REGION}a"),
+        "AvailabilityZone": instance.get("AvailabilityZone", f"{get_region()}a"),
         "VpcId": "vpc-00000000",
         "Port": instance.get("Endpoint", {}).get("Port", 5432),
         "MasterUsername": instance.get("MasterUsername", "admin"),
@@ -1063,9 +1063,9 @@ def _create_subnet_group(p):
         return _error("MissingParameter", "DBSubnetGroupName is required", 400)
     desc = _p(p, "DBSubnetGroupDescription") or name
     subnet_ids = _parse_member_list(p, "SubnetIds")
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:subgrp:{name}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:subgrp:{name}"
 
-    subnets = [{"SubnetIdentifier": sid, "SubnetAvailabilityZone": {"Name": f"{REGION}a"},
+    subnets = [{"SubnetIdentifier": sid, "SubnetAvailabilityZone": {"Name": f"{get_region()}a"},
                 "SubnetOutpost": {}, "SubnetStatus": "Active"} for sid in subnet_ids]
 
     _subnet_groups[name] = {
@@ -1123,7 +1123,7 @@ def _create_param_group(p):
         return _error("MissingParameter", "DBParameterGroupName is required", 400)
     family = _p(p, "DBParameterGroupFamily") or "postgres15"
     desc = _p(p, "Description") or name
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:pg:{name}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:pg:{name}"
 
     _param_groups[name] = {
         "DBParameterGroupName": name,
@@ -1301,7 +1301,7 @@ def _create_db_cluster_param_group(p):
         return _error("MissingParameter", "DBClusterParameterGroupName is required", 400)
     family = _p(p, "DBParameterGroupFamily") or "aurora-postgresql15"
     desc = _p(p, "Description") or name
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:cluster-pg:{name}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:cluster-pg:{name}"
 
     _db_cluster_param_groups[name] = {
         "DBClusterParameterGroupName": name,
@@ -1455,7 +1455,7 @@ def _create_db_cluster_snapshot(p):
     if not cluster:
         return _error("DBClusterNotFoundFault", f"DBCluster {cluster_id} not found.", 404)
 
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:cluster-snapshot:{snap_id}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:cluster-snapshot:{snap_id}"
     now_ts = time.time()
     snap = {
         "DBClusterSnapshotIdentifier": snap_id,
@@ -1543,7 +1543,7 @@ def _modify_subnet_group(p):
     subnet_ids = _parse_member_list(p, "SubnetIds")
     if subnet_ids:
         sg["Subnets"] = [
-            {"SubnetIdentifier": sid, "SubnetAvailabilityZone": {"Name": f"{REGION}a"},
+            {"SubnetIdentifier": sid, "SubnetAvailabilityZone": {"Name": f"{get_region()}a"},
              "SubnetOutpost": {}, "SubnetStatus": "Active"} for sid in subnet_ids
         ]
 
@@ -1590,7 +1590,7 @@ def _create_option_group(p):
     engine = _p(p, "EngineName") or "postgres"
     major_version = _p(p, "MajorEngineVersion") or "15"
     desc = _p(p, "OptionGroupDescription") or name
-    arn = f"arn:aws:rds:{REGION}:{get_account_id()}:og:{name}"
+    arn = f"arn:aws:rds:{get_region()}:{get_account_id()}:og:{name}"
 
     _option_groups[name] = {
         "OptionGroupName": name,
@@ -1970,8 +1970,8 @@ def _describe_orderable_options(p):
             <DBInstanceClass>{cls}</DBInstanceClass>
             <LicenseModel>{_license_model(engine)}</LicenseModel>
             <AvailabilityZones>
-                <AvailabilityZone><Name>{REGION}a</Name></AvailabilityZone>
-                <AvailabilityZone><Name>{REGION}b</Name></AvailabilityZone>
+                <AvailabilityZone><Name>{get_region()}a</Name></AvailabilityZone>
+                <AvailabilityZone><Name>{get_region()}b</Name></AvailabilityZone>
             </AvailabilityZones>
             <MultiAZCapable>true</MultiAZCapable>
             <ReadReplicaCapable>true</ReadReplicaCapable>
@@ -2043,7 +2043,7 @@ def _instance_xml(i):
 
     subnet_xml = ""
     for s in subnet.get("Subnets", []):
-        az = s.get("SubnetAvailabilityZone", {}).get("Name", f"{REGION}a") if isinstance(s.get("SubnetAvailabilityZone"), dict) else f"{REGION}a"
+        az = s.get("SubnetAvailabilityZone", {}).get("Name", f"{get_region()}a") if isinstance(s.get("SubnetAvailabilityZone"), dict) else f"{get_region()}a"
         subnet_xml += f"""<Subnet>
             <SubnetIdentifier>{s.get('SubnetIdentifier','')}</SubnetIdentifier>
             <SubnetAvailabilityZone><Name>{az}</Name></SubnetAvailabilityZone>
@@ -2086,7 +2086,7 @@ def _instance_xml(i):
         <DBSecurityGroups>{db_sg_xml}</DBSecurityGroups>
         <VpcSecurityGroups>{vpc_sg_xml}</VpcSecurityGroups>
         <DBParameterGroups>{param_xml}</DBParameterGroups>
-        <AvailabilityZone>{i.get('AvailabilityZone',f'{REGION}a')}</AvailabilityZone>
+        <AvailabilityZone>{i.get('AvailabilityZone',f'{get_region()}a')}</AvailabilityZone>
         <DBSubnetGroup>
             <DBSubnetGroupName>{subnet.get('DBSubnetGroupName','default')}</DBSubnetGroupName>
             <DBSubnetGroupDescription>{subnet.get('DBSubnetGroupDescription','')}</DBSubnetGroupDescription>
@@ -2216,7 +2216,7 @@ def _snapshot_xml(s):
         <InstanceCreateTime>{s.get('InstanceCreateTime','')}</InstanceCreateTime>
         <Status>{s['Status']}</Status>
         <AllocatedStorage>{s.get('AllocatedStorage',20)}</AllocatedStorage>
-        <AvailabilityZone>{s.get('AvailabilityZone',f'{REGION}a')}</AvailabilityZone>
+        <AvailabilityZone>{s.get('AvailabilityZone',f'{get_region()}a')}</AvailabilityZone>
         <VpcId>{s.get('VpcId','vpc-00000000')}</VpcId>
         <Port>{s.get('Port',5432)}</Port>
         <MasterUsername>{s.get('MasterUsername','admin')}</MasterUsername>
@@ -2240,7 +2240,7 @@ def _snapshot_xml(s):
 def _subnet_group_xml(sg):
     subnets_xml = ""
     for s in sg.get("Subnets", []):
-        az = s.get("SubnetAvailabilityZone", {}).get("Name", f"{REGION}a") if isinstance(s.get("SubnetAvailabilityZone"), dict) else f"{REGION}a"
+        az = s.get("SubnetAvailabilityZone", {}).get("Name", f"{get_region()}a") if isinstance(s.get("SubnetAvailabilityZone"), dict) else f"{get_region()}a"
         subnets_xml += f"""<Subnet>
             <SubnetIdentifier>{s.get('SubnetIdentifier','')}</SubnetIdentifier>
             <SubnetAvailabilityZone><Name>{az}</Name></SubnetAvailabilityZone>

@@ -16,7 +16,7 @@ import os
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, error_response_json, get_account_id, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, error_response_json, get_account_id, json_response, new_uuid, get_region
 
 logger = logging.getLogger("codebuild")
 
@@ -56,11 +56,11 @@ if _restored:
 # ---------------------------------------------------------------------------
 
 def _project_arn(name):
-    return f"arn:aws:codebuild:{REGION}:{get_account_id()}:project/{name}"
+    return f"arn:aws:codebuild:{get_region()}:{get_account_id()}:project/{name}"
 
 
 def _build_arn(build_id):
-    return f"arn:aws:codebuild:{REGION}:{get_account_id()}:build/{build_id}"
+    return f"arn:aws:codebuild:{get_region()}:{get_account_id()}:build/{build_id}"
 
 
 def _build_id(project_name):
@@ -102,7 +102,7 @@ def _make_build_record(project, build_id, source_version=None):
         },
         "timeoutInMinutes": project.get("timeoutInMinutes", 60),
         "initiator": f"{get_account_id()}/user",
-        "encryptionKey": f"arn:aws:kms:{REGION}:{get_account_id()}:alias/aws/codebuild",
+        "encryptionKey": f"arn:aws:kms:{get_region()}:{get_account_id()}:alias/aws/codebuild",
     }
 
 
@@ -171,7 +171,7 @@ def _create_project(data):
         "created": now,
         "lastModified": now,
         "encryptionKey": data.get("encryptionKey",
-                                  f"arn:aws:kms:{REGION}:{get_account_id()}:alias/aws/codebuild"),
+                                  f"arn:aws:kms:{get_region()}:{get_account_id()}:alias/aws/codebuild"),
         "badge": {"badgeEnabled": False},
     }
     _projects[name] = project

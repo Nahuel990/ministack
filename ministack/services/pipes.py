@@ -14,7 +14,7 @@ import os
 import threading
 import time
 
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 
 logger = logging.getLogger("pipes")
 
@@ -48,7 +48,7 @@ def register_pipe(
     starting_position: str = "LATEST",
     tags: dict | None = None,
 ):
-    arn = f"arn:aws:pipes:{REGION}:{get_account_id()}:pipe/{name}"
+    arn = f"arn:aws:pipes:{get_region()}:{get_account_id()}:pipe/{name}"
     state = "STOPPED" if str(desired_state).upper() == "STOPPED" else "RUNNING"
     start = str(starting_position or "LATEST").upper()
     if start not in ("LATEST", "TRIM_HORIZON"):

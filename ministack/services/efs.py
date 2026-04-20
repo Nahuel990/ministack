@@ -25,7 +25,7 @@ import string
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id
+from ministack.core.responses import AccountScopedDict, get_account_id, get_region
 
 logger = logging.getLogger("efs")
 
@@ -74,7 +74,7 @@ def _create_file_system(body):
             return _json(200, _fs_response(fs))
 
     fs_id = _fs_id()
-    arn = f"arn:aws:elasticfilesystem:{REGION}:{get_account_id()}:file-system/{fs_id}"
+    arn = f"arn:aws:elasticfilesystem:{get_region()}:{get_account_id()}:file-system/{fs_id}"
     now = _now_iso()
 
     record = {
@@ -161,7 +161,7 @@ def _create_mount_target(body):
         return _error(404, "FileSystemNotFound", f"File system '{fs_id}' does not exist.")
 
     mt_id = _mt_id()
-    arn = f"arn:aws:elasticfilesystem:{REGION}:{get_account_id()}:file-system/{fs_id}/mount-target/{mt_id}"
+    arn = f"arn:aws:elasticfilesystem:{get_region()}:{get_account_id()}:file-system/{fs_id}/mount-target/{mt_id}"
     now = _now_iso()
 
     record = {
@@ -169,7 +169,7 @@ def _create_mount_target(body):
         "FileSystemId": fs_id,
         "SubnetId": subnet_id,
         "AvailabilityZoneId": f"use1-az{random.randint(1,3)}",
-        "AvailabilityZoneName": f"{REGION}a",
+        "AvailabilityZoneName": f"{get_region()}a",
         "VpcId": "vpc-00000001",
         "LifeCycleState": "available",
         "IpAddress": ip_address,
@@ -244,7 +244,7 @@ def _create_access_point(body):
         return _error(404, "FileSystemNotFound", f"File system '{fs_id}' does not exist.")
 
     ap_id = _ap_id()
-    arn = f"arn:aws:elasticfilesystem:{REGION}:{get_account_id()}:access-point/{ap_id}"
+    arn = f"arn:aws:elasticfilesystem:{get_region()}:{get_account_id()}:access-point/{ap_id}"
     now = _now_iso()
     tags = body.get("Tags", [])
 

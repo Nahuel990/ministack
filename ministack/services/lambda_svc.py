@@ -44,7 +44,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import AccountScopedDict, get_account_id, _request_account_id, error_response_json, json_response, new_uuid
+from ministack.core.responses import AccountScopedDict, get_account_id, _request_account_id, error_response_json, json_response, new_uuid, get_region
 from ministack.core.lambda_runtime import get_or_create_worker, invalidate_worker
 
 logger = logging.getLogger("lambda")
@@ -372,11 +372,11 @@ def _resolve_name_and_qualifier(name_or_arn: str) -> tuple[str, str | None]:
 
 
 def _func_arn(name: str) -> str:
-    return f"arn:aws:lambda:{REGION}:{get_account_id()}:function:{name}"
+    return f"arn:aws:lambda:{get_region()}:{get_account_id()}:function:{name}"
 
 
 def _layer_arn(name: str) -> str:
-    return f"arn:aws:lambda:{REGION}:{get_account_id()}:layer:{name}"
+    return f"arn:aws:lambda:{get_region()}:{get_account_id()}:layer:{name}"
 
 
 def _now_iso() -> str:
@@ -1998,8 +1998,8 @@ def _spawn_lambda_container(config: dict, code_zip: bytes | None):
 
     # Shared environment
     container_env: dict[str, str] = {
-        "AWS_DEFAULT_REGION": REGION,
-        "AWS_REGION": REGION,
+        "AWS_DEFAULT_REGION": get_region(),
+        "AWS_REGION": get_region(),
         "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
         "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
         "AWS_SESSION_TOKEN": os.environ.get("AWS_SESSION_TOKEN", ""),
@@ -2543,8 +2543,8 @@ def _execute_function_provided(func: dict, event: dict) -> dict:
                 proc_env = dict(os.environ)
                 proc_env.update({
                     "AWS_LAMBDA_RUNTIME_API": f"127.0.0.1:{port}",
-                    "AWS_DEFAULT_REGION": REGION,
-                    "AWS_REGION": REGION,
+                    "AWS_DEFAULT_REGION": get_region(),
+                    "AWS_REGION": get_region(),
                     "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
                     "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
                     "AWS_LAMBDA_FUNCTION_NAME": config.get("FunctionName", "unknown"),
@@ -2675,8 +2675,8 @@ def _execute_function_local(func: dict, event: dict) -> dict:
             env = dict(os.environ)
             env.update(
                 {
-                    "AWS_DEFAULT_REGION": REGION,
-                    "AWS_REGION": REGION,
+                    "AWS_DEFAULT_REGION": get_region(),
+                    "AWS_REGION": get_region(),
                     "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID", "test"),
                     "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
                     "AWS_SESSION_TOKEN": os.environ.get("AWS_SESSION_TOKEN", ""),
@@ -3772,7 +3772,7 @@ def _poll_sqs():
                 "md5OfBody": msg.get("md5_body") or msg.get("md5") or "",
                 "eventSource": "aws:sqs",
                 "eventSourceARN": source_arn,
-                "awsRegion": REGION,
+                "awsRegion": get_region(),
             })
 
         # Apply FilterCriteria before invoking — AWS filters records out
@@ -3906,7 +3906,7 @@ def _poll_kinesis():
                     "eventID": f"{shard_id}:{r['SequenceNumber']}",
                     "eventName": "aws:kinesis:record",
                     "invokeIdentityArn": f"arn:aws:iam::{get_account_id()}:role/lambda-role",
-                    "awsRegion": REGION,
+                    "awsRegion": get_region(),
                     "eventSourceARN": source_arn,
                 })
 
@@ -4033,7 +4033,7 @@ def _create_function_url_config(func_name: str, data: dict, qualifier: str | Non
             "ResourceConflictException", f"Function URL config already exists for {func_name}", 409
         )
     cfg = {
-        "FunctionUrl": f"https://{new_uuid()}.lambda-url.{REGION}.on.aws/",
+        "FunctionUrl": f"https://{new_uuid()}.lambda-url.{get_region()}.on.aws/",
         "FunctionArn": _func_arn(func_name),
         "AuthType": data.get("AuthType", "NONE"),
         "InvokeMode": data.get("InvokeMode", "BUFFERED"),
