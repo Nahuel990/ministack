@@ -212,6 +212,8 @@ def _send_raw_email(params):
         "MessageId": msg_id,
         "Source": source or parsed.get("From", ""),
         "To": [e.strip() for e in parsed.get("To", "").split(",") if e.strip()] or [],
+        "CC": [e.strip() for e in parsed.get("Cc", "").split(",") if e.strip()] or [],
+        "BCC": [e.strip() for e in parsed.get("Bcc", "").split(",") if e.strip()] or [],
         "Subject": subject or parsed.get("Subject", ""),
         "BodyText": body_text,
         "BodyHtml": body_html,
@@ -224,7 +226,9 @@ def _send_raw_email(params):
     actual_source = source or parsed.get("From", "")
     raw_destinations = _collect_list(params, "Destinations.member")
     to_from_parsed = [a.strip() for a in parsed.get("To", "").split(",") if a.strip()]
-    relay_addrs = raw_destinations or to_from_parsed
+    cc_from_parsed = [a.strip() for a in parsed.get("Cc", "").split(",") if a.strip()]
+    bcc_from_parsed = [a.strip() for a in parsed.get("Bcc", "").split(",") if a.strip()]
+    relay_addrs = raw_destinations or (to_from_parsed + cc_from_parsed + bcc_from_parsed)
     if actual_source and relay_addrs:
         try:
             raw_bytes = raw_b64.encode('utf-8') if isinstance(raw_b64, str) else raw_b64
