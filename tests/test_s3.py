@@ -777,8 +777,9 @@ def test_s3_event_notification_to_sqs(s3, sqs):
     s3.put_object(Bucket="s3-evt-bkt", Key="test-notify.txt", Body=b"hello")
     time.sleep(0.5)
     msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
-    assert "Messages" in msgs and len(msgs["Messages"]) > 0
-    body = json.loads(msgs["Messages"][0]["Body"])
+    s3_msgs = [m for m in msgs.get("Messages", []) if "Records" in json.loads(m["Body"])]
+    assert len(s3_msgs) > 0
+    body = json.loads(s3_msgs[0]["Body"])
     assert body["Records"][0]["eventSource"] == "aws:s3"
     assert body["Records"][0]["s3"]["object"]["key"] == "test-notify.txt"
 
@@ -805,7 +806,7 @@ def test_s3_event_notification_filter(s3, sqs):
     s3.put_object(Bucket="s3-evt-filter-bkt", Key="data.csv", Body=b"match")
     time.sleep(0.5)
     msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
-    keys = [json.loads(m["Body"])["Records"][0]["s3"]["object"]["key"] for m in msgs.get("Messages", [])]
+    keys = [json.loads(m["Body"])["Records"][0]["s3"]["object"]["key"] for m in msgs.get("Messages", []) if "Records" in json.loads(m["Body"])]
     assert "data.csv" in keys
     assert "data.txt" not in keys
 
@@ -826,9 +827,52 @@ def test_s3_event_notification_delete(s3, sqs):
     s3.delete_object(Bucket="s3-evt-del-bkt", Key="to-del.txt")
     time.sleep(0.5)
     msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
-    assert "Messages" in msgs and len(msgs["Messages"]) > 0
-    body = json.loads(msgs["Messages"][0]["Body"])
+    s3_msgs = [m for m in msgs.get("Messages", []) if "Records" in json.loads(m["Body"])]
+    assert len(s3_msgs) > 0
+    body = json.loads(s3_msgs[0]["Body"])
     assert "ObjectRemoved" in body["Records"][0]["eventName"]
+
+def test_s3_put_notification_sends_test_event(s3, sqs):
+    bkt = "s3-test-evt-bkt"
+    s3.create_bucket(Bucket=bkt)
+    queue_url = sqs.create_queue(QueueName="s3-test-evt-q")["QueueUrl"]
+    queue_arn = sqs.get_queue_attributes(
+        QueueUrl=queue_url,
+        AttributeNames=["QueueArn"],
+    )["Attributes"]["QueueArn"]
+    s3.put_bucket_notification_configuration(
+        Bucket=bkt,
+        NotificationConfiguration={
+            "QueueConfigurations": [{"QueueArn": queue_arn, "Events": ["s3:ObjectCreated:*"]}],
+        },
+    )
+    time.sleep(0.5)
+    msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
+    assert "Messages" in msgs and len(msgs["Messages"]) == 1
+    body = json.loads(msgs["Messages"][0]["Body"])
+    assert body["Event"] == "s3:TestEvent"
+    assert body["Bucket"] == bkt
+    assert "Records" not in body
+
+
+def test_s3_put_notification_no_test_event_for_missing_bucket(s3, sqs):
+    queue_url = sqs.create_queue(QueueName="s3-test-evt-missing-q")["QueueUrl"]
+    queue_arn = sqs.get_queue_attributes(
+        QueueUrl=queue_url,
+        AttributeNames=["QueueArn"],
+    )["Attributes"]["QueueArn"]
+    with pytest.raises(ClientError) as exc:
+        s3.put_bucket_notification_configuration(
+            Bucket="no-such-bucket-xyz",
+            NotificationConfiguration={
+                "QueueConfigurations": [{"QueueArn": queue_arn, "Events": ["s3:ObjectCreated:*"]}],
+            },
+        )
+    assert exc.value.response["Error"]["Code"] == "NoSuchBucket"
+    time.sleep(0.5)
+    msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=1)
+    assert "Messages" not in msgs
+
 
 def test_s3_eventbridge_notification(s3, sqs, eb):
     """S3 EventBridgeConfiguration sends events to EventBridge, routed to SQS via rule."""
@@ -1346,23 +1390,25 @@ def test_s3_event_to_sqs(s3, sqs):
     s3.put_object(Bucket=bucket, Key="hello.txt", Body=b"world")
     time.sleep(1)
     msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
-    assert "Messages" in msgs and len(msgs["Messages"]) >= 1
-    body = json.loads(msgs["Messages"][0]["Body"])
+    s3_msgs = [m for m in msgs.get("Messages", []) if "Records" in json.loads(m["Body"])]
+    assert len(s3_msgs) >= 1
+    body = json.loads(s3_msgs[0]["Body"])
     assert body["Records"][0]["eventSource"] == "aws:s3"
     assert body["Records"][0]["eventName"].startswith("ObjectCreated:")
     assert body["Records"][0]["s3"]["bucket"]["name"] == bucket
     assert body["Records"][0]["s3"]["object"]["key"] == "hello.txt"
 
     # Delete receipts so queue is clean
-    for m in msgs["Messages"]:
+    for m in msgs.get("Messages", []):
         sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=m["ReceiptHandle"])
 
     # Delete the object — should fire ObjectRemoved event
     s3.delete_object(Bucket=bucket, Key="hello.txt")
     time.sleep(1)
     msgs = sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10, WaitTimeSeconds=2)
-    assert "Messages" in msgs and len(msgs["Messages"]) >= 1
-    del_body = json.loads(msgs["Messages"][0]["Body"])
+    s3_msgs = [m for m in msgs.get("Messages", []) if "Records" in json.loads(m["Body"])]
+    assert len(s3_msgs) >= 1
+    del_body = json.loads(s3_msgs[0]["Body"])
     assert del_body["Records"][0]["eventName"].startswith("ObjectRemoved:")
 
 

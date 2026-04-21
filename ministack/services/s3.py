@@ -1096,6 +1096,7 @@ def _put_bucket_notification(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
     _bucket_notifications[name] = body
+    _fire_s3_test_event_async(name)
     return 200, {}, b""
 
 
@@ -1547,6 +1548,42 @@ def _fire_s3_event_async(
         args=(bucket_name, key, event_name, size, etag),
         daemon=True,
     )
+    t.start()
+
+
+def _fire_s3_test_event(bucket_name: str) -> None:
+    """Deliver an s3:TestEvent to every destination in the bucket notification config."""
+    try:
+        configs = _parse_notification_config(bucket_name)
+        if not configs:
+            return
+        payload = {
+            "Service": "Amazon S3",
+            "Event": "s3:TestEvent",
+            "Time": _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "Bucket": bucket_name,
+            "RequestId": new_uuid(),
+            "HostId": new_uuid(),
+        }
+        for cfg in configs:
+            try:
+                if cfg["type"] == "sqs":
+                    _deliver_event_to_sqs(cfg["arn"], payload)
+                elif cfg["type"] == "sns":
+                    _deliver_event_to_sns(cfg["arn"], payload)
+                elif cfg["type"] == "lambda":
+                    _deliver_event_to_lambda(cfg["arn"], payload)
+            except Exception:
+                logger.exception(
+                    "S3 test-event delivery failed for config %s", cfg.get("id")
+                )
+    except Exception:
+        logger.exception("S3 test-event fire failed for %s", bucket_name)
+
+
+def _fire_s3_test_event_async(bucket_name: str) -> None:
+    """Fire s3:TestEvent in a background thread (non-blocking)."""
+    t = threading.Thread(target=_fire_s3_test_event, args=(bucket_name,), daemon=True)
     t.start()
 
 
