@@ -452,6 +452,39 @@ async def _handle_admin_reset(path: str, method: str, query_params: dict):
     return 200, {"Content-Type": "application/json"}, json.dumps({"reset": "ok"}).encode()
 
 
+async def _handle_ses_messages_request(method: str, path: str, headers: dict):
+    """Handle SES messages inspection endpoint."""
+    if path != "/_ministack/ses/messages" or method != "GET":
+        return None
+
+    try:
+        # Use ses module for all SES message retrieval (v1 + v2 emails stored together)
+        mod = _get_module("ses")
+        sent_emails_list = mod._sent_emails_list()
+        response = {
+            "messages": [
+                {
+                    "MessageId": rec["MessageId"],
+                    "Source": rec["Source"],
+                    "To": rec.get("To", []),
+                    "CC": rec.get("CC", []),
+                    "BCC": rec.get("BCC", []),
+                    "Subject": rec.get("RenderedSubject") or rec.get("Subject", ""),
+                    "BodyText": rec.get("RenderedBodyText") or rec.get("BodyText", ""),
+                    "BodyHtml": rec.get("RenderedBodyHtml") or rec.get("BodyHtml"),
+                    "Timestamp": rec["Timestamp"],
+                    "Type": rec["Type"],
+                }
+                for rec in sent_emails_list
+            ]
+        }
+    except Exception as e:
+        logger.exception("Error retrieving SES messages: %s", e)
+        return 500, {"Content-Type": "application/json"}, json.dumps({"message": str(e)}).encode()
+
+    return 200, {"Content-Type": "application/json"}, json.dumps(response).encode()
+
+
 async def _handle_pre_body_request(method: str, path: str, headers: dict, query_params: dict, request_id: str):
     """Handle fast-path routes that do not require request body parsing."""
     # OPTIONS on an execute-api host / path MUST flow through apigateway.handle_execute
@@ -472,6 +505,11 @@ async def _handle_pre_body_request(method: str, path: str, headers: dict, query_
     response = await _handle_cognito_get_request(method, path, headers, query_params)
     if response is not None:
         return response
+    
+    response = await _handle_ses_messages_request(method, path, headers)
+    if response is not None:
+        return response
+
     return await _handle_admin_reset(path, method, query_params)
 
 
