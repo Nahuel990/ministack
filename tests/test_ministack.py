@@ -71,6 +71,40 @@ def test_ministack_health_endpoints():
     data_localstack = json.loads(resp_localstack.read())
     assert data_health == data_localstack
 
+def test_localstack_unknown_paths_return_json_404():
+    """Unknown /_localstack/* paths must return 404 JSON, not S3 XML NoSuchBucket."""
+    import urllib.error
+    import urllib.request
+
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+    for subpath in ("info", "plugins", "init"):
+        url = f"{endpoint}/_localstack/{subpath}"
+        try:
+            urllib.request.urlopen(url, timeout=5)
+            raise AssertionError(f"Expected 404 for {url}, got 200")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404, f"Expected 404, got {exc.code} for {url}"
+            body = json.loads(exc.read())
+            assert "error" in body, f"Response body missing 'error' key for {url}"
+            assert "LocalStack" in body["error"], f"Error message should mention LocalStack: {body['error']}"
+            assert "ministack" in body["error"].lower(), f"Error message should mention ministack: {body['error']}"
+            assert exc.headers.get("Content-Type") == "application/json", (
+                f"Expected application/json Content-Type for {url}"
+            )
+
+
+def test_localstack_health_still_returns_200():
+    """/_localstack/health must still return 200 after the interceptor is wired in."""
+    import urllib.request
+
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+    resp = urllib.request.urlopen(f"{endpoint}/_localstack/health", timeout=5)
+    assert resp.status == 200
+    data = json.loads(resp.read())
+    assert "services" in data
+    assert "edition" in data
+
+
 @_requires_package
 def test_ministack_package_core_importable():
     """ministack.core modules must all be importable."""
