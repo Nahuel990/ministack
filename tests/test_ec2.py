@@ -2,11 +2,13 @@ import io
 import json
 import os
 import time
+import uuid as _uuid_mod
 import zipfile
 from urllib.parse import urlparse
+
 import pytest
 from botocore.exceptions import ClientError
-import uuid as _uuid_mod
+
 
 def test_ec2_describe_vpcs_default(ec2):
     resp = ec2.describe_vpcs()
@@ -228,6 +230,33 @@ def test_ec2_tags_crud(ec2):
     assert not any(t["Key"] == "Name" for t in tags2)
 
     ec2.terminate_instances(InstanceIds=[iid])
+
+
+def test_ec2_describe_instances_tag_filter_excludes_untagged(ec2):
+    owner = f"devuser-{_uuid_mod.uuid4().hex}"
+    untagged_id = ec2.run_instances(ImageId="ami-untagged", MinCount=1, MaxCount=1)["Instances"][0]["InstanceId"]
+    tagged_id = ec2.run_instances(
+        ImageId="ami-tagged",
+        MinCount=1,
+        MaxCount=1,
+        TagSpecifications=[{
+            "ResourceType": "instance",
+            "Tags": [{"Key": "PopOpsOwner", "Value": owner}],
+        }],
+    )["Instances"][0]["InstanceId"]
+
+    resp = ec2.describe_instances(Filters=[{"Name": "tag:PopOpsOwner", "Values": [owner]}])
+    ids = [
+        inst["InstanceId"]
+        for reservation in resp["Reservations"]
+        for inst in reservation["Instances"]
+    ]
+
+    assert tagged_id in ids
+    assert untagged_id not in ids
+
+    ec2.terminate_instances(InstanceIds=[untagged_id, tagged_id])
+
 
 def test_ec2_modify_vpc_attribute(ec2):
     vpc_id = ec2.create_vpc(CidrBlock="10.10.0.0/16")["Vpc"]["VpcId"]

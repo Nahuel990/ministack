@@ -63,8 +63,8 @@ import time
 from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
-from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
+from ministack.core.persistence import PERSIST_STATE, load_state
+from ministack.core.responses import AccountScopedDict, get_account_id, get_region, new_uuid
 
 logger = logging.getLogger("ec2")
 
@@ -2279,6 +2279,7 @@ def _parse_filters(params):
 
 
 def _matches_filters(inst, filters):
+    tag_list = _tags.get(inst["InstanceId"], [])
     for name, vals in filters.items():
         if name == "instance-state-name":
             if inst["State"]["Name"] not in vals:
@@ -2288,6 +2289,14 @@ def _matches_filters(inst, filters):
                 return False
         elif name == "image-id":
             if inst["ImageId"] not in vals:
+                return False
+        elif name.startswith("tag:"):
+            tag_key = name[4:]
+            tag_val = next((t["Value"] for t in tag_list if t["Key"] == tag_key), None)
+            if tag_val not in vals:
+                return False
+        elif name == "tag-key":
+            if not any(t["Key"] in vals for t in tag_list):
                 return False
     return True
 
