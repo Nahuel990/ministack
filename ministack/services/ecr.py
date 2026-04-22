@@ -43,9 +43,15 @@ def restore_state(data):
         _repo_policies.update(data.get("repo_policies", {}))
 
 
-_restored = load_state("ecr")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("ecr")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 def _repo_arn(name):

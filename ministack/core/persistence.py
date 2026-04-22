@@ -19,7 +19,14 @@ STATE_DIR = os.environ.get("STATE_DIR", "/tmp/ministack-state")
 
 
 def _json_default(obj):
-    """JSON encoder fallback for AccountScopedDict and tuple keys."""
+    """JSON encoder fallback for AccountScopedDict, tuple keys, and bytes.
+
+    Historically, several S3 (and other service) stores held raw request
+    bodies as ``bytes``. ``json.dump`` raised ``TypeError`` and
+    ``save_state`` silently swallowed the error, leaving ``${service}.json``
+    absent on disk (issue #422). Bytes are now serialized as base64 inside a
+    tagged dict so round-trip fidelity is preserved even for non-UTF-8
+    payloads."""
     if isinstance(obj, AccountScopedDict):
         # Serialize all accounts' data with string keys
         result = {}
@@ -27,11 +34,14 @@ def _json_default(obj):
             # k is (account_id, original_key) tuple
             result[f"{k[0]}\x00{k[1]!r}"] = v
         return {"__scoped__": True, "data": result}
+    if isinstance(obj, (bytes, bytearray)):
+        import base64
+        return {"__bytes__": base64.b64encode(bytes(obj)).decode("ascii")}
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def _json_object_hook(obj):
-    """JSON decoder hook to restore AccountScopedDict from serialized form."""
+    """JSON decoder hook to restore AccountScopedDict and bytes from serialized form."""
     if obj.get("__scoped__"):
         asd = AccountScopedDict()
         for k, v in obj["data"].items():
@@ -43,6 +53,9 @@ def _json_object_hook(obj):
                 original_key = key_repr
             asd._data[(account_id, original_key)] = v
         return asd
+    if "__bytes__" in obj:
+        import base64
+        return base64.b64decode(obj["__bytes__"])
     return obj
 
 

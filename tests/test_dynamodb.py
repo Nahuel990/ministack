@@ -1490,3 +1490,39 @@ def test_dynamodb_stream_arn_stable(ddb):
     assert desc1["LatestStreamLabel"] == desc2["LatestStreamLabel"]
     ddb.delete_table(TableName=tname)
 
+
+
+def test_ddb_sse_description_shape_matches_aws(ddb, kms_client):
+    """CreateTable and UpdateTable must return an AWS-shaped SSEDescription
+    (Status + SSEType + KMSMasterKeyArn), not the request's SSESpecification
+    (Enabled + KMSMasterKeyId). Regression for #411 — Terraform's waiter hangs
+    forever if Status is missing."""
+    key_id = kms_client.create_key(Description="ddb-sse-t")["KeyMetadata"]["KeyId"]
+    key_arn = f"arn:aws:kms:us-east-1:000000000000:key/{key_id}"
+    tname = "t-sse-shape"
+    try: ddb.delete_table(TableName=tname)
+    except Exception: pass
+
+    ddb.create_table(
+        TableName=tname,
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "PK", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+        SSESpecification={"Enabled": True, "SSEType": "KMS", "KMSMasterKeyId": key_arn},
+    )
+    desc = ddb.describe_table(TableName=tname)["Table"]
+    sse = desc["SSEDescription"]
+    assert sse["Status"] == "ENABLED"
+    assert sse["SSEType"] == "KMS"
+    assert sse["KMSMasterKeyArn"] == key_arn
+    assert "Enabled" not in sse
+    assert "KMSMasterKeyId" not in sse
+
+    # UpdateTable with SSESpecification must also produce the right shape.
+    ddb.update_table(
+        TableName=tname,
+        SSESpecification={"Enabled": False},
+    )
+    sse = ddb.describe_table(TableName=tname)["Table"]["SSEDescription"]
+    assert sse["Status"] == "DISABLED"
+    ddb.delete_table(TableName=tname)

@@ -141,9 +141,15 @@ def restore_state(data):
                     rep[tk] = _coerce_timestamp(rep[tk])
 
 
-_restored = load_state("eventbridge")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("eventbridge")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 async def handle_request(method, path, headers, body, query_params):

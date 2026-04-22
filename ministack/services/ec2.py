@@ -156,9 +156,15 @@ def restore_state(data):
         _launch_templates.update(data.get("launch_templates", {}))
 
 
-_restored = load_state("ec2")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("ec2")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 # Default VPC / subnet created at import time so DescribeVpcs always returns something

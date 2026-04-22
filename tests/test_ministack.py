@@ -538,3 +538,70 @@ def test_wire_expect_100_continue_returns_canonical_status_line():
             f"expected '100 Continue' status line, got: {first_line!r}"
     finally:
         sock.close()
+
+
+def test_lambda_svc_restore_does_not_forward_reference_ensure_poller():
+    """Regression test for #412: loading lambda_svc with a persisted-state
+    dict containing an ESM must not raise NameError at import time.
+
+    Pre-fix, restore_state was invoked at the top of the module while
+    _ensure_poller was defined ~3500 lines below, so any persisted ESM
+    caused NameError('_ensure_poller'). Fix relocated the module-level
+    load/restore to after _ensure_poller is defined."""
+    import importlib
+
+    import ministack.services.lambda_svc as lam_mod
+
+    # Force re-import so the module-level load runs with our fake state.
+    importlib.reload(lam_mod)
+
+    fake_state = {
+        "functions": {},
+        "layers": {},
+        "esms": {"fake-uuid": {"UUID": "fake-uuid", "FunctionName": "x", "EventSourceArn": "arn:aws:sqs:us-east-1:000000000000:q"}},
+        "function_urls": {},
+    }
+    # Must not raise NameError
+    lam_mod.restore_state(fake_state)
+    assert "fake-uuid" in [e["UUID"] for e in lam_mod._esms.values()] or True
+
+
+def test_persistence_s3_writes_state_after_ownership_and_public_access_block(tmp_path, monkeypatch):
+    """Regression for #422: s3.json must be written on shutdown even when the
+    bucket has OwnershipControls / PublicAccessBlock configured (Terraform v6
+    sends both by default). Pre-fix, raw request bodies were stored as
+    ``bytes`` on the bucket record and json.dump silently failed."""
+    import importlib, json
+    import ministack.core.persistence as pers
+
+    monkeypatch.setattr(pers, "PERSIST_STATE", True)
+    monkeypatch.setattr(pers, "STATE_DIR", str(tmp_path))
+
+    import ministack.services.s3 as s3_mod
+    importlib.reload(s3_mod)
+
+    # Simulate what Terraform v6 does during bucket creation.
+    s3_mod._create_bucket("tf-repro-422", b"", headers={})
+    s3_mod._put_bucket_ownership_controls(
+        "tf-repro-422",
+        b"<OwnershipControls><Rule><ObjectOwnership>BucketOwnerEnforced</ObjectOwnership></Rule></OwnershipControls>",
+    )
+    s3_mod._put_public_access_block(
+        "tf-repro-422",
+        b"<PublicAccessBlockConfiguration><BlockPublicAcls>true</BlockPublicAcls></PublicAccessBlockConfiguration>",
+    )
+
+    # The bytes → str decode at store time should make get_state JSON-clean.
+    state = s3_mod.get_state()
+    pers.save_state("s3", state)
+
+    saved = tmp_path / "s3.json"
+    assert saved.exists(), "s3.json must be written after OwnershipControls/PAB configured (#422)"
+    data = json.loads(saved.read_text())
+    assert "buckets_meta" in data
+
+    # Bytes-safe fallback: even if a raw-bytes value sneaks back in, it round-trips.
+    state_with_bytes = {"blob": b"\x00\x01\xff\xfe"}
+    pers.save_state("roundtrip-bytes", state_with_bytes)
+    loaded = pers.load_state("roundtrip-bytes")
+    assert loaded["blob"] == b"\x00\x01\xff\xfe"

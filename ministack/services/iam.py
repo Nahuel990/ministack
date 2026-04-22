@@ -86,9 +86,15 @@ def restore_state(data):
         _user_inline_policies.update(data.get("user_inline_policies", {}))
 
 
-_restored = load_state("iam")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("iam")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 # ===================================================================== IAM
