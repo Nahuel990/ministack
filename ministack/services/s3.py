@@ -745,7 +745,7 @@ def _get_bucket_encryption(name: str):
 def _put_bucket_encryption(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_encryption[name] = body
+    _bucket_encryption[name] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -930,7 +930,7 @@ def _put_bucket_lifecycle(name: str, body: bytes):
             rules.append(rule)
     except Exception:
         # Fallback: store raw if parsing fails
-        _bucket_lifecycle[name] = body
+        _bucket_lifecycle[name] = body.decode("utf-8", errors="replace")
         return 200, {"x-amz-transition-default-minimum-object-size": "all_storage_classes_128K"}, b""
     _bucket_lifecycle[name] = rules
     return 200, {"x-amz-transition-default-minimum-object-size": "all_storage_classes_128K"}, b""
@@ -960,7 +960,7 @@ def _get_bucket_cors(name: str):
 def _put_bucket_cors(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_cors[name] = body
+    _bucket_cors[name] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -994,7 +994,7 @@ def _put_bucket_acl(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
     if body:
-        _bucket_acl[name] = body
+        _bucket_acl[name] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -1036,7 +1036,7 @@ def _delete_bucket_tagging(name: str):
 def _put_bucket_ownership_controls(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _buckets[name]["_ownership_controls"] = body
+    _buckets[name]["_ownership_controls"] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -1062,7 +1062,7 @@ def _delete_bucket_ownership_controls(name: str):
 def _put_public_access_block(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _buckets[name]["_public_access_block"] = body
+    _buckets[name]["_public_access_block"] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -1101,7 +1101,7 @@ def _get_bucket_notification(name: str):
 def _put_bucket_notification(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_notifications[name] = body
+    _bucket_notifications[name] = body.decode("utf-8", errors="replace")
     # Fire the s3:TestEvent synchronously so it's delivered before PutBucketNotification
     # returns — matches AWS's effective behaviour and avoids a race where the
     # client polls the destination queue/topic before the background thread has
@@ -1124,7 +1124,7 @@ def _get_bucket_logging(name: str):
 def _put_bucket_logging(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_logging_config[name] = body
+    _bucket_logging_config[name] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -1141,7 +1141,7 @@ def _get_bucket_accelerate(name: str):
 def _put_bucket_accelerate(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_accelerate_config[name] = body
+    _bucket_accelerate_config[name] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -1159,7 +1159,7 @@ def _get_bucket_request_payment(name: str):
 def _put_bucket_request_payment(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_request_payment_config[name] = body
+    _bucket_request_payment_config[name] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -1180,7 +1180,7 @@ def _get_bucket_website(name: str):
 def _put_bucket_website(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
-    _bucket_websites[name] = body
+    _bucket_websites[name] = body.decode("utf-8", errors="replace")
     return 200, {}, b""
 
 
@@ -1389,8 +1389,8 @@ def _fire_s3_event(
     """Build and deliver an S3 event notification. Best-effort — errors are logged."""
     try:
         configs = _parse_notification_config(bucket_name)
-        raw_xml = _bucket_notifications.get(bucket_name, b"")
-        has_eventbridge = b"EventBridgeConfiguration" in raw_xml
+        raw_xml = _bucket_notifications.get(bucket_name, "")
+        has_eventbridge = "EventBridgeConfiguration" in raw_xml
         if not configs and not has_eventbridge:
             return
 
