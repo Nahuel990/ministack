@@ -46,9 +46,15 @@ def restore_state(data):
     _waf_tags.update(data.get("_waf_tags", {}))
 
 
-_restored = load_state("waf")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("waf")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 def _waf_err(code, message):

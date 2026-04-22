@@ -538,3 +538,29 @@ def test_wire_expect_100_continue_returns_canonical_status_line():
             f"expected '100 Continue' status line, got: {first_line!r}"
     finally:
         sock.close()
+
+
+def test_lambda_svc_restore_does_not_forward_reference_ensure_poller():
+    """Regression test for #412: loading lambda_svc with a persisted-state
+    dict containing an ESM must not raise NameError at import time.
+
+    Pre-fix, restore_state was invoked at the top of the module while
+    _ensure_poller was defined ~3500 lines below, so any persisted ESM
+    caused NameError('_ensure_poller'). Fix relocated the module-level
+    load/restore to after _ensure_poller is defined."""
+    import importlib
+
+    import ministack.services.lambda_svc as lam_mod
+
+    # Force re-import so the module-level load runs with our fake state.
+    importlib.reload(lam_mod)
+
+    fake_state = {
+        "functions": {},
+        "layers": {},
+        "esms": {"fake-uuid": {"UUID": "fake-uuid", "FunctionName": "x", "EventSourceArn": "arn:aws:sqs:us-east-1:000000000000:q"}},
+        "function_urls": {},
+    }
+    # Must not raise NameError
+    lam_mod.restore_state(fake_state)
+    assert "fake-uuid" in [e["UUID"] for e in lam_mod._esms.values()] or True

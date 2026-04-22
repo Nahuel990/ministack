@@ -7,6 +7,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.8] — 2026-04-21
+
+### Added
+- **S3 `s3:TestEvent` on `PutBucketNotificationConfiguration`** — configuring bucket notifications now delivers a flat `s3:TestEvent` payload (no `Records` wrapper) to every SQS / SNS / Lambda destination, matching real AWS S3 behaviour so tooling that listens for the test event on bucket setup works locally. Contributed by @nigel-campbell (#416)
+
+### Fixed
+- **Lambda persistence crash on warm start with any event source mapping** — `lambda_svc.restore_state()` called `_ensure_poller()` when restoring ESMs, but the module-level invocation ran at line 170 while `_ensure_poller` was defined ~3,500 lines later. Warm starts with `PERSIST_STATE=1` and an ESM in `lambda.json` raised `NameError: name '_ensure_poller' is not defined` on every Lambda request until the state file was deleted. The module-level load/restore is now at the bottom of the file, after every helper it may call. Reported by @whittin3. Fixes #412
+- **DynamoDB `SSEDescription` used the request shape instead of the response shape** — `CreateTable` stored the caller's `SSESpecification` (`Enabled`/`KMSMasterKeyId`) directly as the response `SSEDescription`, which is missing the `Status` field Terraform v6 waits on; `UpdateTable` silently ignored `SSESpecification`. Warm-boot `terraform apply` on any encrypted table hung forever with `unexpected state '', wanted target 'DISABLED, ENABLED'`. Fixed by converting spec → description (`Status`, `SSEType`, `KMSMasterKeyArn`) at create + update, plus a one-shot migration in `restore_state` for legacy persisted tables. Reported by @whittin3. Fixes #411
+- **`test_s3_put_notification_sends_test_event` was flaky under parallel load** — background thread delivering `s3:TestEvent` raced the test's poll. `PutBucketNotification` now delivers the test event synchronously (matching AWS effective behaviour) before returning; removes the race and also fixes multi-tenant delivery where the worker thread lost the caller's account contextvar.
+
+### Changed
+- **Hardened persisted-state restore across every service** — 35 service modules wrapped their module-level `load_state()` + `restore_state()` invocation in `try/except` so a corrupt or schema-incompatible `{service}.json` logs and continues with a fresh store instead of breaking the service at import. Audited every `restore_state` / `load_persisted_state` for forward references (0 other violators) and unsafe `data[key]` subscript accesses (all guarded). This closes the entire class of bug around #412.
+
+---
+
 ## [1.3.7] — 2026-04-21
 
 ### Fixed

@@ -165,9 +165,12 @@ def restore_state(data):
             _ensure_poller()
 
 
-_restored = load_state("lambda")
-if _restored:
-    restore_state(_restored)
+# NOTE: the persisted-state load used to run here, but ``restore_state`` calls
+# ``_ensure_poller()`` when the restored data contains event source mappings,
+# and that helper is defined much later in this module. Restoring at import
+# time raised ``NameError: _ensure_poller`` on warm starts with a populated
+# ``lambda.json`` (issue #412). The load now lives at the bottom of the file,
+# after ``_ensure_poller`` is defined.
 
 
 # ---------------------------------------------------------------------------
@@ -4100,3 +4103,18 @@ def reset():
     _dynamodb_stream_positions.clear()
     _pool_clear_all()
     lambda_runtime.reset()
+
+
+# ---------------------------------------------------------------------------
+# Persisted-state restore — runs at module import time but deferred to the
+# very bottom of the file so forward references to helpers (e.g.
+# ``_ensure_poller``) resolve at call time (issue #412). A corrupt or
+# incompatible ``lambda.json`` logs and continues instead of breaking the
+# whole service.
+# ---------------------------------------------------------------------------
+try:
+    _restored = load_state("lambda")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    logger.exception("Failed to restore persisted Lambda state; continuing with a fresh store")

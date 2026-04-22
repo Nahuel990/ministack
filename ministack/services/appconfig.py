@@ -80,9 +80,15 @@ def restore_state(data):
     _tags.update(data.get("tags", {}))
 
 
-_restored = load_state("appconfig")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("appconfig")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 # ---------------------------------------------------------------------------
 # Helpers

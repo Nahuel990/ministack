@@ -46,9 +46,15 @@ def restore_state(data):
     _builds.update(data.get("builds", {}))
 
 
-_restored = load_state("codebuild")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("codebuild")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 # ---------------------------------------------------------------------------

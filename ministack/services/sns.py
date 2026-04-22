@@ -67,9 +67,15 @@ def restore_state(data):
         _sub_arn_to_topic.update(data.get("sub_arn_to_topic", {}))
 
 
-_restored = load_state("sns")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("sns")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 async def handle_request(method: str, path: str, headers: dict, body: bytes, query_params: dict) -> tuple:

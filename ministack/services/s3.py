@@ -132,9 +132,15 @@ def restore_state(data):
         _bucket_replication.update(data.get("bucket_replication", {}))
 
 
-_restored = load_state("s3")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("s3")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 DATA_DIR = os.environ.get("S3_DATA_DIR", "/tmp/ministack-data/s3")
@@ -1096,7 +1102,12 @@ def _put_bucket_notification(name: str, body: bytes):
     if name not in _buckets:
         return _no_such_bucket(name)
     _bucket_notifications[name] = body
-    _fire_s3_test_event_async(name)
+    # Fire the s3:TestEvent synchronously so it's delivered before PutBucketNotification
+    # returns — matches AWS's effective behaviour and avoids a race where the
+    # client polls the destination queue/topic before the background thread has
+    # delivered the message (also loses the caller's account contextvar across
+    # threads, which broke multi-tenant tests).
+    _fire_s3_test_event(name)
     return 200, {}, b""
 
 

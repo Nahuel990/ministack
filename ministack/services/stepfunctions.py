@@ -147,9 +147,15 @@ def restore_state(data):
             exc["cause"] = "Execution was running when service restarted"
 
 
-_restored = load_state("stepfunctions")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("stepfunctions")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 _TIMESTAMP_RESPONSE_FIELDS = {

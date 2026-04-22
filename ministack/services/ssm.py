@@ -40,9 +40,15 @@ def restore_state(data):
         _parameters.update(data.get("parameters", {}))
 
 
-_restored = load_state("ssm")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("ssm")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 def _now_iso() -> str:

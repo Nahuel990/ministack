@@ -58,9 +58,15 @@ def restore_state(data):
         _queue_name_to_url.update(data.get("queue_name_to_url", {}))
 
 
-_restored = load_state("sqs")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("sqs")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 DEFAULT_HOST = os.environ.get("MINISTACK_HOST", "localhost")

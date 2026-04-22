@@ -56,14 +56,25 @@ def restore_state(data):
         for tbl in _tables.values():
             if isinstance(tbl.get("items"), dict) and not isinstance(tbl["items"], defaultdict):
                 tbl["items"] = defaultdict(dict, tbl["items"])
+            # Migrate legacy SSEDescription shape (pre-#411): convert
+            # {Enabled, KMSMasterKeyId} → {Status, KMSMasterKeyArn, SSEType}.
+            sse = tbl.get("SSEDescription")
+            if sse and "Status" not in sse and ("Enabled" in sse or "KMSMasterKeyId" in sse):
+                tbl["SSEDescription"] = _sse_description_from_spec(sse)
         _tags.update(data.get("tags", {}))
         _ttl_settings.update(data.get("ttl_settings", {}))
         _pitr_settings.update(data.get("pitr_settings", {}))
 
 
-_restored = load_state("dynamodb")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("dynamodb")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 # DynamoDB Streams: table_name -> list of stream records
 # Each record follows the DynamoDB Streams event format consumed by Lambda ESMs.
@@ -215,6 +226,37 @@ async def handle_request(method: str, path: str, headers: dict, body: bytes, que
 # Table operations
 # ---------------------------------------------------------------------------
 
+def _sse_description_from_spec(spec: dict | None) -> dict | None:
+    """Convert the request's ``SSESpecification`` into the response-shape
+    ``SSEDescription`` AWS actually returns on DescribeTable.
+
+    Request shape (caller):
+        {"Enabled": true, "SSEType": "KMS", "KMSMasterKeyId": "<arn|alias|id>"}
+
+    Response shape (SSEDescription per AWS docs):
+        {"Status": "ENABLED" | "DISABLED",
+         "SSEType": "AES256" | "KMS",
+         "KMSMasterKeyArn": "<key-arn>",   # only when SSEType == KMS
+         "InaccessibleEncryptionDateTime": <optional>}
+
+    Terraform waiters read ``Status`` and ``KMSMasterKeyArn``; the legacy
+    ``Enabled`` / ``KMSMasterKeyId`` names are request-only and Terraform
+    v6 will hang forever waiting for a status that never appears (#411).
+    """
+    if not spec:
+        return None
+    enabled = bool(spec.get("Enabled", False))
+    sse_type = spec.get("SSEType") or ("KMS" if spec.get("KMSMasterKeyId") else "AES256")
+    desc = {
+        "Status": "ENABLED" if enabled else "DISABLED",
+        "SSEType": sse_type,
+    }
+    if sse_type == "KMS":
+        kms_key = spec.get("KMSMasterKeyId") or spec.get("KMSMasterKeyArn", "")
+        desc["KMSMasterKeyArn"] = kms_key
+    return desc
+
+
 def _create_table(data):
     name = data.get("TableName")
     if not name:
@@ -270,7 +312,7 @@ def _create_table(data):
             else data.get("ProvisionedThroughput", {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5}),
         "BillingModeSummary": {"BillingMode": data.get("BillingMode", "PROVISIONED")},
         "StreamSpecification": data.get("StreamSpecification"),
-        "SSEDescription": data.get("SSESpecification"),
+        "SSEDescription": _sse_description_from_spec(data.get("SSESpecification")),
     }
     if data.get("StreamSpecification"):
         stream_label = now_iso()
@@ -330,6 +372,12 @@ def _update_table(data):
         table["AttributeDefinitions"] = data["AttributeDefinitions"]
     if "StreamSpecification" in data:
         table["StreamSpecification"] = data["StreamSpecification"]
+    if "SSESpecification" in data:
+        # Terraform v6 calls UpdateTable(SSESpecification=...) on warm boots
+        # when it sees the legacy shape in state (#411). Convert to the
+        # response-shape SSEDescription with a proper Status field so the
+        # Terraform waiter can observe ENABLED/DISABLED and return.
+        table["SSEDescription"] = _sse_description_from_spec(data["SSESpecification"])
 
     for update in data.get("GlobalSecondaryIndexUpdates", []):
         if "Create" in update:

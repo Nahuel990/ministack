@@ -230,9 +230,15 @@ def restore_state(data):
         _refresh_tokens.update(data.get("refresh_tokens", {}))
 
 
-_restored = load_state("cognito")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("cognito")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 # ---------------------------------------------------------------------------

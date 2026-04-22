@@ -41,9 +41,15 @@ def restore_state(data: dict):
     _ses_tags.update(data.get("_ses_tags", {}))
 
 
-_restored = load_state("ses_v2")
-if _restored:
-    restore_state(_restored)
+try:
+    _restored = load_state("ses_v2")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    import logging
+    logging.getLogger(__name__).exception(
+        "Failed to restore persisted state; continuing with fresh store"
+    )
 
 
 def _json_err(code, message, status=400):
