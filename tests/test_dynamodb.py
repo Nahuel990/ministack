@@ -355,6 +355,46 @@ def test_dynamodb_delete_table_not_found(ddb):
         ddb.delete_table(TableName="t_nonexistent_xyz")
     assert exc.value.response["Error"]["Code"] == "ResourceNotFoundException"
 
+
+def test_dynamodb_deletion_protection(ddb):
+    # AWS: DeletionProtectionEnabled=True blocks DeleteTable with ValidationException;
+    # UpdateTable toggles the flag; DescribeTable reflects current state.
+    ddb.create_table(
+        TableName="t_protected",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+        DeletionProtectionEnabled=True,
+    )
+    desc = ddb.describe_table(TableName="t_protected")["Table"]
+    assert desc["DeletionProtectionEnabled"] is True
+
+    with pytest.raises(ClientError) as exc:
+        ddb.delete_table(TableName="t_protected")
+    assert exc.value.response["Error"]["Code"] == "ValidationException"
+    assert "deletion protection" in exc.value.response["Error"]["Message"].lower()
+
+    ddb.update_table(TableName="t_protected", DeletionProtectionEnabled=False)
+    desc = ddb.describe_table(TableName="t_protected")["Table"]
+    assert desc["DeletionProtectionEnabled"] is False
+
+    resp = ddb.delete_table(TableName="t_protected")
+    assert resp["TableDescription"]["TableStatus"] == "DELETING"
+    assert "t_protected" not in ddb.list_tables()["TableNames"]
+
+
+def test_dynamodb_deletion_protection_defaults_false(ddb):
+    # A table created without the flag should describe as False and delete freely.
+    ddb.create_table(
+        TableName="t_unprotected",
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    desc = ddb.describe_table(TableName="t_unprotected")["Table"]
+    assert desc["DeletionProtectionEnabled"] is False
+    ddb.delete_table(TableName="t_unprotected")
+
 def test_dynamodb_describe_table(ddb):
     ddb.create_table(
         TableName="t_describe_gsi",

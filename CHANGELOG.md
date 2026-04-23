@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.10] — 2026-04-23
+
+### Fixed
+- **DynamoDB `DeletionProtectionEnabled` silently ignored on `CreateTable` / `UpdateTable`** — the table description never surfaced the field, and `DeleteTable` always succeeded regardless. Terraform's `aws_dynamodb_table` treats deletion protection as a safety-critical drift detector, so tables created with `deletion_protection_enabled = true` appeared unprotected and could be destroyed by a `terraform destroy` that real AWS would have refused. `CreateTable` now stores the flag (defaulting to `False`), `UpdateTable` toggles it, `DescribeTable` returns the current value, and `DeleteTable` refuses with `ValidationException: Table can't be deleted as deletion protection is enabled` when it's on — matching AWS behaviour exactly.
+- **S3 `ListBuckets` missing `BucketArn` and `BucketRegion`** — the response contained only `Name` and `CreationDate`, so SDKs/tooling that consumed the newer fields (added by AWS in 2024) received `None` and either errored or silently skipped buckets. `ListBuckets` now emits both fields per bucket (`BucketArn` as `arn:aws:s3:::<name>`, `BucketRegion` from the bucket's stored region or `MINISTACK_REGION`). Reported by @mcdoit.
+
+---
+
 ## [1.3.9] — 2026-04-22
 
 ### Fixed
