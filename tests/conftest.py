@@ -37,6 +37,7 @@ _SERIAL_TESTS = {
     "tests/test_lambda.py::test_lambda_reset_terminates_workers",
     "tests/test_ministack.py::test_ministack_config_invalid_key_ignored",
     "tests/test_ses.py::test_ses_messages_endpoint_reset",
+    "tests/test_ses.py::test_ses_messages_endpoint_account_filter",
     "tests/test_sfn.py::test_sfn_mock_config_return",
     "tests/test_sfn.py::test_sfn_mock_config_throw",
     "tests/test_sfn.py::test_sfn_wait_scale_zero_does_not_timeout_lambda_tasks",

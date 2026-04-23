@@ -59,7 +59,7 @@ _NON_S3_VHOST_NAMES = frozenset({
 
 from ministack.core.hypercorn_compat import install as _install_hypercorn_compat
 from ministack.core.persistence import PERSIST_STATE, load_state, save_all
-from ministack.core.responses import set_request_account_id, set_request_region
+from ministack.core.responses import _12_DIGIT_RE, set_request_account_id, set_request_region
 from ministack.core.router import detect_service, extract_access_key_id, extract_region
 
 # Must run before hypercorn emits its first Expect: 100-continue reply.
@@ -452,15 +452,51 @@ async def _handle_admin_reset(path: str, method: str, query_params: dict):
     return 200, {"Content-Type": "application/json"}, json.dumps({"reset": "ok"}).encode()
 
 
-async def _handle_ses_messages_request(method: str, path: str, headers: dict):
-    """Handle SES messages inspection endpoint."""
+async def _handle_ses_messages_request(method: str, path: str, headers: dict, query_params: dict):
+    """Handle SES messages inspection endpoint.
+
+    Supports filtering by account via the 'account' query parameter. When provided,
+    sets the request context to that account so emails are retrieved from the correct
+    AccountScopedDict._sent_emails_list.
+    """
     if path != "/_ministack/ses/messages" or method != "GET":
         return None
+
+    # Support account filtering via query parameter. If provided, set the
+    # request-scoped account so AccountScopedDict lookups are scoped to it.
+    if "account" in query_params:
+        raw_account = query_params["account"]
+        # Some query parsing returns a list of values; accept either list or single string
+        account_id = raw_account[0] if isinstance(raw_account, (list, tuple)) else raw_account
+        account_id = "" if account_id is None else str(account_id)
+        if not _12_DIGIT_RE.match(account_id):
+            return 400, {"Content-Type": "application/json"}, json.dumps({
+                "__type": "InvalidAccountID",
+                "message": f"Account ID must be 12 digits, got: {account_id}",
+            }).encode()
+        # Set the request account context so subsequent lookups use this account
+        set_request_account_id(account_id)
 
     try:
         # Use ses module for all SES message retrieval (v1 + v2 emails stored together)
         mod = _get_module("ses")
-        sent_emails_list = mod._sent_emails_list()
+
+        # If an `account` query param was provided we already set the request
+        # account above and can use the regular per-account helper. When no
+        # account is requested, aggregate `entries` from all accounts by using
+        # the AccountScopedDict's `to_dict()` internal representation.
+        if "account" in query_params:
+            sent_emails_list = mod._sent_emails_list()
+        else:
+            sent_emails_list = []
+            try:
+                all_data = mod._sent_emails.to_dict()
+                for (acct, key), val in all_data.items():
+                    if key == "entries" and isinstance(val, list):
+                        sent_emails_list.extend(val)
+            except Exception:
+                # Fallback: empty list on any unexpected shape
+                sent_emails_list = []
         response = {
             "messages": [
                 {
@@ -506,7 +542,7 @@ async def _handle_pre_body_request(method: str, path: str, headers: dict, query_
     if response is not None:
         return response
     
-    response = await _handle_ses_messages_request(method, path, headers)
+    response = await _handle_ses_messages_request(method, path, headers, query_params)
     if response is not None:
         return response
 

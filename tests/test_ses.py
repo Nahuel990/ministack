@@ -576,3 +576,121 @@ def test_ses_messages_endpoint_reset(ses):
     with urllib.request.urlopen(f"{endpoint}/_ministack/ses/messages") as r:                                                                                        
         data = json.loads(r.read())                                                                                                                                 
     assert data == {"messages": []}    
+
+# ---------------------------------------------------------------------------
+# Account filtering test for /_ministack/ses/messages endpoint
+#
+# Verifies that the ?account query parameter properly validates and filters emails.
+# Invalid non-12-digit accounts now return a 400 InvalidAccountID error.
+# ---------------------------------------------------------------------------
+def _client(service, access_key="test"):
+    """Create a boto3 client with a specific access key."""
+    import boto3
+    from botocore.config import Config
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+    region = "us-east-1"
+    return boto3.client(
+        service,
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key="test",
+        region_name=region,
+        config=Config(region_name=region, retries={"max_attempts": 0}),
+    )
+
+def test_ses_messages_endpoint_account_filter():
+    """GET /_ministack/ses/messages?account=X filters by account ID.
+
+    Test cases:
+    - Without ?account: returns all emails (from default account)
+    - With invalid non-12-digit account: returns 400 InvalidAccountID error
+    - With invalid non-matching 12-digit account: returns 400 InvalidAccountID error
+    - With correct valid account and emails sent to it: filtered results only
+    """
+    import urllib.request
+
+    # Clear any existing messages on the running server
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+    urllib.request.urlopen(urllib.request.Request(f"{endpoint}/_ministack/reset", method="POST"))
+
+    # Account 1 and Account 2
+    ACCOUNT_1 = "011111111111"
+    ACCOUNT_2 = "987654321098"
+    ses_account_1 = _client("ses", access_key=ACCOUNT_1)
+    ses_account_2 = _client("ses", access_key=ACCOUNT_2)
+
+    # Send 2 emails to ACCOUNT_1
+    ses_account_1.verify_email_identity(EmailAddress=f"sender-{ACCOUNT_1}@example.com")
+    ses_account_1.send_email(
+        Source=f"sender-{ACCOUNT_1}@example.com",
+        Destination={"ToAddresses": [f"recipient-{ACCOUNT_1}@example.com"]},
+        Message={"Subject": {"Data": "Test email 1"}, "Body": {"Text": {"Data": "Body of test email 1"}}},
+    )
+    ses_account_1.send_email(
+        Source=f"sender-{ACCOUNT_1}@example.com",
+        Destination={"ToAddresses": [f"recipient-{ACCOUNT_1}@example.com"]},
+        Message={"Subject": {"Data": "Test email 2"}, "Body": {"Text": {"Data": "Body of test email 2"}}},
+    )
+
+    # Send 1 email to ACCOUNT_2
+    ses_account_2.verify_email_identity(EmailAddress=f"sender-{ACCOUNT_2}@example.com")
+    ses_account_2.send_email(
+        Source=f"sender-{ACCOUNT_2}@example.com",
+        Destination={"ToAddresses": [f"recipient-{ACCOUNT_2}@example.com"]},
+        Message={"Subject": {"Data": "Test email 3"}, "Body": {"Text": {"Data": "Body of test email 3"}}},
+    )
+
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+
+    # Test 1: Without ?account: returns all emails (from default account)
+    url = f"{endpoint}/_ministack/ses/messages"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        data = json.loads(r.read().decode())
+
+    assert "messages" in data
+    total = len(data["messages"])
+    assert total == 3, f"Expected 3 messages (default account), got {total}"
+
+    # Test 2: With invalid non-12-digit account should return error
+    url = f"{endpoint}/_ministack/ses/messages?account=notvalid"
+    req = urllib.request.Request(url, method="GET")
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req, timeout=5)
+    assert exc_info.value.code == 400
+    import io
+    error_data = json.loads(io.BytesIO(exc_info.value.read()).read())
+    assert error_data["__type"] == "InvalidAccountID"
+    assert "got: notvalid" in error_data["message"]
+
+    # Test 5: With correct valid custom account (ACCOUNT_1)
+    url = f"{endpoint}/_ministack/ses/messages?account={ACCOUNT_1}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        data = json.loads(r.read().decode())
+
+    assert "messages" in data
+    total = len(data["messages"])
+    messages_for_a1 = [m for m in data["messages"] if ACCOUNT_1 in m["Source"]]
+    assert len(messages_for_a1) == 2, f"Expected 2 messages from ACCOUNT_1, got {len(messages_for_a1)}"
+
+    # Test 6: With correct valid custom account (ACCOUNT_2)
+    url = f"{endpoint}/_ministack/ses/messages?account={ACCOUNT_2}"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        data = json.loads(r.read().decode())
+
+    assert "messages" in data
+    total = len(data["messages"])
+    messages_for_a2 = [m for m in data["messages"] if ACCOUNT_2 in m["Source"]]
+    assert len(messages_for_a2) == 1, f"Expected 1 message from ACCOUNT_2, got {len(messages_for_a2)}"
+
+    # Test 7: Empty messages for correct valid account with no emails sent
+    url = f"{endpoint}/_ministack/ses/messages?account=123456789012"
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        data = json.loads(r.read().decode())
+    # Should return empty list (no emails for this account)
+    assert "messages" in data
+    assert len(data["messages"]) == 0, f"Expected 0 messages for account with no emails, got {len(data['messages'])}"
+  
