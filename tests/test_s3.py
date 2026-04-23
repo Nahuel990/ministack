@@ -13,6 +13,19 @@ def test_s3_create_bucket(s3):
     buckets = s3.list_buckets()["Buckets"]
     assert any(b["Name"] == "intg-s3-create" for b in buckets)
 
+def test_s3_list_buckets_returns_arn_and_region(s3):
+    """ListBuckets should return BucketArn and BucketRegion for each bucket."""
+    bkt = "intg-s3-arn-test"
+    s3.create_bucket(Bucket=bkt)
+    buckets = s3.list_buckets()["Buckets"]
+    match = [b for b in buckets if b["Name"] == bkt]
+    assert len(match) == 1
+    b = match[0]
+    assert b["BucketArn"] == f"arn:aws:s3:::{bkt}"
+    assert "BucketRegion" in b
+    assert len(b["BucketRegion"]) > 0
+
+
 def test_s3_create_bucket_already_exists(s3):
     # Real AWS: creating a bucket you already own is idempotent — returns 200
     s3.create_bucket(Bucket="intg-s3-dup")

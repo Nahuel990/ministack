@@ -589,6 +589,8 @@ def _list_buckets():
         b = SubElement(buckets_el, "Bucket")
         SubElement(b, "Name").text = name
         SubElement(b, "CreationDate").text = data["created"]
+        SubElement(b, "BucketRegion").text = data.get("region") or os.environ.get("MINISTACK_REGION", "us-east-1")
+        SubElement(b, "BucketArn").text = f"arn:aws:s3:::{name}"
     return 200, {"Content-Type": "application/xml"}, _xml_body(root)
 
 
