@@ -2733,3 +2733,211 @@ def test_sfn_wait_scale_zero_skips_wait(sfn):
         sfn.delete_state_machine(stateMachineArn=sm_arn)
     finally:
         _set_wait_scale(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Step Functions versioning (PublishStateMachineVersion / List / Delete)
+# ---------------------------------------------------------------------------
+
+def test_sfn_publish_state_machine_version(sfn):
+    """Publish two versions, list them, delete one, re-list.
+
+    Without this action AWS SDK calls (boto3, botocore, etc.) to
+    ``ListStateMachineVersions`` returned ``InvalidAction: Unknown
+    action``. (terraform only) terraform-provider-aws 6.x calls this
+    action unconditionally on every ``aws_sfn_state_machine`` refresh,
+    so the missing action also broke ``terraform plan`` even when no
+    versioning was configured.
+    """
+    uid = _uuid_mod.uuid4().hex[:8]
+    name = f"version-test-{uid}"
+    definition = json.dumps({
+        "StartAt": "P",
+        "States": {"P": {"Type": "Pass", "End": True}},
+    })
+    sm = sfn.create_state_machine(
+        name=name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/r",
+    )
+    sm_arn = sm["stateMachineArn"]
+
+    try:
+        # List with no versions → empty.
+        listed = sfn.list_state_machine_versions(stateMachineArn=sm_arn)
+        assert listed["stateMachineVersions"] == []
+
+        # Publish v1 + v2.
+        v1 = sfn.publish_state_machine_version(
+            stateMachineArn=sm_arn, description="first",
+        )
+        assert v1["stateMachineVersionArn"] == f"{sm_arn}:1"
+
+        v2 = sfn.publish_state_machine_version(
+            stateMachineArn=sm_arn, description="second",
+        )
+        assert v2["stateMachineVersionArn"] == f"{sm_arn}:2"
+
+        # List — newest first.
+        listed = sfn.list_state_machine_versions(stateMachineArn=sm_arn)
+        arns = [v["stateMachineVersionArn"] for v in listed["stateMachineVersions"]]
+        assert arns == [f"{sm_arn}:2", f"{sm_arn}:1"]
+
+        # Delete v1; v2 remains.
+        sfn.delete_state_machine_version(stateMachineVersionArn=f"{sm_arn}:1")
+        listed = sfn.list_state_machine_versions(stateMachineArn=sm_arn)
+        assert [v["stateMachineVersionArn"] for v in listed["stateMachineVersions"]] == [f"{sm_arn}:2"]
+    finally:
+        sfn.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_publish_state_machine_version_revisionid_precondition(sfn):
+    """revisionId is an AWS optimistic-concurrency precondition.
+
+    Publish with a stale revisionId raises ConflictException. Publish with
+    no revisionId (or the current one) succeeds. After UpdateStateMachine
+    the revisionId rotates, so a previously valid revisionId becomes stale.
+    """
+    uid = _uuid_mod.uuid4().hex[:8]
+    name = f"version-rev-{uid}"
+    sm = sfn.create_state_machine(
+        name=name,
+        definition=json.dumps({"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}}),
+        roleArn="arn:aws:iam::000000000000:role/r",
+    )
+    sm_arn = sm["stateMachineArn"]
+
+    try:
+        current_rev = sfn.describe_state_machine(stateMachineArn=sm_arn)["revisionId"]
+
+        # Supplying the current revisionId passes the precondition.
+        v1 = sfn.publish_state_machine_version(
+            stateMachineArn=sm_arn, revisionId=current_rev,
+        )
+        assert v1["stateMachineVersionArn"] == f"{sm_arn}:1"
+
+        # UpdateStateMachine rotates revisionId.
+        sfn.update_state_machine(
+            stateMachineArn=sm_arn,
+            definition=json.dumps({
+                "StartAt": "P",
+                "States": {"P": {"Type": "Pass", "Result": "changed", "End": True}},
+            }),
+        )
+        rev_after_update = sfn.describe_state_machine(stateMachineArn=sm_arn)["revisionId"]
+        assert rev_after_update != current_rev
+
+        # The old revisionId is now stale; Publish with it raises.
+        with pytest.raises(ClientError) as exc:
+            sfn.publish_state_machine_version(
+                stateMachineArn=sm_arn, revisionId=current_rev,
+            )
+        assert exc.value.response["Error"]["Code"] == "ConflictException"
+
+        # Publish without revisionId always succeeds (no precondition).
+        v2 = sfn.publish_state_machine_version(stateMachineArn=sm_arn)
+        assert v2["stateMachineVersionArn"] == f"{sm_arn}:2"
+    finally:
+        sfn.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_describe_state_machine_on_version_arn(sfn):
+    """DescribeStateMachine accepts a qualified version ARN and returns
+    the snapshot captured at publish time."""
+    uid = _uuid_mod.uuid4().hex[:8]
+    name = f"describe-version-{uid}"
+    initial_definition = json.dumps({
+        "StartAt": "P",
+        "States": {"P": {"Type": "Pass", "Result": "v1", "End": True}},
+    })
+    sm = sfn.create_state_machine(
+        name=name, definition=initial_definition,
+        roleArn="arn:aws:iam::000000000000:role/r",
+    )
+    sm_arn = sm["stateMachineArn"]
+
+    try:
+        v1 = sfn.publish_state_machine_version(
+            stateMachineArn=sm_arn, description="first-snapshot",
+        )
+
+        # Mutate the base state machine so v1's definition differs from
+        # the current one — tests that describe-on-version returns the
+        # snapshot, not the live state.
+        sfn.update_state_machine(
+            stateMachineArn=sm_arn,
+            definition=json.dumps({
+                "StartAt": "P",
+                "States": {"P": {"Type": "Pass", "Result": "v-live", "End": True}},
+            }),
+        )
+
+        described = sfn.describe_state_machine(
+            stateMachineArn=v1["stateMachineVersionArn"],
+        )
+        assert described["stateMachineArn"] == v1["stateMachineVersionArn"]
+        assert described["description"] == "first-snapshot"
+        # Definition echoed back is v1's snapshot, not the live one.
+        assert json.loads(described["definition"])["States"]["P"]["Result"] == "v1"
+    finally:
+        sfn.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_list_state_machine_versions_missing_state_machine(sfn):
+    """List against a nonexistent state machine ARN → StateMachineDoesNotExist."""
+    missing_arn = "arn:aws:states:us-east-1:000000000000:stateMachine:does-not-exist-xyz"
+    with pytest.raises(ClientError) as exc:
+        sfn.list_state_machine_versions(stateMachineArn=missing_arn)
+    assert exc.value.response["Error"]["Code"] == "StateMachineDoesNotExist"
+
+
+def test_sfn_create_state_machine_publish_true_returns_version_arn(sfn):
+    """CreateStateMachine with publish=True auto-creates v1 and carries
+    stateMachineVersionArn in the response, matching AWS's contract
+    for the publish parameter."""
+    uid = _uuid_mod.uuid4().hex[:8]
+    name = f"pub-create-{uid}"
+    resp = sfn.create_state_machine(
+        name=name,
+        definition=json.dumps({"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}}),
+        roleArn="arn:aws:iam::000000000000:role/r",
+        publish=True,
+    )
+    sm_arn = resp["stateMachineArn"]
+    try:
+        assert resp["stateMachineVersionArn"] == f"{sm_arn}:1"
+        listed = sfn.list_state_machine_versions(stateMachineArn=sm_arn)
+        assert len(listed["stateMachineVersions"]) == 1
+        assert listed["stateMachineVersions"][0]["stateMachineVersionArn"] == f"{sm_arn}:1"
+    finally:
+        sfn.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_publish_state_machine_version_numbers_never_reused(sfn):
+    """AWS never reuses a version number after delete: publish v1, v2,
+    v3, delete v3, publish again → v4 (not v3)."""
+    uid = _uuid_mod.uuid4().hex[:8]
+    name = f"version-monotonic-{uid}"
+    sm = sfn.create_state_machine(
+        name=name,
+        definition=json.dumps({"StartAt": "P", "States": {"P": {"Type": "Pass", "End": True}}}),
+        roleArn="arn:aws:iam::000000000000:role/r",
+    )
+    sm_arn = sm["stateMachineArn"]
+    try:
+        v1 = sfn.publish_state_machine_version(stateMachineArn=sm_arn)
+        v2 = sfn.publish_state_machine_version(stateMachineArn=sm_arn)
+        v3 = sfn.publish_state_machine_version(stateMachineArn=sm_arn)
+        assert v3["stateMachineVersionArn"] == f"{sm_arn}:3"
+
+        # Delete latest, then publish again — must be v4 (not v3).
+        sfn.delete_state_machine_version(stateMachineVersionArn=v3["stateMachineVersionArn"])
+        v4 = sfn.publish_state_machine_version(stateMachineArn=sm_arn)
+        assert v4["stateMachineVersionArn"] == f"{sm_arn}:4"
+
+        # Delete a middle one and republish — also v5, not v3.
+        sfn.delete_state_machine_version(stateMachineVersionArn=v2["stateMachineVersionArn"])
+        v5 = sfn.publish_state_machine_version(stateMachineArn=sm_arn)
+        assert v5["stateMachineVersionArn"] == f"{sm_arn}:5"
+    finally:
+        sfn.delete_state_machine(stateMachineArn=sm_arn)

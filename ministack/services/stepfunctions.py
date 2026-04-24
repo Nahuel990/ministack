@@ -10,7 +10,9 @@ Supports: CreateStateMachine, DeleteStateMachine, DescribeStateMachine,
           SendTaskSuccess, SendTaskFailure, SendTaskHeartbeat,
           CreateActivity, DeleteActivity, DescribeActivity, ListActivities,
           GetActivityTask,
-          TagResource, UntagResource, ListTagsForResource.
+          TagResource, UntagResource, ListTagsForResource,
+          PublishStateMachineVersion, DeleteStateMachineVersion,
+          ListStateMachineVersions.
 
 ASL state types: Pass, Task, Choice, Wait, Succeed, Fail, Parallel, Map.
 Task states invoke Lambda functions via services.lambda_svc when available.
@@ -119,6 +121,12 @@ _tags = AccountScopedDict()
 _activities = AccountScopedDict()
 _activity_tasks = AccountScopedDict()
 
+# version_arn -> {stateMachineVersionArn, stateMachineRevisionId,
+#                 description, creationDate, definition, roleArn, type,
+#                 loggingConfiguration}
+# Version ARN shape: arn:aws:states:<region>:<acct>:stateMachine:<name>:<N>
+_state_machine_versions = AccountScopedDict()
+
 # ── Persistence ────────────────────────────────────────────
 
 def get_state():
@@ -127,6 +135,7 @@ def get_state():
         "executions": copy.deepcopy(_executions),
         "tags": copy.deepcopy(_tags),
         "activities": copy.deepcopy(_activities),
+        "state_machine_versions": copy.deepcopy(_state_machine_versions),
     }
 
 
@@ -137,6 +146,7 @@ def restore_state(data):
     _executions.update(data.get("executions", {}))
     _tags.update(data.get("tags", {}))
     _activities.update(data.get("activities", {}))
+    _state_machine_versions.update(data.get("state_machine_versions", {}))
     # Executions that were RUNNING when the process died cannot resume —
     # mark them FAILED, following the ECS precedent (tasks → STOPPED).
     for exc in _executions.values():
@@ -246,6 +256,9 @@ async def handle_request(method, path, headers, body, query_params):
         "GetActivityTask": _get_activity_task,
         "TestState": _test_state,
         "ValidateStateMachineDefinition": _validate_state_machine_definition,
+        "PublishStateMachineVersion": _publish_state_machine_version,
+        "DeleteStateMachineVersion": _delete_state_machine_version,
+        "ListStateMachineVersions": _list_state_machine_versions,
     }
 
     handler = handlers.get(action)
@@ -284,13 +297,43 @@ def _create_state_machine(data):
         "loggingConfiguration": data.get(
             "loggingConfiguration",
             {"level": "OFF", "includeExecutionData": False}),
+        # AWS rotates revisionId on every Create/Update. Callers use it
+        # as an optimistic-concurrency precondition when publishing a
+        # version (see _publish_state_machine_version).
+        "revisionId": new_uuid(),
+        # Monotonic high-water mark for published version numbers. AWS
+        # never reuses a version number after delete (publish v1, v2,
+        # v3, delete v3 → next publish is v4, not v3). Tracking the
+        # mark here, rather than scanning surviving versions, preserves
+        # that invariant.
+        "lastVersionNumber": 0,
     }
 
     tags = data.get("tags", [])
     if tags:
         _tags[arn] = list(tags)
 
-    return json_response({"stateMachineArn": arn, "creationDate": ts})
+    response = {"stateMachineArn": arn, "creationDate": ts}
+    # AWS CreateStateMachine accepts publish=True to auto-publish v1
+    # in the same call; response carries stateMachineVersionArn.
+    if data.get("publish"):
+        _state_machines[arn]["lastVersionNumber"] += 1
+        next_number = _state_machines[arn]["lastVersionNumber"]
+        version_arn = f"{arn}:{next_number}"
+        _state_machine_versions[version_arn] = {
+            "stateMachineVersionArn": version_arn,
+            "stateMachineArn": arn,
+            "stateMachineRevisionId": _state_machines[arn]["revisionId"],
+            "description": data.get("versionDescription", ""),
+            "creationDate": ts,
+            "definition": _state_machines[arn]["definition"],
+            "roleArn": _state_machines[arn]["roleArn"],
+            "type": _state_machines[arn]["type"],
+            "loggingConfiguration": copy.deepcopy(
+                _state_machines[arn]["loggingConfiguration"]),
+        }
+        response["stateMachineVersionArn"] = version_arn
+    return json_response(response)
 
 
 def _delete_state_machine(data):
@@ -311,11 +354,31 @@ def _delete_state_machine(data):
 def _describe_state_machine(data):
     arn = data.get("stateMachineArn")
     sm = _state_machines.get(arn)
-    if not sm:
-        return error_response_json(
-            "StateMachineDoesNotExist",
-            f"State machine {arn} not found", 400)
-    return json_response(sm)
+    if sm:
+        return json_response(sm)
+    # AWS's DescribeStateMachine also accepts a qualified version ARN
+    # (arn:...:stateMachine:<name>:<N>) and returns the snapshot
+    # captured at publish time, with stateMachineArn echoing the
+    # qualified form.
+    version = _state_machine_versions.get(arn) if arn else None
+    if version:
+        base_sm = _state_machines.get(version["stateMachineArn"]) or {}
+        return json_response({
+            "stateMachineArn": version["stateMachineVersionArn"],
+            "name": base_sm.get("name", ""),
+            "definition": version.get("definition") or base_sm.get("definition", "{}"),
+            "roleArn": version.get("roleArn") or base_sm.get("roleArn", ""),
+            "type": version.get("type") or base_sm.get("type", "STANDARD"),
+            "creationDate": version.get("creationDate"),
+            "status": "ACTIVE",
+            "description": version.get("description", ""),
+            "loggingConfiguration": version.get("loggingConfiguration")
+                or base_sm.get("loggingConfiguration", {"level": "OFF"}),
+            "revisionId": version.get("stateMachineRevisionId", ""),
+        })
+    return error_response_json(
+        "StateMachineDoesNotExist",
+        f"State machine {arn} not found", 400)
 
 
 def _update_state_machine(data):
@@ -331,7 +394,33 @@ def _update_state_machine(data):
         sm["roleArn"] = data["roleArn"]
     if "loggingConfiguration" in data:
         sm["loggingConfiguration"] = data["loggingConfiguration"]
-    return json_response({"updateDate": now_iso()})
+    # Rotate revisionId so subsequent PublishStateMachineVersion calls
+    # with a stale caller-supplied revisionId raise ConflictException
+    # (matches AWS optimistic-concurrency semantics).
+    sm["revisionId"] = new_uuid()
+    ts = now_iso()
+    response = {"updateDate": ts}
+    # UpdateStateMachine also supports publish=True, which atomically
+    # publishes a new version with the post-update state; response
+    # carries the new stateMachineVersionArn. Mirrors AWS.
+    if data.get("publish"):
+        sm["lastVersionNumber"] = sm.get("lastVersionNumber", 0) + 1
+        next_number = sm["lastVersionNumber"]
+        version_arn = f"{arn}:{next_number}"
+        _state_machine_versions[version_arn] = {
+            "stateMachineVersionArn": version_arn,
+            "stateMachineArn": arn,
+            "stateMachineRevisionId": sm["revisionId"],
+            "description": data.get("versionDescription", ""),
+            "creationDate": ts,
+            "definition": sm["definition"],
+            "roleArn": sm["roleArn"],
+            "type": sm["type"],
+            "loggingConfiguration": copy.deepcopy(sm["loggingConfiguration"]),
+        }
+        response["stateMachineVersionArn"] = version_arn
+        response["revisionId"] = sm["revisionId"]
+    return json_response(response)
 
 
 def _list_state_machines(data):
@@ -2800,3 +2889,103 @@ def reset():
     _tags.clear()
     _activities.clear()
     _activity_tasks.clear()
+    _state_machine_versions.clear()
+
+
+# ---------------------------------------------------------------------------
+# State machine version CRUD
+# ---------------------------------------------------------------------------
+
+def _publish_state_machine_version(data):
+    """Publish a new version of a state machine.
+
+    The version snapshots the current definition/roleArn/etc. Version
+    numbers are monotonic per state machine starting at 1.
+
+    ``revisionId`` (optional) is the AWS optimistic-concurrency
+    precondition: if supplied and the state machine's current revisionId
+    doesn't match, AWS returns ConflictException. Callers use this to
+    refuse publishing a snapshot that has shifted under them.
+    """
+    arn = data.get("stateMachineArn")
+    sm = _state_machines.get(arn)
+    if not sm:
+        return error_response_json(
+            "StateMachineDoesNotExist",
+            f"State machine {arn} not found", 400)
+
+    # AWS optimistic-concurrency check: the caller can supply a
+    # revisionId they last read from the state machine; if it no longer
+    # matches, something updated the state machine in between and the
+    # caller should re-read before publishing.
+    requested_revision = data.get("revisionId")
+    if requested_revision and requested_revision != sm.get("revisionId"):
+        return error_response_json(
+            "ConflictException",
+            "Request cannot be applied because the state machine's "
+            "revisionId has changed since the supplied revisionId was read.",
+            400,
+        )
+
+    # Bump the per-state-machine high-water mark. AWS never reuses a
+    # version number after delete (publish v1, v2, v3, delete v3 →
+    # next publish is v4); tracking the mark on the base SM rather
+    # than scanning surviving versions preserves that invariant.
+    sm["lastVersionNumber"] = sm.get("lastVersionNumber", 0) + 1
+    next_number = sm["lastVersionNumber"]
+
+    version_arn = f"{arn}:{next_number}"
+    ts = now_iso()
+    # Snapshot the current state machine's revisionId into the version
+    # so Describe on the version ARN can echo it back.
+    snapshot_revision = sm.get("revisionId", "")
+    _state_machine_versions[version_arn] = {
+        "stateMachineVersionArn": version_arn,
+        "stateMachineArn": arn,
+        "stateMachineRevisionId": snapshot_revision,
+        "description": data.get("description", ""),
+        "creationDate": ts,
+        "definition": sm.get("definition", "{}"),
+        "roleArn": sm.get("roleArn", ""),
+        "type": sm.get("type", "STANDARD"),
+        "loggingConfiguration": copy.deepcopy(
+            sm.get("loggingConfiguration", {"level": "OFF"})),
+    }
+    return json_response({
+        "stateMachineVersionArn": version_arn,
+        "creationDate": ts,
+    })
+
+
+def _delete_state_machine_version(data):
+    version_arn = data.get("stateMachineVersionArn")
+    if version_arn not in _state_machine_versions:
+        # AWS semantics: DeleteStateMachineVersion on a nonexistent version
+        # is a no-op (200 OK), matching other idempotent delete APIs.
+        return json_response({})
+    del _state_machine_versions[version_arn]
+    return json_response({})
+
+
+def _list_state_machine_versions(data):
+    arn = data.get("stateMachineArn")
+    if arn not in _state_machines:
+        return error_response_json(
+            "StateMachineDoesNotExist",
+            f"State machine {arn} not found", 400)
+
+    matching = []
+    for version_arn, version in _state_machine_versions.items():
+        if version["stateMachineArn"] != arn:
+            continue
+        matching.append({
+            "stateMachineVersionArn": version_arn,
+            "creationDate": version["creationDate"],
+        })
+    # AWS returns versions in descending creationDate order (newest first).
+    matching.sort(key=lambda v: v["creationDate"], reverse=True)
+
+    max_results = data.get("maxResults") or len(matching)
+    return json_response({
+        "stateMachineVersions": matching[:max_results],
+    })
