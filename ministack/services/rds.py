@@ -22,10 +22,16 @@ Supports: CreateDBInstance, DeleteDBInstance, DescribeDBInstances, ModifyDBInsta
 
 When Docker is available, CreateDBInstance spins up a real Postgres/MySQL container
 and returns the actual host:port as the endpoint.
+
+JSON request bodies (``application/x-amz-json-1.*``, SigV4 JSON) are accepted for the
+same actions as the legacy Query API form body, so Terraform / current botocore
+clients can call DescribeDBInstances and other operations without ``Action=`` query
+parameters.
 """
 
 import copy
 import datetime
+import json
 import logging
 import os
 import socket
@@ -187,13 +193,67 @@ def _next_port():
 # Request routing
 # ---------------------------------------------------------------------------
 
+def _json_key_to_query_param_name(key: str) -> str:
+    """Map JSON / Smithy body keys to Query-API parameter names."""
+    lk = key.lower()
+    if lk == "dbinstanceidentifier":
+        return "DBInstanceIdentifier"
+    if lk == "filters":
+        return "Filters"
+    return key
+
+
+def _flatten_json_request_params(params, data):
+    """Merge SigV4 JSON (``application/x-amz-json-1.*``) bodies into query-style params.
+
+    Botocore's JSON protocol sends a JSON object; our handlers expect the same
+    keys as the Query API with list-shaped values (``_p`` reads ``[0]``).
+    """
+    if not isinstance(data, dict):
+        return
+    for key, val in data.items():
+        if val is None:
+            continue
+        qkey = _json_key_to_query_param_name(key)
+        if isinstance(val, bool):
+            params[qkey] = ["true" if val else "false"]
+        elif isinstance(val, (int, float)):
+            params[qkey] = [str(val)]
+        elif isinstance(val, str):
+            params[qkey] = [val]
+        elif isinstance(val, list) and qkey == "Filters":
+            for i, f in enumerate(val, 1):
+                if not isinstance(f, dict):
+                    continue
+                name = f.get("Name") or f.get("name")
+                if not name:
+                    continue
+                params[f"Filters.member.{i}.Name"] = [name]
+                values = f.get("Values") or f.get("values") or []
+                for j, v in enumerate(values, 1):
+                    params[f"Filters.member.{i}.Values.member.{j}"] = [str(v)]
+
+
 async def handle_request(method, path, headers, body, query_params):
     params = dict(query_params)
     if method == "POST" and body:
-        raw = body if isinstance(body, str) else body.decode("utf-8", errors="replace")
-        form_params = parse_qs(raw)
-        for k, v in form_params.items():
-            params[k] = v
+        raw = body if isinstance(body, str) else body.decode("utf-8-sig", errors="replace")
+        stripped = raw.lstrip()
+        ct = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
+        merged_json = False
+        # Prefer JSON when it looks like JSON, or when the client declares AWS/JSON.
+        if stripped.startswith("{") or ("json" in ct and stripped):
+            try:
+                payload = json.loads(stripped)
+                if isinstance(payload, dict):
+                    _flatten_json_request_params(params, payload)
+                    merged_json = True
+            except json.JSONDecodeError:
+                pass
+        if not merged_json:
+            form_params = parse_qs(raw)
+            for k, v in form_params.items():
+                params[k] = v
 
     target = headers.get("x-amz-target", "") or headers.get("X-Amz-Target", "")
     if target:
@@ -225,6 +285,33 @@ def _resolve_instance(db_id):
             if inst.get("DbiResourceId") == db_id:
                 return inst
     return None
+
+
+def _register_instance_in_cluster(instance):
+    """Append instance to parent cluster ``DBClusterMembers`` (Aurora parity)."""
+    cid = instance.get("DBClusterIdentifier")
+    if not cid:
+        return
+    cluster = _clusters.get(cid)
+    if not cluster:
+        return
+    members = cluster.setdefault("DBClusterMembers", [])
+    db_id = instance["DBInstanceIdentifier"]
+    members[:] = [m for m in members if m.get("DBInstanceIdentifier") != db_id]
+    any_writer = any(m.get("IsClusterWriter") for m in members)
+    is_writer = not any_writer
+    members.append({
+        "DBInstanceIdentifier": db_id,
+        "IsClusterWriter": is_writer,
+        "PromotionTier": int(instance.get("PromotionTier", 1)),
+    })
+
+
+def _unregister_instance_from_clusters(db_id):
+    """Remove instance from any cluster member list."""
+    for cl in _clusters.values():
+        mem = cl.get("DBClusterMembers") or []
+        cl["DBClusterMembers"] = [m for m in mem if m.get("DBInstanceIdentifier") != db_id]
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +530,7 @@ def _create_db_instance(p):
         "_MasterUserPassword": master_pass,
     }
     _instances[db_id] = instance
+    _register_instance_in_cluster(instance)
 
     req_tags = _parse_tags(p)
     if req_tags:
@@ -457,6 +545,8 @@ def _delete_db_instance(p):
     instance = _resolve_instance(db_id)
     if not instance:
         return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+
+    _unregister_instance_from_clusters(db_id)
 
     if instance.get("DeletionProtection"):
         return _error("InvalidParameterCombination",

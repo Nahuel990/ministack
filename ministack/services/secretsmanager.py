@@ -323,8 +323,12 @@ def _list_secrets(data):
     max_results = min(data.get("MaxResults", 100), 100)
     next_token = data.get("NextToken")
     filters = data.get("Filters", [])
+    include_planned_deletion = bool(data.get("IncludePlannedDeletion", False))
 
-    names = sorted(n for n, s in _secrets.items() if not s.get("DeletedDate"))
+    names = sorted(
+        n for n, s in _secrets.items()
+        if include_planned_deletion or not s.get("DeletedDate")
+    )
 
     for f in filters:
         key = f.get("Key", "")
@@ -352,7 +356,7 @@ def _list_secrets(data):
     secret_list = []
     for n in page:
         s = _secrets[n]
-        secret_list.append({
+        entry = {
             "ARN": s["ARN"],
             "Name": s["Name"],
             "Description": s.get("Description", ""),
@@ -362,7 +366,10 @@ def _list_secrets(data):
             "Tags": s.get("Tags", []),
             "SecretVersionsToStages": _vid_to_stages(s),
             "RotationEnabled": s.get("RotationEnabled", False),
-        })
+        }
+        if s.get("DeletedDate"):
+            entry["DeletedDate"] = s["DeletedDate"]
+        secret_list.append(entry)
 
     resp: dict = {"SecretList": secret_list}
     end = start + max_results

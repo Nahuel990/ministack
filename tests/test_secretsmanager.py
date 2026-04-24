@@ -337,3 +337,26 @@ def test_secretsmanager_get_by_partial_arn(sm):
     assert partial_arn != full_arn
     assert sm.get_secret_value(SecretId=partial_arn)["SecretString"] == "partial-arn-value"
 
+
+def test_secretsmanager_list_include_planned_deletion(sm):
+    """ListSecrets honors IncludePlannedDeletion per the AWS SecretListEntry spec.
+
+    When a secret is soft-deleted (scheduled for deletion with a recovery
+    window), it must:
+      - be hidden from ListSecrets by default, and
+      - be returned by ListSecrets(IncludePlannedDeletion=True) with its
+        DeletedDate populated so clients can distinguish it.
+    """
+    sm.create_secret(Name="sm-list-pd", SecretString="soft")
+    sm.delete_secret(SecretId="sm-list-pd", RecoveryWindowInDays=7)
+
+    # Default: soft-deleted secret is hidden.
+    names = [s["Name"] for s in sm.list_secrets()["SecretList"]]
+    assert "sm-list-pd" not in names
+
+    # IncludePlannedDeletion=True: soft-deleted secret is visible with DeletedDate.
+    resp = sm.list_secrets(IncludePlannedDeletion=True)
+    entry = next((s for s in resp["SecretList"] if s["Name"] == "sm-list-pd"), None)
+    assert entry is not None
+    assert "DeletedDate" in entry
+

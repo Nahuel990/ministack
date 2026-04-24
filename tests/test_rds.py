@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -698,6 +699,87 @@ def test_rds_instance_inherits_cluster_username(rds):
     inst = resp["DBInstances"][0]
     assert inst["MasterUsername"] == "myadmin"
     assert inst["DBClusterIdentifier"] == "inherit-cluster"
+
+
+def test_rds_handle_request_describe_with_json_body():
+    """DescribeDBInstances works when the request body is JSON (not form-encoded)."""
+    from ministack.core.responses import set_request_account_id
+    from ministack.services import rds as m
+
+    set_request_account_id("111111111111")
+    iid = f"inproc-json-{_uuid_mod.uuid4().hex[:12]}"
+    m._create_db_instance({
+        "DBInstanceIdentifier": [iid],
+        "DBInstanceClass": ["db.t3.micro"],
+        "Engine": ["postgres"],
+        "MasterUsername": ["admin"],
+        "MasterUserPassword": ["pw"],
+        "AllocatedStorage": ["20"],
+    })
+
+    async def desc():
+        body = json.dumps({"DBInstanceIdentifier": iid}).encode()
+        hdrs = {
+            "x-amz-target": "AmazonRDSv19.DescribeDBInstances",
+            "content-type": "application/x-amz-json-1.1",
+        }
+        return await m.handle_request("POST", "/", hdrs, body, {})
+
+    status, _, xml = asyncio.run(desc())
+    assert status == 200
+    assert iid.encode() in xml
+
+
+def test_rds_flatten_json_request_params():
+    """JSON protocol bodies are merged into query-style params for existing handlers."""
+    from ministack.services import rds as m
+
+    params = {}
+    m._flatten_json_request_params(
+        params,
+        {
+            "DBInstanceIdentifier": "my-writer",
+            "ApplyImmediately": True,
+            "BackupRetentionPeriod": 7,
+            "Filters": [
+                {"Name": "db-instance-id", "Values": ["a", "b"]},
+            ],
+        },
+    )
+    assert params["DBInstanceIdentifier"] == ["my-writer"]
+    assert params["ApplyImmediately"] == ["true"]
+    assert params["BackupRetentionPeriod"] == ["7"]
+    assert params["Filters.member.1.Name"] == ["db-instance-id"]
+    assert params["Filters.member.1.Values.member.1"] == ["a"]
+    assert params["Filters.member.1.Values.member.2"] == ["b"]
+
+    params2 = {}
+    m._flatten_json_request_params(
+        params2,
+        {"dbInstanceIdentifier": "smithy-style-id", "filters": []},
+    )
+    assert params2["DBInstanceIdentifier"] == ["smithy-style-id"]
+
+
+def test_rds_aurora_cluster_lists_instance_member(rds):
+    """CreateDBInstance for a cluster updates DescribeDBClusters DBClusterMembers."""
+    cid = f"memclus-{_uuid_mod.uuid4().hex[:10]}"
+    iid = f"{cid}-writer"
+    rds.create_db_cluster(
+        DBClusterIdentifier=cid,
+        Engine="aurora-postgresql",
+        MasterUsername="admin",
+        MasterUserPassword="pw",
+    )
+    rds.create_db_instance(
+        DBInstanceIdentifier=iid,
+        DBClusterIdentifier=cid,
+        DBInstanceClass="db.r6g.large",
+        Engine="aurora-postgresql",
+    )
+    out = rds.describe_db_clusters(DBClusterIdentifier=cid)
+    members = out["DBClusters"][0].get("DBClusterMembers") or []
+    assert any(m["DBInstanceIdentifier"] == iid for m in members)
 
 
 def test_rds_modify_cluster_password(rds):
