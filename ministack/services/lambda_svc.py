@@ -2382,6 +2382,52 @@ def _execute_function(func: dict, event: dict) -> dict:
     return result
 
 
+def lambda_execute_result_to_api_proxy_response(exec_result: dict) -> tuple[dict | None, str | None]:
+    """Convert :func:`_execute_function` output into an API Gateway AWS_PROXY-shaped dict.
+
+    Shared by REST (v1) and HTTP API (v2) execute paths so ``provided.*`` / Image
+    Lambdas match ``lambda invoke`` instead of returning a canned mock.
+    """
+    if exec_result.get("throttle"):
+        tb = exec_result.get("body") or {}
+        body_str = json.dumps(tb) if isinstance(tb, dict) else str(tb)
+        return {
+            "statusCode": 429,
+            "headers": {"Content-Type": "application/json"},
+            "body": body_str,
+        }, None
+
+    if exec_result.get("error"):
+        err_body = exec_result.get("body")
+        if isinstance(err_body, dict) and "statusCode" in err_body:
+            return err_body, None
+        payload = json.dumps(err_body) if isinstance(err_body, dict) else str(err_body)
+        return {
+            "statusCode": 502,
+            "headers": {"Content-Type": "application/json"},
+            "body": payload,
+        }, None
+
+    payload = exec_result.get("body")
+    if payload is None:
+        return {"statusCode": 200, "body": ""}, None
+    if isinstance(payload, dict) and "statusCode" in payload:
+        return payload, None
+    if isinstance(payload, (str, bytes)):
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8", errors="replace")
+        stripped = payload.strip()
+        if stripped.startswith("{"):
+            try:
+                obj = json.loads(stripped)
+                if isinstance(obj, dict) and "statusCode" in obj:
+                    return obj, None
+            except json.JSONDecodeError:
+                pass
+        return {"statusCode": 200, "body": payload}, None
+    return {"statusCode": 200, "body": json.dumps(payload, ensure_ascii=False)}, None
+
+
 def _execute_function_warm(func: dict, event: dict) -> dict:
     """Execute a Lambda function using the warm worker pool (Python + Node.js)."""
     config = func.get("config") or func
