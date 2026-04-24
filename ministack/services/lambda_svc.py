@@ -1871,7 +1871,6 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
     import urllib.request
     max_attempts = int(timeout * 10) + 20
     for _attempt in range(max_attempts):
-        time.sleep(0.1)
         container.reload()
         if container.status != "running":
             break
@@ -1921,6 +1920,7 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
                 result["function_error"] = "Unhandled" if err_header else "Handled"
             return result
         except (urllib.error.URLError, ConnectionRefusedError, OSError):
+            time.sleep(0.1)
             continue
     # Timed out
     stdout = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace").strip()
