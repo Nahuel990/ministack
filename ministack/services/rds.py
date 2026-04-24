@@ -362,7 +362,7 @@ def _create_db_instance(p):
         host_port = _next_port()
         endpoint_port = host_port
         ms_network = _get_ministack_network(docker_client)
-        image, env, container_port = _docker_image_for_engine(
+        image, env, container_port, data_path = _docker_image_for_engine(
             engine, engine_version, master_user, master_pass, db_name
         )
         if image:
@@ -376,15 +376,17 @@ def _create_db_instance(p):
                 )
                 if ms_network:
                     container_kwargs["network"] = ms_network
+                # Mount only the engine-appropriate data path. Previously both
+                # postgres and mysql paths were mounted unconditionally, which
+                # is harmless but wasteful and complicates the Postgres 18+
+                # layout change (where the path differs from earlier majors).
                 if RDS_PERSIST:
                     container_kwargs["volumes"] = {
-                        f"ministack-rds-{db_id}-data": {"bind": "/var/lib/postgresql/data", "mode": "rw"},
-                        f"ministack-rds-{db_id}-mysql": {"bind": "/var/lib/mysql", "mode": "rw"},
+                        f"ministack-rds-{db_id}-data": {"bind": data_path, "mode": "rw"},
                     }
                 else:
                     container_kwargs["tmpfs"] = {
-                        "/var/lib/postgresql/data": f"rw,noexec,nosuid,size={RDS_TMPFS_SIZE}",
-                        "/var/lib/mysql": f"rw,noexec,nosuid,size={RDS_TMPFS_SIZE}",
+                        data_path: f"rw,noexec,nosuid,size={RDS_TMPFS_SIZE}",
                     }
                 container = docker_client.containers.run(**container_kwargs)
                 docker_container_id = container.id
@@ -2010,6 +2012,7 @@ def _describe_engine_versions(p):
     version_filter = _p(p, "EngineVersion")
     versions_map = {
         "postgres": [
+            ("18.3", "18"), ("17.5", "17"), ("16.4", "16"),
             ("15.3", "15"), ("14.8", "14"), ("13.11", "13"), ("12.15", "12"),
         ],
         "mysql": [
@@ -2019,6 +2022,8 @@ def _describe_engine_versions(p):
             ("10.6.14", "10.6"), ("10.5.21", "10.5"),
         ],
         "aurora-postgresql": [
+            ("18.3", "aurora-postgresql18"), ("17.5", "aurora-postgresql17"),
+            ("16.4", "aurora-postgresql16"),
             ("15.3", "aurora-postgresql15"), ("14.8", "aurora-postgresql14"),
         ],
         "aurora-mysql": [
@@ -2555,13 +2560,29 @@ def _license_model(engine):
 
 
 def _docker_image_for_engine(engine, engine_version, user, password, db_name):
-    """Return (image, env_dict, container_port) or (None, None, None)."""
+    """Return (image, env_dict, container_port, data_path) or all-None.
+
+    data_path is the in-container path where the engine's data volume should
+    be mounted. Postgres 18+ reorganised its on-disk layout so that data
+    lives under a major-version-specific subdirectory; the official
+    postgres:18+ image refuses to start with a volume mounted at
+    /var/lib/postgresql/data (the pre-18 path) and points operators at
+    /var/lib/postgresql instead. We pick the right path per major so both
+    `postgres:17-alpine` and `postgres:18-alpine` start cleanly.
+    See https://github.com/docker-library/postgres/pull/1259 for context.
+    """
     if "postgres" in engine or "aurora-postgresql" in engine:
         major = engine_version.split(".")[0]
+        try:
+            major_int = int(major)
+        except ValueError:
+            major_int = 0
+        data_path = "/var/lib/postgresql" if major_int >= 18 else "/var/lib/postgresql/data"
         return (
             apply_image_prefix(f"postgres:{major}-alpine"),
             {"POSTGRES_USER": user, "POSTGRES_PASSWORD": password, "POSTGRES_DB": db_name},
             5432,
+            data_path,
         )
     if "mysql" in engine or "aurora-mysql" in engine:
         return (
@@ -2570,6 +2591,7 @@ def _docker_image_for_engine(engine, engine_version, user, password, db_name):
              "MYSQL_DATABASE": db_name,
              "MYSQL_USER": user, "MYSQL_PASSWORD": password},
             3306,
+            "/var/lib/mysql",
         )
     if "mariadb" in engine:
         return (
@@ -2578,8 +2600,9 @@ def _docker_image_for_engine(engine, engine_version, user, password, db_name):
              "MYSQL_DATABASE": db_name,
              "MYSQL_USER": user, "MYSQL_PASSWORD": password},
             3306,
+            "/var/lib/mysql",
         )
-    return None, None, None
+    return None, None, None, None
 
 
 def _default_parameters_for_family(family):

@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **RDS Postgres 18+ container refused to start** — MiniStack mounted the RDS data volume (or tmpfs) at `/var/lib/postgresql/data` for every Postgres major, but the official `postgres:18+` image moved to a major-version-specific on-disk layout and refuses to start with the pre-18 path ([docker-library/postgres#1259](https://github.com/docker-library/postgres/pull/1259)). `CreateDBInstance Engine=postgres EngineVersion=18.x` returned "available" from the RDS API while the spawned `postgres:18-alpine` container exited immediately with a layout-mismatch error. The mount path is now chosen per major: `/var/lib/postgresql/data` for < 18 (unchanged), `/var/lib/postgresql` for ≥ 18. MySQL / MariaDB / Aurora MySQL unaffected. Also adds `postgres 18.3`, `17.5`, `16.4` to the `DescribeDBEngineVersions` matrix (and aurora-postgresql equivalents). Reported by @whittin3.
+
+### Changed
+- **RDS containers now mount only the engine-appropriate data path.** Previously both `/var/lib/postgresql/data` and `/var/lib/mysql` were mounted on every RDS container regardless of engine — harmless but wasteful, and opaque when debugging. Docker `volumes` / `tmpfs` kwargs now reflect only the active engine.
+
+---
+
 ## [1.3.14] — 2026-04-24
 
 ### Added

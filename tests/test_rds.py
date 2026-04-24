@@ -1073,3 +1073,132 @@ def test_rds_enable_http_endpoint_not_found(rds):
             ResourceArn="arn:aws:rds:us-east-1:123456789012:cluster:no-such-cluster"
         )
     assert exc.value.response["Error"]["Code"] == "DBClusterNotFoundFault"
+
+
+# ── Postgres 18+ mount-path compatibility ──────────────────
+
+
+def test_docker_image_for_engine_postgres_pre_18_uses_data_subdir():
+    """Postgres < 18 keeps the pre-existing mount path /var/lib/postgresql/data."""
+    from ministack.services.rds import _docker_image_for_engine
+
+    for version in ("12.15", "13.11", "14.8", "15.3", "16.4", "17.5"):
+        image, env, port, data_path = _docker_image_for_engine(
+            "postgres", version, "admin", "pw", "mydb"
+        )
+        major = version.split(".")[0]
+        assert image == f"postgres:{major}-alpine"
+        assert port == 5432
+        assert data_path == "/var/lib/postgresql/data", (
+            f"postgres {version} should mount at /var/lib/postgresql/data"
+        )
+        assert env["POSTGRES_USER"] == "admin"
+        assert env["POSTGRES_PASSWORD"] == "pw"
+        assert env["POSTGRES_DB"] == "mydb"
+
+
+def test_docker_image_for_engine_postgres_18_uses_new_layout():
+    """Postgres 18+ must mount at /var/lib/postgresql (not /data).
+
+    The official postgres:18+ image moved to a major-version-specific on-disk
+    layout and refuses to start with the old pre-18 mount path. Regression
+    test for fix/rds-postgres-18-mount-layout.
+    """
+    from ministack.services.rds import _docker_image_for_engine
+
+    for version in ("18.0", "18.3", "19.1"):
+        image, env, port, data_path = _docker_image_for_engine(
+            "postgres", version, "admin", "pw", "mydb"
+        )
+        major = version.split(".")[0]
+        assert image == f"postgres:{major}-alpine"
+        assert port == 5432
+        assert data_path == "/var/lib/postgresql", (
+            f"postgres {version} should mount at /var/lib/postgresql (new layout)"
+        )
+
+
+def test_docker_image_for_engine_aurora_postgres_18_uses_new_layout():
+    """aurora-postgresql 18+ follows the same layout switch as vanilla postgres."""
+    from ministack.services.rds import _docker_image_for_engine
+
+    _, _, _, data_path_17 = _docker_image_for_engine(
+        "aurora-postgresql", "17.5", "admin", "pw", "mydb"
+    )
+    _, _, _, data_path_18 = _docker_image_for_engine(
+        "aurora-postgresql", "18.3", "admin", "pw", "mydb"
+    )
+    assert data_path_17 == "/var/lib/postgresql/data"
+    assert data_path_18 == "/var/lib/postgresql"
+
+
+def test_docker_image_for_engine_mysql_unchanged():
+    """MySQL / MariaDB / Aurora MySQL keep /var/lib/mysql — the Postgres 18
+    layout change does not touch them."""
+    from ministack.services.rds import _docker_image_for_engine
+
+    for engine, version in [
+        ("mysql", "8.0.33"),
+        ("aurora-mysql", "8.0.mysql_aurora.3.03.0"),
+        ("mariadb", "10.6.14"),
+    ]:
+        _, _, port, data_path = _docker_image_for_engine(
+            engine, version, "admin", "pw", "mydb"
+        )
+        assert port == 3306
+        assert data_path == "/var/lib/mysql"
+
+
+def test_docker_image_for_engine_malformed_version_defaults_to_pre_18():
+    """An unparseable major version falls back to the pre-18 layout rather
+    than crashing. Real AWS RDS only accepts numeric majors, but defensive
+    fallback keeps the emulator forgiving."""
+    from ministack.services.rds import _docker_image_for_engine
+
+    _, _, _, data_path = _docker_image_for_engine(
+        "postgres", "garbage.3", "admin", "pw", "mydb"
+    )
+    assert data_path == "/var/lib/postgresql/data"
+
+
+def test_docker_image_for_engine_unknown_engine_returns_nones():
+    """Unknown engine returns (None, None, None, None) — the 4-arity tuple
+    must be preserved so call sites can safely destructure."""
+    from ministack.services.rds import _docker_image_for_engine
+
+    result = _docker_image_for_engine("oracle", "19.0", "admin", "pw", "mydb")
+    assert result == (None, None, None, None)
+
+
+def test_rds_describe_postgres_18_engine_version(rds):
+    """DescribeDBEngineVersions exposes the Postgres 18 entry so Terraform's
+    validation (and callers that list supported versions) sees it."""
+    resp = rds.describe_db_engine_versions(Engine="postgres", EngineVersion="18.3")
+    versions = resp["DBEngineVersions"]
+    assert len(versions) == 1
+    assert versions[0]["EngineVersion"] == "18.3"
+    assert versions[0]["DBParameterGroupFamily"] == "18"
+
+
+def test_rds_create_db_instance_postgres_18(rds):
+    """CreateDBInstance accepts EngineVersion=18.3 and round-trips it through
+    DescribeDBInstances. Covers the API layer regardless of whether Docker
+    is available to actually start the underlying Postgres 18 container."""
+    rds.create_db_instance(
+        DBInstanceIdentifier="pg18-test",
+        DBInstanceClass="db.t3.micro",
+        Engine="postgres",
+        EngineVersion="18.3",
+        MasterUsername="admin",
+        MasterUserPassword="password123",
+        DBName="testdb",
+        AllocatedStorage=20,
+    )
+    try:
+        resp = rds.describe_db_instances(DBInstanceIdentifier="pg18-test")
+        inst = resp["DBInstances"][0]
+        assert inst["Engine"] == "postgres"
+        assert inst["EngineVersion"] == "18.3"
+        assert "Address" in inst["Endpoint"]
+    finally:
+        rds.delete_db_instance(DBInstanceIdentifier="pg18-test", SkipFinalSnapshot=True)
