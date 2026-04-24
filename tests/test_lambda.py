@@ -59,6 +59,34 @@ def test_lambda_create_invoke(lam):
     payload = json.loads(resp["Payload"].read())
     assert payload["statusCode"] == 200
 
+
+def test_lambda_python_nested_handler_slash_form(lam):
+    """AWS Python Lambda accepts both dot and slash separators in nested
+    handler paths (``pkg/sub/mod.fn`` equivalent to ``pkg.sub.mod.fn``);
+    real AWS resolves either form via the underlying file path. MiniStack
+    previously imported the pre-rsplit string literally, so slash form
+    failed with ``ModuleNotFoundError: No module named 'pkg/sub/mod'``.
+    """
+    code = b"def hello(event, context):\n    return {\"ok\": True, \"event\": event}\n"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("pkg/sub/mod.py", code)
+    lam.create_function(
+        FunctionName="slash-handler-fn",
+        Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/test-role",
+        Handler="pkg/sub/mod.hello",
+        Code={"ZipFile": buf.getvalue()},
+    )
+    resp = lam.invoke(
+        FunctionName="slash-handler-fn",
+        Payload=json.dumps({"k": "v"}),
+    )
+    assert "FunctionError" not in resp, resp
+    payload = json.loads(resp["Payload"].read())
+    assert payload.get("ok") is True
+
+
 def test_create_function_missing_runtime_raises(lam):
     """Zip deployment without a Runtime should return InvalidParameterValueException."""
     buf = io.BytesIO()
@@ -2731,3 +2759,171 @@ def test_invoke_rie_classifies_unhandled_vs_handled():
     if has_header or (isinstance(parsed_error_payload, dict) and parsed_error_payload.get("errorType")):
         classification = "Unhandled" if has_header else "Handled"
     assert classification == "Handled"
+
+
+def test_lambda_invoke_stderr_captured_in_log_result(lam):
+    """Direct Lambda.Invoke captures print() output in X-Amz-Log-Result header."""
+    import base64
+
+    fname = f"lam-log-capture-{_uuid_mod.uuid4().hex[:8]}"
+    marker_1 = f"LINE1-{_uuid_mod.uuid4().hex[:8]}"
+    marker_2 = f"LINE2-{_uuid_mod.uuid4().hex[:8]}"
+    code = (
+        "def handler(event, context):\n"
+        f"    print('{marker_1}')\n"
+        f"    print('{marker_2}')\n"
+        "    return {'statusCode': 200, 'body': 'ok'}\n"
+    )
+
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="python3.12",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip(code)},
+    )
+
+    try:
+        resp = lam.invoke(
+            FunctionName=fname,
+            Payload=json.dumps({}),
+            LogType="Tail",
+        )
+        assert resp["StatusCode"] == 200
+
+        log_result = resp.get("LogResult", "")
+        assert log_result, "X-Amz-Log-Result header should be non-empty"
+        decoded = base64.b64decode(log_result).decode("utf-8")
+        assert marker_1 in decoded, f"Expected '{marker_1}' in log output: {decoded}"
+        assert marker_2 in decoded, f"Expected '{marker_2}' in log output: {decoded}"
+    finally:
+        lam.delete_function(FunctionName=fname)
+
+
+def test_lambda_invoke_emits_cloudwatch_logs(lam, logs):
+    """Direct Lambda.Invoke emits START/body/END/REPORT to CloudWatch Logs."""
+    fname = f"lam-cwl-direct-{_uuid_mod.uuid4().hex[:8]}"
+    marker = f"CWL-MARKER-{_uuid_mod.uuid4().hex[:8]}"
+    code = (
+        "def handler(event, context):\n"
+        f"    print('{marker}')\n"
+        "    return {'statusCode': 200, 'body': 'ok'}\n"
+    )
+
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="python3.12",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip(code)},
+    )
+
+    try:
+        resp = lam.invoke(FunctionName=fname, Payload=json.dumps({}))
+        assert resp["StatusCode"] == 200
+
+        log_group = f"/aws/lambda/{fname}"
+        streams = logs.describe_log_streams(logGroupName=log_group)["logStreams"]
+        assert len(streams) >= 1
+
+        all_messages = []
+        for stream in streams:
+            events = logs.get_log_events(
+                logGroupName=log_group,
+                logStreamName=stream["logStreamName"],
+            )["events"]
+            all_messages.extend(e["message"] for e in events)
+
+        assert any(marker in msg for msg in all_messages), (
+            f"Marker '{marker}' not found in CW Logs: {all_messages}"
+        )
+        assert any(msg.startswith("START RequestId:") for msg in all_messages)
+        assert any(msg.startswith("END RequestId:") for msg in all_messages)
+        assert any(msg.startswith("REPORT RequestId:") for msg in all_messages)
+    finally:
+        lam.delete_function(FunctionName=fname)
+
+
+def test_lambda_invoke_stderr_captured_in_log_result_nodejs(lam):
+    """Node.js Lambda console.log output is captured in X-Amz-Log-Result header."""
+    import base64
+
+    fname = f"lam-log-capture-js-{_uuid_mod.uuid4().hex[:8]}"
+    marker_1 = f"JSLINE1-{_uuid_mod.uuid4().hex[:8]}"
+    marker_2 = f"JSLINE2-{_uuid_mod.uuid4().hex[:8]}"
+    code = (
+        "exports.handler = async (event) => {\n"
+        f"  console.log('{marker_1}');\n"
+        f"  console.log('{marker_2}');\n"
+        "  return { statusCode: 200, body: 'ok' };\n"
+        "};\n"
+    )
+
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="nodejs20.x",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip_js(code)},
+    )
+
+    try:
+        resp = lam.invoke(
+            FunctionName=fname,
+            Payload=json.dumps({}),
+            LogType="Tail",
+        )
+        assert resp["StatusCode"] == 200
+
+        log_result = resp.get("LogResult", "")
+        assert log_result, "X-Amz-Log-Result header should be non-empty"
+        decoded = base64.b64decode(log_result).decode("utf-8")
+        assert marker_1 in decoded, f"Expected '{marker_1}' in log output: {decoded}"
+        assert marker_2 in decoded, f"Expected '{marker_2}' in log output: {decoded}"
+    finally:
+        lam.delete_function(FunctionName=fname)
+
+
+def test_lambda_invoke_emits_cloudwatch_logs_nodejs(lam, logs):
+    """Node.js Lambda console.log emits to CloudWatch Logs on direct invoke."""
+    fname = f"lam-cwl-direct-js-{_uuid_mod.uuid4().hex[:8]}"
+    marker = f"JSCWL-MARKER-{_uuid_mod.uuid4().hex[:8]}"
+    code = (
+        "exports.handler = async (event) => {\n"
+        f"  console.log('{marker}');\n"
+        "  return { statusCode: 200, body: 'ok' };\n"
+        "};\n"
+    )
+
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="nodejs20.x",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip_js(code)},
+    )
+
+    try:
+        resp = lam.invoke(FunctionName=fname, Payload=json.dumps({}))
+        assert resp["StatusCode"] == 200
+
+        log_group = f"/aws/lambda/{fname}"
+        streams = logs.describe_log_streams(logGroupName=log_group)["logStreams"]
+        assert len(streams) >= 1
+
+        all_messages = []
+        for stream in streams:
+            events = logs.get_log_events(
+                logGroupName=log_group,
+                logStreamName=stream["logStreamName"],
+            )["events"]
+            all_messages.extend(e["message"] for e in events)
+
+        assert any(marker in msg for msg in all_messages), (
+            f"Marker '{marker}' not found in CW Logs: {all_messages}"
+        )
+        assert any(msg.startswith("START RequestId:") for msg in all_messages)
+        assert any(msg.startswith("END RequestId:") for msg in all_messages)
+        assert any(msg.startswith("REPORT RequestId:") for msg in all_messages)
+    finally:
+        lam.delete_function(FunctionName=fname)

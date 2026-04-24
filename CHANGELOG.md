@@ -7,6 +7,26 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.13] — 2026-04-24
+
+### Added
+- **CloudFront Functions API (stub)** — `CreateFunction`, `DescribeFunction`, `GetFunction`, `ListFunctions`, `PublishFunction`, `UpdateFunction`, `DeleteFunction` under `/2020-05-31/function*`. Covers Terraform `aws_cloudfront_function` (create + publish + read + delete) and attaching a function ARN to distribution cache behaviors. Limitations: in-memory only; no `TestFunction`; `KeyValueStoreAssociations` not modelled; no execution at the edge; `DescribeFunction` requires the `Stage` query parameter (`DEVELOPMENT` \| `LIVE`); `UpdateFunction` invalidates the emulated LIVE revision until the next `PublishFunction`. Contributed by @david-hay.
+- **CloudFront `CreateDistributionWithTags`** — accepts the `DistributionConfigWithTags` wrapper body shape (Terraform `aws_cloudfront_distribution` with `tags`). Contributed by @david-hay.
+- **API Gateway v1 stage method-settings via JSON Patch** — `UpdateStage` now honours paths of the form `/{resourcePath}/{httpMethod}/metrics/enabled`, `…/logging/loglevel`, `…/throttling/burstLimit`, etc., mapping them into `stage.methodSettings[{resourcePath}/{httpMethod}]` with AWS-shaped defaults. Unblocks Terraform `aws_api_gateway_method_settings`. Contributed by @david-hay.
+- **API Gateway execute-api for `provided.*` / Image / non-Python-Node runtimes** — AWS_PROXY integrations now dispatch through the central `_execute_function` path, so Go / Rust / Java Lambdas actually execute (v1 and v2) instead of returning a canned mock. Contributed by @david-hay and @bognari.
+- **Lambda → CloudWatch Logs for API Gateway-triggered invocations** — every execute-api invoke now emits the standard `START RequestId:` / handler stdout+stderr / `END RequestId:` / `REPORT RequestId:` sequence to `/aws/lambda/{FunctionName}`, so Metric Filters and subscription filters that watch APIGW-behind-Lambda traffic trigger correctly. Contributed by @bognari.
+
+### Fixed
+- **S3 Control `TagResource` silently dropped tags** — the handler only had `GET`/`PUT`/`DELETE` branches and parsed bodies as JSON, but AWS SDK Go v2 (used by terraform-aws-provider v6+) sends `POST` with an XML `TagResourceRequest`. Tags posted by Terraform's `aws_s3_bucket.tags` + `default_tags` were returning 2xx but never persisted, producing perpetual drift. Handler now accepts both POST and PUT, and parses both XML and JSON request bodies. Reported by @whittin3.
+- **IAM `GetPolicy` / `ListPolicies` omitted `Tags`** — `_managed_policy_xml()` never emitted a `<Tags>` block even though `TagPolicy` stored them correctly; Terraform refreshed `tags_all = {}` and replanned `default_tags` on every apply. Also fixed `_create_policy` silently dropping `Tags` passed on create. Same bug class as `_user_xml` (#441). Reported by @whittin3.
+- **EC2 tag-drift across 10+ resource types** — fourteen hardcoded `<tagSet/>` emissions in `ec2.py` were dropping tags for Network Interfaces, VPC Endpoints, NAT Gateways, Network ACLs, VPC Peering Connections, DHCP Options, Egress-Only Internet Gateways, Managed Prefix Lists, VPN Gateways, and Customer Gateways. Every `Describe*` for those resources returned empty tags regardless of what was stored. All now route through `_tag_set_xml(resource_id)`; three create paths (VPC Peering, DHCP Options, Egress-Only IGW) additionally gained missing `_parse_tag_specs` hooks so `TagSpecifications` on create is honoured.
+
+### Changed
+- **Lambda warm-worker stderr drain is bounded, not a fixed sleep** — the 50ms `time.sleep` added alongside the API Gateway → CloudWatch Logs fix was paid by every warm invocation regardless of whether the handler emitted log output. Replaced with a bounded drain that polls the stderr queue at 1ms intervals, exits ~5ms after the last line arrives (or ~50ms if the handler emitted nothing at all), and caps at 250ms absolute. Typical overhead drops from 50ms to 1–10ms per invoke.
+- **API Gateway proxy error-shaping shares a helper** — both v1 and v2 now call `lambda_svc.lambda_execute_result_to_api_proxy_response(...)` when converting an `_execute_function` result to the AWS_PROXY envelope. Gains correct `429 Too Many Requests` responses on `ConcurrentInvocationLimitExceeded` throttles (previously returned 502), and keeps v1/v2 response shapes aligned.
+
+---
+
 ## [1.3.12] — 2026-04-24
 
 ### Added

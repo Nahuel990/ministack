@@ -2193,7 +2193,7 @@ def _eni_fields_xml(eni, tag="item"):
             </item>
         </privateIpAddressesSet>
         {attachment}
-        <tagSet/>
+        {_tag_set_xml(eni['NetworkInterfaceId'])}
     </{tag}>"""
 
 
@@ -2209,7 +2209,7 @@ def _vpce_fields_xml(ep, tag="item"):
         <ownerId>{ep['OwnerId']}</ownerId>
         <routeTableIdSet>{rtb_ids}</routeTableIdSet>
         <subnetIdSet>{subnet_ids}</subnetIdSet>
-        <tagSet/>
+        {_tag_set_xml(ep['VpcEndpointId'])}
     </{tag}>"""
 
 
@@ -2512,7 +2512,7 @@ def _create_nat_gateway(params):
         <connectivityType>{connectivity}</connectivityType>
         <createTime>{_now_ts()}</createTime>
         <natGatewayAddressSet/>
-        <tagSet/>
+        {_tag_set_xml(nat_id)}
     </natGateway>"""
     return _xml(200, "CreateNatGatewayResponse", inner)
 
@@ -2584,7 +2584,7 @@ def _create_network_acl(params):
         <default>false</default>
         <entrySet/>
         <associationSet/>
-        <tagSet/>
+        {_tag_set_xml(acl_id)}
         <ownerId>{get_account_id()}</ownerId>
     </networkAcl>"""
     return _xml(200, "CreateNetworkAclResponse", inner)
@@ -2623,7 +2623,7 @@ def _describe_network_acls(params):
             <default>{'true' if acl['IsDefault'] else 'false'}</default>
             <entrySet>{entries}</entrySet>
             <associationSet>{assocs}</associationSet>
-            <tagSet/>
+            {_tag_set_xml(acl['NetworkAclId'])}
             <ownerId>{acl['OwnerId']}</ownerId>
         </item>"""
     return _xml(200, "DescribeNetworkAclsResponse",
@@ -2783,12 +2783,14 @@ def _create_vpc_peering_connection(params):
         "Tags": [],
     }
     _vpc_peering[pcx_id] = record
+    # TagSpecifications support for aws_vpc_peering_connection.tags on create.
+    _parse_tag_specs(params, "vpc-peering-connection", pcx_id)
     inner = f"""<vpcPeeringConnection>
         <vpcPeeringConnectionId>{pcx_id}</vpcPeeringConnectionId>
         <requesterVpcInfo><vpcId>{vpc_id}</vpcId><ownerId>{get_account_id()}</ownerId><region>{get_region()}</region></requesterVpcInfo>
         <accepterVpcInfo><vpcId>{peer_vpc_id}</vpcId><ownerId>{peer_owner_id}</ownerId><region>{peer_region}</region></accepterVpcInfo>
         <status><code>pending-acceptance</code></status>
-        <tagSet/>
+        {_tag_set_xml(pcx_id)}
     </vpcPeeringConnection>"""
     return _xml(200, "CreateVpcPeeringConnectionResponse", inner)
 
@@ -2805,7 +2807,7 @@ def _accept_vpc_peering_connection(params):
         <requesterVpcInfo><vpcId>{pcx['RequesterVpcInfo']['VpcId']}</vpcId><ownerId>{pcx['RequesterVpcInfo']['OwnerId']}</ownerId><region>{pcx['RequesterVpcInfo']['Region']}</region></requesterVpcInfo>
         <accepterVpcInfo><vpcId>{pcx['AccepterVpcInfo']['VpcId']}</vpcId><ownerId>{pcx['AccepterVpcInfo']['OwnerId']}</ownerId><region>{pcx['AccepterVpcInfo']['Region']}</region></accepterVpcInfo>
         <status><code>active</code></status>
-        <tagSet/>
+        {_tag_set_xml(pcx_id)}
     </vpcPeeringConnection>"""
     return _xml(200, "AcceptVpcPeeringConnectionResponse", inner)
 
@@ -2826,7 +2828,7 @@ def _describe_vpc_peering_connections(params):
             <requesterVpcInfo><vpcId>{pcx['RequesterVpcInfo']['VpcId']}</vpcId><ownerId>{pcx['RequesterVpcInfo']['OwnerId']}</ownerId><region>{pcx['RequesterVpcInfo']['Region']}</region></requesterVpcInfo>
             <accepterVpcInfo><vpcId>{pcx['AccepterVpcInfo']['VpcId']}</vpcId><ownerId>{pcx['AccepterVpcInfo']['OwnerId']}</ownerId><region>{pcx['AccepterVpcInfo']['Region']}</region></accepterVpcInfo>
             <status><code>{pcx['Status']['Code']}</code><message>{pcx['Status']['Message']}</message></status>
-            <tagSet/>
+            {_tag_set_xml(pcx['VpcPeeringConnectionId'])}
         </item>"""
     return _xml(200, "DescribeVpcPeeringConnectionsResponse",
                 f"<vpcPeeringConnectionSet>{items}</vpcPeeringConnectionSet>")
@@ -2878,11 +2880,12 @@ def _create_dhcp_options(params):
         <key>{c['Key']}</key>
         <valueSet>{"".join(f'<item><value>{v}</value></item>' for v in c['Values'])}</valueSet>
     </item>""" for c in configs)
+    _parse_tag_specs(params, "dhcp-options", dopt_id)
     inner = f"""<dhcpOptions>
         <dhcpOptionsId>{dopt_id}</dhcpOptionsId>
         <dhcpConfigurationSet>{configs_xml}</dhcpConfigurationSet>
         <ownerId>{get_account_id()}</ownerId>
-        <tagSet/>
+        {_tag_set_xml(dopt_id)}
     </dhcpOptions>"""
     return _xml(200, "CreateDhcpOptionsResponse", inner)
 
@@ -2914,7 +2917,7 @@ def _describe_dhcp_options(params):
             <dhcpOptionsId>{dopt['DhcpOptionsId']}</dhcpOptionsId>
             <dhcpConfigurationSet>{configs_xml}</dhcpConfigurationSet>
             <ownerId>{dopt['OwnerId']}</ownerId>
-            <tagSet/>
+            {_tag_set_xml(dopt['DhcpOptionsId'])}
         </item>"""
     return _xml(200, "DescribeDhcpOptionsResponse", f"<dhcpOptionsSet>{items}</dhcpOptionsSet>")
 
@@ -2947,6 +2950,7 @@ def _create_egress_only_igw(params):
     _egress_igws[eigw_id] = record
     if tags:
         _tags[eigw_id] = tags
+    _parse_tag_specs(params, "egress-only-internet-gateway", eigw_id)
     inner = f"""<egressOnlyInternetGateway>
         <egressOnlyInternetGatewayId>{eigw_id}</egressOnlyInternetGatewayId>
         <attachmentSet>
@@ -2955,7 +2959,7 @@ def _create_egress_only_igw(params):
                 <state>attached</state>
             </item>
         </attachmentSet>
-        <tagSet/>
+        {_tag_set_xml(eigw_id)}
     </egressOnlyInternetGateway>"""
     return _xml(200, "CreateEgressOnlyInternetGatewayResponse", inner)
 
@@ -2974,7 +2978,7 @@ def _describe_egress_only_igws(params):
                     <state>{eigw['State']}</state>
                 </item>
             </attachmentSet>
-            <tagSet/>
+            {_tag_set_xml(eigw['EgressOnlyInternetGatewayId'])}
         </item>"""
     return _xml(200, "DescribeEgressOnlyInternetGatewaysResponse",
                 f"<egressOnlyInternetGatewaySet>{items}</egressOnlyInternetGatewaySet>")
@@ -3186,7 +3190,7 @@ def _prefix_list_xml(pl, tag="item"):
         <version>{pl.get('Version',1)}</version>
         <prefixListArn>{pl.get('PrefixListArn','')}</prefixListArn>
         <ownerId>{pl.get('OwnerId', get_account_id())}</ownerId>
-        <tagSet/>
+        {_tag_set_xml(pl['PrefixListId'])}
     </{tag}>"""
 
 
@@ -3268,7 +3272,7 @@ def _vgw_xml(vgw, tag="item"):
         <availabilityZone>{vgw.get('AvailabilityZone','')}</availabilityZone>
         <amazonSideAsn>{vgw.get('AmazonSideAsn','64512')}</amazonSideAsn>
         <attachments>{attachments}</attachments>
-        <tagSet/>
+        {_tag_set_xml(vgw['VpnGatewayId'])}
     </{tag}>"""
 
 
@@ -3344,7 +3348,7 @@ def _cgw_xml(cgw, tag="item"):
         <ipAddress>{cgw['IpAddress']}</ipAddress>
         <type>{cgw['Type']}</type>
         <state>{cgw['State']}</state>
-        <tagSet/>
+        {_tag_set_xml(cgw['CustomerGatewayId'])}
     </{tag}>"""
 
 

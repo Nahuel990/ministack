@@ -1871,7 +1871,6 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
     import urllib.request
     max_attempts = int(timeout * 10) + 20
     for _attempt in range(max_attempts):
-        time.sleep(0.1)
         container.reload()
         if container.status != "running":
             break
@@ -1896,6 +1895,7 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
                 if not ports:
                     continue
                 rie_url = f"http://127.0.0.1:{ports[0]['HostPort']}/2015-03-31/functions/function/invocations"
+            invoke_time = time.time()
             req = urllib.request.Request(
                 rie_url, data=json.dumps(event).encode(),
                 headers={"Content-Type": "application/json"},
@@ -1906,7 +1906,7 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
                 parsed = json.loads(body)
             except json.JSONDecodeError:
                 parsed = body
-            logs = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace").strip()
+            logs = container.logs(stdout=True, stderr=True, since=invoke_time).decode("utf-8", errors="replace").strip()
             # RIE sets 'Lambda-Runtime-Function-Error-Type' (or bare
             # 'X-Amz-Function-Error') when the handler raised an unhandled
             # exception. If it's set we surface the error flag + propagate the
@@ -1921,6 +1921,7 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
                 result["function_error"] = "Unhandled" if err_header else "Handled"
             return result
         except (urllib.error.URLError, ConnectionRefusedError, OSError):
+            time.sleep(0.1)
             continue
     # Timed out
     stdout = container.logs(stdout=True, stderr=True).decode("utf-8", errors="replace").strip()
@@ -2254,7 +2255,7 @@ def _probe_peak_memory_mb(func: dict) -> int:
             container = entries[-1].get("container")
             if container is not None and _docker_available:
                 try:
-                    stats = container.stats(stream=False)
+                    stats = container.stats(stream=False, one_shot=True)
                     mem = stats.get("memory_stats", {}) or {}
                     peak = mem.get("max_usage") or mem.get("usage") or 0
                     if peak:
@@ -2380,6 +2381,52 @@ def _execute_function(func: dict, event: dict) -> dict:
         duration_ms,
     )
     return result
+
+
+def lambda_execute_result_to_api_proxy_response(exec_result: dict) -> tuple[dict | None, str | None]:
+    """Convert :func:`_execute_function` output into an API Gateway AWS_PROXY-shaped dict.
+
+    Shared by REST (v1) and HTTP API (v2) execute paths so ``provided.*`` / Image
+    Lambdas match ``lambda invoke`` instead of returning a canned mock.
+    """
+    if exec_result.get("throttle"):
+        tb = exec_result.get("body") or {}
+        body_str = json.dumps(tb) if isinstance(tb, dict) else str(tb)
+        return {
+            "statusCode": 429,
+            "headers": {"Content-Type": "application/json"},
+            "body": body_str,
+        }, None
+
+    if exec_result.get("error"):
+        err_body = exec_result.get("body")
+        if isinstance(err_body, dict) and "statusCode" in err_body:
+            return err_body, None
+        payload = json.dumps(err_body) if isinstance(err_body, dict) else str(err_body)
+        return {
+            "statusCode": 502,
+            "headers": {"Content-Type": "application/json"},
+            "body": payload,
+        }, None
+
+    payload = exec_result.get("body")
+    if payload is None:
+        return {"statusCode": 200, "body": ""}, None
+    if isinstance(payload, dict) and "statusCode" in payload:
+        return payload, None
+    if isinstance(payload, (str, bytes)):
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8", errors="replace")
+        stripped = payload.strip()
+        if stripped.startswith("{"):
+            try:
+                obj = json.loads(stripped)
+                if isinstance(obj, dict) and "statusCode" in obj:
+                    return obj, None
+            except json.JSONDecodeError:
+                pass
+        return {"statusCode": 200, "body": payload}, None
+    return {"statusCode": 200, "body": json.dumps(payload, ensure_ascii=False)}, None
 
 
 def _execute_function_warm(func: dict, event: dict) -> dict:
@@ -2665,6 +2712,12 @@ def _execute_function_local(func: dict, event: dict) -> dict:
             if "." not in handler:
                 return {"body": {"errorMessage": f"Invalid handler format: {handler}", "errorType": "Runtime.InvalidEntrypoint"}, "error": True}
             module_name, func_name = handler.rsplit(".", 1)
+            # AWS Python Lambda accepts both dot (``pkg.mod.fn``) and slash
+            # (``pkg/mod.fn``) in nested handler paths; ``__import__`` only
+            # takes dot. Other runtimes (Node.js, etc.) keep the raw string
+            # because they don't use Python module resolution.
+            if runtime.startswith("python"):
+                module_name = module_name.replace("/", ".")
 
             if is_node:
                 wrapper_path = os.path.join(tmpdir, "_wrapper.js")

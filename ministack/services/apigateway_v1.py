@@ -435,7 +435,6 @@ async def _call_lambda(func_name, event, qualifier=None):
     ``qualifier`` may be a version number or alias name; aliases resolve to
     their target version via ``_get_func_record_for_qualifier`` so aliased
     integration URIs (arn:...:function:<name>:<alias>) invoke correctly (#407)."""
-    from ministack.core.lambda_runtime import get_or_create_worker
     from ministack.services import lambda_svc
 
     func_data, func_config = lambda_svc._get_func_record_for_qualifier(func_name, qualifier)
@@ -443,17 +442,19 @@ async def _call_lambda(func_name, event, qualifier=None):
         label = f"{func_name}:{qualifier}" if qualifier else func_name
         return None, f"Lambda function '{label}' not found"
 
-    code_zip = func_data.get("code_zip")
-    runtime = func_config.get("Runtime", "")
-    if code_zip and runtime.startswith(("python", "nodejs")):
-        worker_key = f"{func_name}:{qualifier}" if qualifier else func_name
-        worker = get_or_create_worker(worker_key, func_config, code_zip)
-        result = await asyncio.to_thread(worker.invoke, event, new_uuid())
-        if result.get("status") == "error":
-            return None, result.get("error", "Lambda invocation error")
-        return result.get("result", {}), None
-    else:
-        return {"statusCode": 200, "body": "Mock response"}, None
+    # Route through the central _execute_function dispatcher so CloudWatch
+    # Logs emission and Docker log output work for API Gateway invocations.
+    # Response shaping (throttle→429, error→502, body→envelope) goes through
+    # the shared helper so v1/v2 stay consistent.
+    exec_record = {"config": func_config, "code_zip": func_data.get("code_zip")}
+    result = await asyncio.to_thread(lambda_svc._execute_function, exec_record, event)
+    lambda_response, _ = lambda_svc.lambda_execute_result_to_api_proxy_response(result)
+    # On error the helper returns {statusCode: 502, body: <msg>}; preserve
+    # the _call_lambda contract of (None, error_msg) so callers that check
+    # for error strings keep working.
+    if result.get("error") and lambda_response and lambda_response.get("statusCode") == 502:
+        return None, str(lambda_response.get("body") or "Lambda invocation error")
+    return lambda_response, None
 
 
 # ---- Persistence hooks ----
