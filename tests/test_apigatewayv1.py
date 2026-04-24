@@ -277,6 +277,28 @@ def test_apigwv1_update_stage(apigw_v1):
     assert resp["variables"]["myVar"] == "myVal"
     apigw_v1.delete_rest_api(restApiId=api_id)
 
+
+def test_apigwv1_update_stage_method_settings_wildcard(apigw_v1):
+    """UpdateStage paths like ``/*/*/metrics/enabled`` map to ``methodSettings['*/*']`` (Terraform)."""
+    api_id = apigw_v1.create_rest_api(name="v1-method-settings")["id"]
+    dep_id = apigw_v1.create_deployment(restApiId=api_id)["id"]
+    apigw_v1.create_stage(restApiId=api_id, stageName="local", deploymentId=dep_id)
+    apigw_v1.update_stage(
+        restApiId=api_id,
+        stageName="local",
+        patchOperations=[
+            {"op": "replace", "path": "/*/*/metrics/enabled", "value": "true"},
+            {"op": "replace", "path": "/*/*/logging/loglevel", "value": "INFO"},
+        ],
+    )
+    stage = apigw_v1.get_stage(restApiId=api_id, stageName="local")
+    assert "*/*" in stage.get("methodSettings", {})
+    ms = stage["methodSettings"]["*/*"]
+    assert ms["metricsEnabled"] is True
+    assert ms["loggingLevel"] == "INFO"
+    apigw_v1.delete_rest_api(restApiId=api_id)
+
+
 def test_apigwv1_authorizer_crud(apigw_v1):
     """Authorizer full lifecycle: create, get, update (patch), delete."""
     api_id = apigw_v1.create_rest_api(name="v1-auth-crud")["id"]
