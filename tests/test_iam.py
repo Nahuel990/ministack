@@ -310,6 +310,35 @@ def test_iam_policy_tags(iam):
     tags2 = iam.list_policy_tags(PolicyArn=arn)
     assert not any(t["Key"] == "env" for t in tags2["Tags"])
 
+
+def test_iam_policy_tags_serialized_in_get_policy(iam):
+    """Regression for #445: _managed_policy_xml must emit Tags so GetPolicy /
+    ListPolicies surface them. Without this block, Terraform's aws_iam_policy
+    refresh sees tags_all={} and replans default_tags on every apply — same
+    bug class as #441 (user tags) and #438 (policy description)."""
+    import uuid as _u
+    name = f"tagged-serialize-{_u.uuid4().hex[:8]}"
+    resp = iam.create_policy(
+        PolicyName=name,
+        PolicyDocument=json.dumps({"Version": "2012-10-17",
+                                    "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}]}),
+        Tags=[{"Key": "Team", "Value": "platform"}],
+    )
+    arn = resp["Policy"]["Arn"]
+    # CreatePolicy response must carry Tags.
+    create_tags = {t["Key"]: t["Value"] for t in resp["Policy"].get("Tags") or []}
+    assert create_tags.get("Team") == "platform", f"CreatePolicy dropped Tags: {resp['Policy']}"
+    # GetPolicy (separate endpoint, uses _managed_policy_xml) must too.
+    got = iam.get_policy(PolicyArn=arn)
+    got_tags = {t["Key"]: t["Value"] for t in got["Policy"].get("Tags") or []}
+    assert got_tags.get("Team") == "platform", f"GetPolicy dropped Tags: {got['Policy']}"
+    # TagPolicy after-the-fact must also round-trip via GetPolicy.
+    iam.tag_policy(PolicyArn=arn, Tags=[{"Key": "Env", "Value": "dev"}])
+    got2 = iam.get_policy(PolicyArn=arn)
+    got2_tags = {t["Key"]: t["Value"] for t in got2["Policy"].get("Tags") or []}
+    assert got2_tags == {"Team": "platform", "Env": "dev"}
+    iam.delete_policy(PolicyArn=arn)
+
 def test_iam_update_role(iam):
     iam.create_role(
         RoleName="test-update-role",

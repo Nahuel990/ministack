@@ -515,6 +515,46 @@ class Worker:
             pass
         return "\n".join(lines)
 
+    def _drain_stderr_bounded(
+        self,
+        first_line_wait: float = 0.050,
+        idle_confirm: float = 0.005,
+        hard_cap: float = 0.250,
+    ) -> str:
+        """Drain stderr with bounded waits — replaces a blanket ``time.sleep(0.05)``
+        that penalised every warm-pool invocation regardless of whether the
+        handler emitted any log output.
+
+        Three exit conditions, in order of likelihood:
+          1. **Quiescence after a line**: after the first line arrives, exit
+             once the queue has been empty for ``idle_confirm`` seconds
+             (default 5ms). Typical completion is 1–10ms per invocation.
+          2. **Nothing emitted**: if no line has arrived within
+             ``first_line_wait`` (default 50ms), assume the handler didn't
+             log and bail. Matches the pre-existing worst-case budget.
+          3. **Hard cap**: 250ms absolute ceiling in case of a pathologically
+             slow/contended pipe; protects against unbounded blocking.
+
+        The polling interval is 1ms, keeping CPU overhead trivial."""
+        lines = []
+        start = time.time()
+        last_received_at = None
+        while True:
+            elapsed = time.time() - start
+            if elapsed >= hard_cap:
+                break
+            try:
+                lines.append(self._stderr_queue.get_nowait())
+                last_received_at = time.time()
+            except queue.Empty:
+                if last_received_at is not None:
+                    if time.time() - last_received_at >= idle_confirm:
+                        break
+                elif elapsed >= first_line_wait:
+                    break
+                time.sleep(0.001)
+        return "\n".join(lines)
+
     def invoke(self, event: dict, request_id: str) -> dict:
         with self._lock:
             cold = self._cold
@@ -578,10 +618,9 @@ class Worker:
             if response.get("status") == "error":
                 self._proc = None
             response["cold_start"] = cold
-            # Brief pause so in-flight stderr lines from the OS pipe buffer
-            # reach the queue before we drain it.
-            time.sleep(0.05)
-            response["log"] = self._drain_stderr()
+            # Bounded drain — replaces the fixed 50ms sleep that was paid
+            # by every warm invocation. Typical completion is 1–10ms.
+            response["log"] = self._drain_stderr_bounded()
             return response
 
     def kill(self):

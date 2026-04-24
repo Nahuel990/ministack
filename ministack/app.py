@@ -638,15 +638,39 @@ async def _handle_s3_control_request(path: str, method: str, body: bytes, query_
                 "x-amzn-requestid": request_id,
             }, xml_body
 
-        if method == "PUT":
+        if method in ("POST", "PUT"):
+            # AWS SDK Go v2 (used by terraform-aws-provider v6+) sends
+            # TagResource as POST with an XML TagResourceRequest body. Older
+            # SDKs used PUT with JSON. Accept both methods + both body shapes
+            # so we don't silently drop tags (#447).
+            new_tags: dict = {}
             try:
-                payload = json.loads(body) if body else {}
-                new_tags = {t["Key"]: t["Value"] for t in payload.get("Tags", [])}
+                if body:
+                    raw = body if isinstance(body, str) else body.decode("utf-8", errors="replace")
+                    stripped = raw.lstrip()
+                    if stripped.startswith("<"):
+                        # XML: <TagResourceRequest><Tags><Tag><Key>..</Key><Value>..</Value></Tag>...</Tags></TagResourceRequest>
+                        from xml.etree.ElementTree import fromstring
+                        root = fromstring(raw)
+                        def _local(el):
+                            t = el.tag
+                            return t.split("}")[-1] if "}" in t else t
+                        for child in root.iter():
+                            if _local(child) != "Tag":
+                                continue
+                            key_el = next((c for c in child if _local(c) == "Key"), None)
+                            val_el = next((c for c in child if _local(c) == "Value"), None)
+                            if key_el is not None and key_el.text:
+                                new_tags[key_el.text] = (val_el.text or "") if val_el is not None else ""
+                    elif stripped.startswith("{"):
+                        payload = json.loads(stripped)
+                        new_tags = {t["Key"]: t["Value"] for t in payload.get("Tags", [])}
+            except Exception as e:
+                logger.warning("S3 Control TagResource parse error: %s", e)
+            if new_tags:
                 existing = _get_module("s3")._bucket_tags.get(bucket_name, {})
                 existing.update(new_tags)
                 _get_module("s3")._bucket_tags[bucket_name] = existing
-            except Exception as e:
-                logger.warning("S3 Control TagResource parse error: %s", e)
             return 204, {"x-amzn-requestid": request_id}, b""
 
         if method == "DELETE":
