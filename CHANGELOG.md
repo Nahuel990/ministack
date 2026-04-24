@@ -7,6 +7,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.14] — 2026-04-24
+
+### Added
+- **`DOCKER_NETWORK` env var unifies container networking across RDS / EKS / ElastiCache / Lambda** — a single knob that replaces the old `$HOSTNAME` auto-detection (which silently failed under docker-compose) and subsumes the legacy `LAMBDA_DOCKER_NETWORK`. When set, RDS and ElastiCache also switch `Endpoint.Address` to the routable container IP instead of `localhost`, so Lambda containers on the same network can actually reach them. `LAMBDA_DOCKER_NETWORK` is still accepted as a fallback for backwards compatibility. Contributed by @bognari.
+- **`LAMBDA_DOCKER_FLAGS` env var for Lambda container customisation** — matches LocalStack's convention for injecting `docker run` flags into Lambda containers. Supports `-e` / `--env`, `-v` / `--volume`, `--dns`, `--network`, `--cap-add`, `-m` / `--memory`, `--shm-size`, `--tmpfs`, `--add-host`, `--privileged`, `--read-only`. Unblocks TLS-proxy / custom-CA / routed-dev-network setups used in local Kubernetes environments. Default unset → behaviour identical to AWS. Contributed by @hzhou0.
+- **`MINISTACK_IMAGE_PREFIX` routes nested images through a private registry** — Testcontainers' `hub.image.name.prefix` now propagates to every nested real-infra image (RDS postgres/mysql/mariadb, ElastiCache redis/memcached, EKS k3s, Lambda runtime images under `public.ecr.aws/lambda/*`). Air-gapped and proxy-only environments no longer need to accept docker.io pulls for real-infra containers. The Java Testcontainers module forwards the prefix automatically. Reported by @TJ-developer.
+- **Testcontainers Java module reaps orphaned MiniStack containers and volumes on `stop()`** — RDS / ECS / EKS / ElastiCache nested containers spawned on the host engine are no longer leaked after the test run, closing a long-standing Podman-visible leak. The reaper labels all sidecar resources `ministack=<service>` and removes them via the DockerClient regardless of the host engine (Docker or Podman).
+- **Secrets Manager `ListSecrets` honours `IncludePlannedDeletion`** — soft-deleted secrets are now returned when the flag is set, with `DeletedDate` populated on each entry per the AWS `SecretListEntry` spec. Unblocks clients that poll `list-secrets --include-planned-deletion` to confirm a soft delete. Contributed by @weeco.
+
+### Fixed
+- **S3 zero-byte `PutObject` checksum mismatch with Java SDK v2** — the aws-chunked decoder mishandled zero-byte streaming PUTs (a single terminator chunk `0;chunk-signature=…\r\n\r\n`): it correctly broke the loop on `chunk_size == 0` but then fell through without replacing the body, leaving the raw chunked framing as the "body" bytes. The computed ETag (`0cabc165…`, MD5 of the wrapper) mismatched the client's expected ETag (`d41d8cd9…`, MD5 of empty content), and Java SDK v2 surfaced a `RetryableException: Data read has a different checksum than expected`. Reported by @JoeHale.
+- **SNS HTTP subscription confirmation silently skipped** — the handler imported `aiohttp` at call time, but `aiohttp` was never a declared dependency and wasn't in the Docker image, so every HTTP subscribe delivered an `aiohttp not installed — subscription confirmation skipped` log and no POST. Replaced with `urllib.request` wrapped in `asyncio.to_thread`, honouring the no-new-deps rule. Userinfo in URLs (`http://user:pass@host/…`) is promoted to `Authorization: Basic` per real AWS SNS behaviour. Reported by @anghel93.
+- **RDS `DescribeDBInstances` SigV4 JSON protocol** — Java and Go SDKs that negotiate the JSON variant (rather than Query) were hitting the fallback handler; `DescribeDBInstances` now speaks both shapes. Aurora-cluster `DBClusterMembers` membership is populated correctly when instances are created inside a cluster.
+- **Lambda RIE container log isolation** — warm RIE containers accumulate stdout/stderr across every invocation; without a `since` filter the response bundled every prior invocation's logs, ballooning `LogResult` unpredictably and making `LogType=Tail` debugging useless. `container.logs(since=invoke_time)` now returns only the current invocation's lines, matching real Lambda. Contributed by @ksjoberg.
+- **Lambda RIE retry loop no longer waits 100ms on the first attempt** — the `time.sleep(0.1)` was at the top of the retry loop, costing every RIE invocation a 100ms floor even when the container was already listening. Sleep is now paid only on `URLError` / `ConnectionRefusedError` retries. Hot-path savings: ~100ms per warm RIE invoke. Contributed by @ksjoberg.
+- **Lambda warm-pool container memory probe halves in latency** — `container.stats(stream=False)` without `one_shot=True` collects two stat samples 1 second apart to compute CPU deltas, which MiniStack doesn't need (we only read `memory_stats.max_usage`). Added `one_shot=True` per the Docker API docs; saves ~1 second per `_probe_peak_memory_mb` call. Contributed by @ksjoberg.
+- **Lambda slash-form Python handler paths** — `Handler: "pkg/sub/mod.fn"` (common in cookiecutter Lambda templates) now resolves the same way AWS's `awslambdaric` bootstrap does (`modname.replace("/", ".")`). Contributed by @ksjoberg.
+
+### Changed
+- **`aiohttp` removed from SNS HTTP delivery path** — replaced with stdlib `urllib.request.urlopen` wrapped in `asyncio.to_thread`. Honours MiniStack's no-new-deps rule (Docker image size, idle RAM, attack surface). Back-compat preserved — same call sites, same logging shape.
+- **Server bumps asyncio default executor to 64 threads on startup** — lifespan hook installs a `ThreadPoolExecutor(max_workers=64)` before the first request. The Python default (6 threads on 2-core CI runners) could stall concurrent Lambda cold-starts behind blocking work, causing intermittent test-side urlopen timeouts. Override with `MINISTACK_WORKER_THREADS`.
+
+---
+
 ## [1.3.13] — 2026-04-24
 
 ### Added
