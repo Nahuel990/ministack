@@ -210,6 +210,20 @@ def _get_enabled(config_el) -> bool:
     return val.strip().lower() != "false"
 
 
+def _ensure_distribution_config_sdk_compat(config_el):
+    """Patch DistributionConfig XML so hashicorp/aws CloudFront flatten does not nil-deref.
+
+    terraform-provider-aws (e.g. v6.42) does ``OriginGroups.Quantity`` without checking
+    ``OriginGroups``; real AWS returns ``<OriginGroups><Quantity>0</Quantity></OriginGroups>``
+    even when empty. Requests often omit that block.
+    """
+    if config_el is None:
+        return
+    if _find(config_el, "OriginGroups") is None:
+        og = SubElement(config_el, "OriginGroups")
+        SubElement(og, "Quantity").text = "0"
+
+
 def _build_distribution_xml(parent, dist):
     """Append Distribution child elements to parent."""
     SubElement(parent, "Id").text = dist["Id"]
@@ -220,6 +234,7 @@ def _build_distribution_xml(parent, dist):
     SubElement(parent, "DomainName").text = dist["DomainName"]
     # Re-parse and embed the stored config XML
     config_el = fromstring(dist["config_xml"])
+    _ensure_distribution_config_sdk_compat(config_el)
     config_el.tag = "DistributionConfig"
     parent.append(config_el)
 
@@ -722,6 +737,7 @@ def _get_distribution_config(dist_id):
         return _error("NoSuchDistribution", "The specified distribution does not exist.", 404)
 
     config_el = fromstring(dist["config_xml"])
+    _ensure_distribution_config_sdk_compat(config_el)
     config_el.tag = "DistributionConfig"
     config_el.set("xmlns", NS)
     body = b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(config_el, encoding="unicode").encode("utf-8")

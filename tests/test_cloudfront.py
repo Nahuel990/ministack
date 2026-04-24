@@ -88,6 +88,8 @@ def test_cloudfront_get_distribution(cloudfront):
     assert dist["Id"] == dist_id
     assert dist["DomainName"] == f"{dist_id}.cloudfront.net"
     assert dist["Status"] == "Deployed"
+    # terraform-provider-aws v6+ dereferences OriginGroups without a nil check
+    assert dist["DistributionConfig"]["OriginGroups"]["Quantity"] == 0
 
 def test_cloudfront_get_distribution_config(cloudfront):
     cfg = {**_CF_DIST_CONFIG, "CallerReference": "cf-getcfg-1", "Comment": "getcfg-test"}
@@ -98,6 +100,7 @@ def test_cloudfront_get_distribution_config(cloudfront):
     resp = cloudfront.get_distribution_config(Id=dist_id)
     assert resp["ETag"] == etag
     assert resp["DistributionConfig"]["Comment"] == "getcfg-test"
+    assert resp["DistributionConfig"]["OriginGroups"]["Quantity"] == 0
 
 def test_cloudfront_update_distribution(cloudfront):
     cfg = {**_CF_DIST_CONFIG, "CallerReference": "cf-upd-1", "Comment": "before-update"}
@@ -642,3 +645,18 @@ def test_cloudfront_function_describe_requires_stage(cloudfront):
         cloudfront.describe_function(Name=name)
     assert exc.value.response["Error"]["Code"] == "InvalidArgument"
     assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
+
+
+def test_cloudfront_sdk_compat_injects_origin_groups():
+    """terraform-provider-aws dereferences OriginGroups.Quantity without a nil check."""
+    from xml.etree.ElementTree import Element, SubElement
+
+    import ministack.services.cloudfront as cf
+
+    el = Element("DistributionConfig")
+    SubElement(el, "CallerReference").text = "unit-ref"
+    assert cf._find(el, "OriginGroups") is None
+    cf._ensure_distribution_config_sdk_compat(el)
+    og = cf._find(el, "OriginGroups")
+    assert og is not None
+    assert cf._text(og, "Quantity") == "0"
