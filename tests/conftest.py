@@ -42,6 +42,7 @@ _SERIAL_TESTS = {
     "tests/test_sfn.py::test_sfn_mock_config_throw",
     "tests/test_sfn.py::test_sfn_wait_scale_zero_does_not_timeout_lambda_tasks",
     "tests/test_sfn.py::test_sfn_wait_scale_zero_skips_wait",
+    "tests/test_rds_lambda_network.py::test_rds_lambda_network_connectivity",
 }
 
 
