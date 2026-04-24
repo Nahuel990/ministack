@@ -160,6 +160,25 @@ def test_ec2_sg_authorize_revoke_ingress(ec2):
 
     ec2.delete_security_group(GroupId=sg_id)
 
+
+def test_ec2_sg_authorize_ingress_idempotent_duplicate(ec2):
+    """Re-authorizing the same ingress rule must succeed (Terraform may re-apply unchanged rules)."""
+    sg_id = ec2.create_security_group(GroupName="qa-ec2-sg-dup-auth", Description="dup auth")["GroupId"]
+    perm = {
+        "IpProtocol": "tcp",
+        "FromPort": 5432,
+        "ToPort": 5432,
+        "IpRanges": [{"CidrIp": "10.1.0.0/16"}],
+    }
+    ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
+    ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=[perm])
+    desc = ec2.describe_security_groups(GroupIds=[sg_id])
+    ingress = desc["SecurityGroups"][0]["IpPermissions"]
+    matching = [p for p in ingress if p.get("FromPort") == 5432 and p.get("ToPort") == 5432]
+    assert len(matching) == 1
+    ec2.delete_security_group(GroupId=sg_id)
+
+
 def test_ec2_key_pair_crud(ec2):
     resp = ec2.create_key_pair(KeyName="qa-ec2-key")
     assert resp["KeyName"] == "qa-ec2-key"

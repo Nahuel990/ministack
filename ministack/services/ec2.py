@@ -694,11 +694,12 @@ def _authorize_sg_ingress(p):
     rules = _parse_ip_permissions(p, "IpPermissions")
     rule_items = ""
     for r in rules:
-        if any(_rules_match(r, existing) for existing in sg["IpPermissions"]):
-            return _error("InvalidPermission.Duplicate", "The specified rule already exists", 400)
-        sg["IpPermissions"].append(r)
-        idx = len(sg["IpPermissions"]) - 1
-        rule_items += _sg_rule_xml(sg_id, r, idx, is_egress=False)
+        # Idempotent: skip rules that already exist (matches egress behavior and avoids
+        # Terraform InvalidPermission.Duplicate when the provider re-authorizes unchanged rules).
+        if not any(_rules_match(r, existing) for existing in sg["IpPermissions"]):
+            sg["IpPermissions"].append(r)
+            idx = len(sg["IpPermissions"]) - 1
+            rule_items += _sg_rule_xml(sg_id, r, idx, is_egress=False)
     return _xml(200, "AuthorizeSecurityGroupIngressResponse",
                 f"<return>true</return><securityGroupRuleSet>{rule_items}</securityGroupRuleSet>")
 
