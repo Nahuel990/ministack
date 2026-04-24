@@ -730,6 +730,10 @@ def _create_integration(api_id, data):
         "requestParameters": data.get("requestParameters", {}),
         "requestTemplates": data.get("requestTemplates", {}),
         "responseParameters": data.get("responseParameters", {}),
+        # #439: contentHandlingStrategy (CONVERT_TO_TEXT | CONVERT_TO_BINARY)
+        # is accepted on Create/Update and echoed back by Get; Terraform's
+        # aws_apigatewayv2_integration otherwise plans to re-add it on every apply.
+        "contentHandlingStrategy": data.get("contentHandlingStrategy"),
     }
     _integrations.setdefault(api_id, {})[int_id] = integration
     return _apigw_response(integration, 201)
@@ -752,7 +756,8 @@ def _update_integration(api_id, int_id, data):
         return _apigw_error("NotFoundException", f"Integration {int_id} not found", 404)
     for k in ("integrationType", "integrationUri", "integrationMethod",
               "payloadFormatVersion", "timeoutInMillis", "connectionType",
-              "description", "requestParameters", "requestTemplates", "responseParameters"):
+              "description", "requestParameters", "requestTemplates", "responseParameters",
+              "contentHandlingStrategy"):
         if k in data:
             integration[k] = data[k]
     return _apigw_response(integration)

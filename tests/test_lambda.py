@@ -976,6 +976,95 @@ def test_lambda_alias_crud(lam):
     aliases2 = lam.list_aliases(FunctionName="qa-lam-alias")["Aliases"]
     assert not any(a["Name"] == "prod" for a in aliases2)
 
+
+def test_lambda_alias_no_phantom_routing_config(lam):
+    """Regression for #440: when Terraform sends RoutingConfig with an empty
+    AdditionalVersionWeights map (its default payload when no weighted routing
+    is declared), ministack must NOT echo RoutingConfig back — real AWS omits
+    the field. Otherwise Terraform plans to remove the block on every apply."""
+    code = _zip_lambda("def handler(e,c): return 'v1'")
+    fn = "qa-lam-alias-rc"
+    lam.create_function(
+        FunctionName=fn,
+        Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/r",
+        Handler="index.handler",
+        Code={"ZipFile": code},
+    )
+    lam.publish_version(FunctionName=fn)
+    # CreateAlias with the exact payload terraform-provider-aws sends when
+    # there is no `routing_config` block in HCL — outer dict present, inner
+    # weights empty.
+    created = lam.create_alias(
+        FunctionName=fn,
+        Name="live",
+        FunctionVersion="1",
+        RoutingConfig={"AdditionalVersionWeights": {}},
+    )
+    assert "RoutingConfig" not in created, f"phantom RoutingConfig echoed back: {created.get('RoutingConfig')!r}"
+    fetched = lam.get_alias(FunctionName=fn, Name="live")
+    assert "RoutingConfig" not in fetched, f"phantom RoutingConfig on GetAlias: {fetched.get('RoutingConfig')!r}"
+
+    # But a real weighted config MUST survive.
+    lam.publish_version(FunctionName=fn)
+    updated = lam.update_alias(
+        FunctionName=fn,
+        Name="live",
+        RoutingConfig={"AdditionalVersionWeights": {"2": 0.1}},
+    )
+    assert updated["RoutingConfig"]["AdditionalVersionWeights"] == {"2": 0.1}
+
+    # Clearing it back to empty removes it.
+    cleared = lam.update_alias(
+        FunctionName=fn,
+        Name="live",
+        RoutingConfig={"AdditionalVersionWeights": {}},
+    )
+    assert "RoutingConfig" not in cleared
+
+    lam.delete_function(FunctionName=fn)
+
+
+def test_lambda_event_source_mapping_tags(lam, sqs):
+    """Regression for #442: CreateEventSourceMapping accepts Tags; ListTags
+    returns them by ESM ARN. Without this, Terraform replans tags on every apply."""
+    code = _zip_lambda("def handler(e,c): return 'ok'")
+    fn = "qa-esm-tags-fn"
+    lam.create_function(
+        FunctionName=fn,
+        Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/r",
+        Handler="index.handler",
+        Code={"ZipFile": code},
+    )
+    q = sqs.create_queue(QueueName="qa-esm-tags-queue")
+    q_arn = sqs.get_queue_attributes(QueueUrl=q["QueueUrl"], AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
+
+    esm = lam.create_event_source_mapping(
+        FunctionName=fn,
+        EventSourceArn=q_arn,
+        Tags={"Team": "billing", "Env": "prod"},
+    )
+    esm_arn = f"arn:aws:lambda:us-east-1:000000000000:event-source-mapping:{esm['UUID']}"
+    tags = lam.list_tags(Resource=esm_arn)["Tags"]
+    assert tags == {"Team": "billing", "Env": "prod"}
+
+    # TagResource / UntagResource must also work on an ESM ARN.
+    lam.tag_resource(Resource=esm_arn, Tags={"Team": "platform"})
+    tags = lam.list_tags(Resource=esm_arn)["Tags"]
+    assert tags["Team"] == "platform"
+    assert tags["Env"] == "prod"
+
+    lam.untag_resource(Resource=esm_arn, TagKeys=["Env"])
+    tags = lam.list_tags(Resource=esm_arn)["Tags"]
+    assert "Env" not in tags
+    assert tags["Team"] == "platform"
+
+    lam.delete_event_source_mapping(UUID=esm["UUID"])
+    lam.delete_function(FunctionName=fn)
+    sqs.delete_queue(QueueUrl=q["QueueUrl"])
+
+
 def test_lambda_publish_version_snapshot(lam):
     """PublishVersion creates a numbered version snapshot."""
     code = _zip_lambda("def handler(e,c): return 'v1'")

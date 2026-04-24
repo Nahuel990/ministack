@@ -2880,8 +2880,12 @@ def _create_alias(func_name: str, data: dict):
         "Description": data.get("Description", ""),
         "RevisionId": new_uuid(),
     }
+    # #440: Terraform sends RoutingConfig={"AdditionalVersionWeights": {}} even
+    # when no weighted routing is declared. Only store (and echo back) when
+    # the weights map is non-empty — real AWS omits RoutingConfig from
+    # responses when no weights are configured.
     rc = data.get("RoutingConfig")
-    if rc:
+    if rc and rc.get("AdditionalVersionWeights"):
         alias["RoutingConfig"] = rc
     func["aliases"][alias_name] = alias
     return json_response(alias, 201)
@@ -2918,9 +2922,18 @@ def _update_alias(func_name: str, alias_name: str, data: dict):
             f"Alias not found: {_func_arn(func_name)}:{alias_name}",
             404,
         )
-    for key in ("FunctionVersion", "Description", "RoutingConfig"):
+    for key in ("FunctionVersion", "Description"):
         if key in data:
             alias[key] = data[key]
+    # #440: same rule as CreateAlias — empty AdditionalVersionWeights means
+    # "no weighted routing"; store only when non-empty, and remove an existing
+    # RoutingConfig if the caller clears it.
+    if "RoutingConfig" in data:
+        rc = data["RoutingConfig"]
+        if rc and rc.get("AdditionalVersionWeights"):
+            alias["RoutingConfig"] = rc
+        else:
+            alias.pop("RoutingConfig", None)
     alias["RevisionId"] = new_uuid()
     return json_response(alias)
 
@@ -3068,7 +3081,24 @@ def _get_policy(func_name: str, query_params: dict | None = None):
 # ---------------------------------------------------------------------------
 
 
+def _esm_id_from_arn(resource_arn: str) -> str | None:
+    """Return the ESM UUID if the ARN points to an event-source-mapping, else None."""
+    if ":event-source-mapping:" in resource_arn:
+        return resource_arn.rsplit(":", 1)[-1]
+    return None
+
+
 def _list_tags(resource_arn: str):
+    esm_id = _esm_id_from_arn(resource_arn)
+    if esm_id is not None:
+        esm = _esms.get(esm_id)
+        if not esm:
+            return error_response_json(
+                "ResourceNotFoundException",
+                f"The resource you requested does not exist.",
+                404,
+            )
+        return json_response({"Tags": esm.get("Tags", {})})
     func_name = _resolve_name(resource_arn)
     if func_name not in _functions:
         return error_response_json(
@@ -3080,6 +3110,17 @@ def _list_tags(resource_arn: str):
 
 
 def _tag_resource(resource_arn: str, data: dict):
+    esm_id = _esm_id_from_arn(resource_arn)
+    if esm_id is not None:
+        esm = _esms.get(esm_id)
+        if not esm:
+            return error_response_json(
+                "ResourceNotFoundException",
+                f"The resource you requested does not exist.",
+                404,
+            )
+        esm.setdefault("Tags", {}).update(data.get("Tags", {}))
+        return 204, {}, b""
     func_name = _resolve_name(resource_arn)
     if func_name not in _functions:
         return error_response_json(
@@ -3092,13 +3133,6 @@ def _tag_resource(resource_arn: str, data: dict):
 
 
 def _untag_resource(resource_arn: str, query_params: dict):
-    func_name = _resolve_name(resource_arn)
-    if func_name not in _functions:
-        return error_response_json(
-            "ResourceNotFoundException",
-            f"Function not found: {resource_arn}",
-            404,
-        )
     raw = query_params.get("tagKeys", query_params.get("TagKeys", []))
     if isinstance(raw, list):
         tag_keys = raw
@@ -3106,6 +3140,28 @@ def _untag_resource(resource_arn: str, query_params: dict):
         tag_keys = [raw]
     else:
         tag_keys = []
+
+    esm_id = _esm_id_from_arn(resource_arn)
+    if esm_id is not None:
+        esm = _esms.get(esm_id)
+        if not esm:
+            return error_response_json(
+                "ResourceNotFoundException",
+                f"The resource you requested does not exist.",
+                404,
+            )
+        tags = esm.setdefault("Tags", {})
+        for k in tag_keys:
+            tags.pop(k.strip(), None)
+        return 204, {}, b""
+
+    func_name = _resolve_name(resource_arn)
+    if func_name not in _functions:
+        return error_response_json(
+            "ResourceNotFoundException",
+            f"Function not found: {resource_arn}",
+            404,
+        )
     tags = _functions[func_name].setdefault("tags", {})
     for k in tag_keys:
         tags.pop(k.strip(), None)
@@ -3609,6 +3665,11 @@ def _create_esm(data: dict):
     }
     if ":sqs:" not in event_source_arn:
         esm["StartingPosition"] = data.get("StartingPosition", "LATEST")
+    # #442: Tags are accepted on CreateEventSourceMapping. Stored inline on
+    # the ESM record; surfaced via _list_tags for the ESM ARN.
+    tags = data.get("Tags") or {}
+    if tags:
+        esm["Tags"] = dict(tags)
     _esms[esm_id] = esm
     _ensure_poller()
     return json_response(_esm_response(esm), 202)

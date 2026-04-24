@@ -114,6 +114,40 @@ def test_iam_get_policy(iam):
     resp = iam.get_policy(PolicyArn=arn)
     assert resp["Policy"]["PolicyName"] == "iam-test-policy"
 
+
+def test_iam_policy_description_roundtrip(iam):
+    """Regression for #438: CreatePolicy(Description=...) must survive GetPolicy.
+    Without this, Terraform force-replaces every aws_iam_policy with a description
+    on every warm boot because `description` is ForceNew in the provider."""
+    import uuid as _u
+    name = f"desc-policy-{_u.uuid4().hex[:8]}"
+    created = iam.create_policy(
+        PolicyName=name,
+        Description="managed by ministack regression test",
+        PolicyDocument='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}',
+    )
+    assert created["Policy"].get("Description") == "managed by ministack regression test"
+    fetched = iam.get_policy(PolicyArn=created["Policy"]["Arn"])
+    assert fetched["Policy"].get("Description") == "managed by ministack regression test"
+    iam.delete_policy(PolicyArn=created["Policy"]["Arn"])
+
+
+def test_iam_user_tags_serialized_in_get_user(iam):
+    """Regression for #441: GetUser must include Tags set via TagUser / CreateUser.
+    _user_xml previously omitted <Tags>, so Terraform's refresh saw empty tags
+    and re-added default_tags on every apply."""
+    import uuid as _u
+    name = f"tag-user-{_u.uuid4().hex[:8]}"
+    iam.create_user(UserName=name, Tags=[{"Key": "Team", "Value": "core"}])
+    resp = iam.get_user(UserName=name)
+    tags = {t["Key"]: t["Value"] for t in resp["User"].get("Tags", [])}
+    assert tags.get("Team") == "core"
+    iam.tag_user(UserName=name, Tags=[{"Key": "Env", "Value": "dev"}])
+    resp = iam.get_user(UserName=name)
+    tags = {t["Key"]: t["Value"] for t in resp["User"].get("Tags", [])}
+    assert tags == {"Team": "core", "Env": "dev"}
+    iam.delete_user(UserName=name)
+
 def test_iam_attach_role_policy(iam):
     policy_arn = "arn:aws:iam::000000000000:policy/iam-test-policy"
     iam.attach_role_policy(RoleName="iam-test-role", PolicyArn=policy_arn)

@@ -780,6 +780,29 @@ def test_apigw_update_integration(apigw):
     integ = apigw.get_integration(ApiId=api_id, IntegrationId=integ_id)
     assert "new-fn" in integ["IntegrationUri"]
 
+
+def test_apigw_integration_content_handling_strategy_roundtrip(apigw):
+    """Regression for #439: contentHandlingStrategy must survive Create and Update.
+    Without this, Terraform replans the field on every apply and the runtime
+    silently misses CONVERT_TO_TEXT / CONVERT_TO_BINARY payload translation."""
+    api_id = apigw.create_api(Name="qa-apigw-chs", ProtocolType="HTTP")["ApiId"]
+    integ_id = apigw.create_integration(
+        ApiId=api_id,
+        IntegrationType="AWS_PROXY",
+        IntegrationUri="arn:aws:lambda:us-east-1:000000000000:function:chs-fn",
+        ContentHandlingStrategy="CONVERT_TO_TEXT",
+    )["IntegrationId"]
+    integ = apigw.get_integration(ApiId=api_id, IntegrationId=integ_id)
+    assert integ.get("ContentHandlingStrategy") == "CONVERT_TO_TEXT"
+
+    apigw.update_integration(
+        ApiId=api_id,
+        IntegrationId=integ_id,
+        ContentHandlingStrategy="CONVERT_TO_BINARY",
+    )
+    integ = apigw.get_integration(ApiId=api_id, IntegrationId=integ_id)
+    assert integ.get("ContentHandlingStrategy") == "CONVERT_TO_BINARY"
+
 def test_apigw_delete_route_v2(apigw):
     """DeleteRoute removes the route from GetRoutes."""
     api_id = apigw.create_api(Name="qa-apigw-del-route", ProtocolType="HTTP")["ApiId"]

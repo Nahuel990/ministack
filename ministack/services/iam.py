@@ -299,6 +299,7 @@ def _create_policy(p):
         return _error(409, "EntityAlreadyExists",
                       f"A policy called {name} already exists.", ns="iam")
     doc = _p(p, "PolicyDocument")
+    description = _p(p, "Description", "")
     policy_id = _gen_id("ANPA")
     version_id = "v1"
     _policies[arn] = {
@@ -311,6 +312,7 @@ def _create_policy(p):
         "AttachmentCount": 0,
         "IsAttachable": True,
         "Path": path,
+        "Description": description,
         "Tags": [],
         "Versions": {
             version_id: {
@@ -1422,11 +1424,20 @@ def _extract_tag_keys(p):
 
 def _user_xml(name):
     u = _users[name]
+    # Tags are emitted when present (#441). _role_xml follows the same pattern.
+    tags_xml = ""
+    if u.get("Tags"):
+        tag_members = "".join(
+            f"<member><Key>{t['Key']}</Key><Value>{t['Value']}</Value></member>"
+            for t in u["Tags"]
+        )
+        tags_xml = f"<Tags>{tag_members}</Tags>"
     return (f"<UserName>{u['UserName']}</UserName>"
             f"<UserId>{u['UserId']}</UserId>"
             f"<Arn>{u['Arn']}</Arn>"
             f"<Path>{u['Path']}</Path>"
-            f"<CreateDate>{u['CreateDate']}</CreateDate>")
+            f"<CreateDate>{u['CreateDate']}</CreateDate>"
+            f"{tags_xml}")
 
 
 def _role_xml(name):
@@ -1454,6 +1465,9 @@ def _role_xml(name):
 
 def _managed_policy_xml(arn):
     pol = _policies[arn]
+    # Description is omitted when empty to match real AWS (#438).
+    description = pol.get("Description") or ""
+    description_xml = f"<Description>{description}</Description>" if description else ""
     return (f"<PolicyName>{pol['PolicyName']}</PolicyName>"
             f"<Arn>{arn}</Arn>"
             f"<PolicyId>{pol['PolicyId']}</PolicyId>"
@@ -1462,7 +1476,8 @@ def _managed_policy_xml(arn):
             f"<IsAttachable>true</IsAttachable>"
             f"<CreateDate>{pol['CreateDate']}</CreateDate>"
             f"<UpdateDate>{pol.get('UpdateDate', pol['CreateDate'])}</UpdateDate>"
-            f"<Path>{pol.get('Path', '/')}</Path>")
+            f"<Path>{pol.get('Path', '/')}</Path>"
+            f"{description_xml}")
 
 
 def _group_xml(name):
