@@ -2254,7 +2254,7 @@ def _probe_peak_memory_mb(func: dict) -> int:
             container = entries[-1].get("container")
             if container is not None and _docker_available:
                 try:
-                    stats = container.stats(stream=False)
+                    stats = container.stats(stream=False, one_shot=True)
                     mem = stats.get("memory_stats", {}) or {}
                     peak = mem.get("max_usage") or mem.get("usage") or 0
                     if peak:
