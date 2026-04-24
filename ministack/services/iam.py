@@ -300,6 +300,8 @@ def _create_policy(p):
                       f"A policy called {name} already exists.", ns="iam")
     doc = _p(p, "PolicyDocument")
     description = _p(p, "Description", "")
+    # #445 (follow-up): CreatePolicy accepts Tags — honour them on create.
+    create_tags = _extract_tags(p)
     policy_id = _gen_id("ANPA")
     version_id = "v1"
     _policies[arn] = {
@@ -313,7 +315,7 @@ def _create_policy(p):
         "IsAttachable": True,
         "Path": path,
         "Description": description,
-        "Tags": [],
+        "Tags": list(create_tags or []),
         "Versions": {
             version_id: {
                 "Document": doc,
@@ -1468,6 +1470,16 @@ def _managed_policy_xml(arn):
     # Description is omitted when empty to match real AWS (#438).
     description = pol.get("Description") or ""
     description_xml = f"<Description>{description}</Description>" if description else ""
+    # Tags emission mirrors _user_xml / _role_xml (#445). TagPolicy mutates
+    # _policies[arn]["Tags"]; without this block GetPolicy/ListPolicies drop
+    # them and Terraform re-adds default_tags on every apply.
+    tags_xml = ""
+    if pol.get("Tags"):
+        tag_members = "".join(
+            f"<member><Key>{t['Key']}</Key><Value>{t['Value']}</Value></member>"
+            for t in pol["Tags"]
+        )
+        tags_xml = f"<Tags>{tag_members}</Tags>"
     return (f"<PolicyName>{pol['PolicyName']}</PolicyName>"
             f"<Arn>{arn}</Arn>"
             f"<PolicyId>{pol['PolicyId']}</PolicyId>"
@@ -1477,7 +1489,8 @@ def _managed_policy_xml(arn):
             f"<CreateDate>{pol['CreateDate']}</CreateDate>"
             f"<UpdateDate>{pol.get('UpdateDate', pol['CreateDate'])}</UpdateDate>"
             f"<Path>{pol.get('Path', '/')}</Path>"
-            f"{description_xml}")
+            f"{description_xml}"
+            f"{tags_xml}")
 
 
 def _group_xml(name):

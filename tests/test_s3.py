@@ -353,6 +353,54 @@ def test_s3_control_list_tags_for_resource(s3):
     tags = {t["Key"]: t["Value"] for t in resp.get("Tags", [])}
     assert tags.get("name") == "ministack-test"
 
+def test_s3_control_tag_resource_post_xml_stores_tags(s3):
+    """Regression for #447: S3Control TagResource must accept POST with an XML
+    TagResourceRequest body (what AWS SDK Go v2 / terraform-aws-provider v6+
+    send) and persist the tags. Previously the handler only had GET/PUT/DELETE
+    and parsed bodies as JSON, silently dropping all tags.
+    """
+    import urllib.request, urllib.parse
+    bkt = "intg-s3control-tag-post"
+    s3.create_bucket(Bucket=bkt)
+    arn = urllib.parse.quote(f"arn:aws:s3:::{bkt}", safe="")
+    xml_body = (
+        '<TagResourceRequest xmlns="http://awss3control.amazonaws.com/doc/2018-08-20/">'
+        "<Tags>"
+        "<Tag><Key>demo:environment</Key><Value>repro</Value></Tag>"
+        "<Tag><Key>demo:owner</Key><Value>ministack</Value></Tag>"
+        "</Tags>"
+        "</TagResourceRequest>"
+    ).encode()
+    req = urllib.request.Request(
+        f"http://localhost:4566/v20180820/tags/{arn}",
+        method="POST",
+        data=xml_body,
+        headers={
+            "x-amz-account-id": "000000000000",
+            "Content-Type": "application/xml",
+        },
+    )
+    with urllib.request.urlopen(req) as r:
+        assert r.status in (200, 204)
+
+    # Visible via the regular S3 API (same _bucket_tags dict)
+    got = s3.get_bucket_tagging(Bucket=bkt)
+    tags = {t["Key"]: t["Value"] for t in got["TagSet"]}
+    assert tags["demo:environment"] == "repro"
+    assert tags["demo:owner"] == "ministack"
+
+    # And via S3 Control GET /v20180820/tags/{arn}
+    get_req = urllib.request.Request(
+        f"http://localhost:4566/v20180820/tags/{arn}",
+        method="GET",
+        headers={"x-amz-account-id": "000000000000"},
+    )
+    with urllib.request.urlopen(get_req) as r:
+        body = r.read().decode()
+    assert "demo:environment" in body
+    assert "repro" in body
+
+
 def test_s3_control_list_tags_via_s3_control_host(s3):
     """S3 Control requests via s3-control.localhost host must not be intercepted by S3 vhost."""
     import urllib.request, urllib.parse

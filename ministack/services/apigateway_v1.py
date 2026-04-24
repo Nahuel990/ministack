@@ -444,14 +444,17 @@ async def _call_lambda(func_name, event, qualifier=None):
 
     # Route through the central _execute_function dispatcher so CloudWatch
     # Logs emission and Docker log output work for API Gateway invocations.
+    # Response shaping (throttle→429, error→502, body→envelope) goes through
+    # the shared helper so v1/v2 stay consistent.
     exec_record = {"config": func_config, "code_zip": func_data.get("code_zip")}
     result = await asyncio.to_thread(lambda_svc._execute_function, exec_record, event)
-    if result.get("error"):
-        error_msg = result.get("body", {})
-        if isinstance(error_msg, dict):
-            error_msg = error_msg.get("errorMessage", "Lambda invocation error")
-        return None, error_msg
-    return result.get("body", {}), None
+    lambda_response, _ = lambda_svc.lambda_execute_result_to_api_proxy_response(result)
+    # On error the helper returns {statusCode: 502, body: <msg>}; preserve
+    # the _call_lambda contract of (None, error_msg) so callers that check
+    # for error strings keep working.
+    if result.get("error") and lambda_response and lambda_response.get("statusCode") == 502:
+        return None, str(lambda_response.get("body") or "Lambda invocation error")
+    return lambda_response, None
 
 
 # ---- Persistence hooks ----

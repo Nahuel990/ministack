@@ -523,14 +523,12 @@ async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers
 
     # Route through the central _execute_function dispatcher so CloudWatch
     # Logs emission and Docker log output work for API Gateway invocations.
+    # Response shaping (throttle→429, error→502, body→envelope) goes through
+    # the shared helper so v1/v2 stay consistent and we get 429s on
+    # ConcurrentInvocationLimitExceeded.
     exec_record = {"config": func_config, "code_zip": func_data.get("code_zip")}
     result = await asyncio.to_thread(lambda_svc._execute_function, exec_record, event)
-    if result.get("error"):
-        error_msg = result.get("body", {})
-        if isinstance(error_msg, dict):
-            error_msg = error_msg.get("errorMessage", "Lambda invocation error")
-        return 502, {"Content-Type": "application/json"}, json.dumps({"message": error_msg}).encode()
-    lambda_response = result.get("body", {})
+    lambda_response, _ = lambda_svc.lambda_execute_result_to_api_proxy_response(result)
 
     status = lambda_response.get("statusCode", 200)
     resp_headers = {"Content-Type": "application/json"}
