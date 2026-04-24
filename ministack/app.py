@@ -278,8 +278,7 @@ def _decode_aws_chunked_body(body: bytes, headers: dict) -> bytes:
         decoded += remaining[data_start:data_start + chunk_size]
         remaining = remaining[data_start + chunk_size + 2:]  # skip trailing \r\n
 
-    if decoded or not body:
-        body = decoded
+    body = decoded
     if "aws-chunked" in content_encoding:
         encodings = [p.strip() for p in content_encoding.split(",") if p.strip() != "aws-chunked"]
         if encodings:
@@ -1066,6 +1065,22 @@ async def _handle_lifespan(scope, receive, send):
         if message["type"] == "lifespan.startup":
             port = _resolve_port()
             logger.info(BANNER.format(port=port))
+            # Install a larger default thread-pool executor. Lambda invocations
+            # (warm pool subprocess spawn, RIE HTTP, provided-runtime) all ride
+            # on asyncio.to_thread; Python's default is min(32, cpu+4) which
+            # is only 6 on a 2-core CI runner. Under xdist that queues cold
+            # starts behind other blocking work and test urlopen timeouts fire
+            # before the handler ever runs. 64 is plenty — threads are cheap
+            # and idle. Override with MINISTACK_WORKER_THREADS.
+            import concurrent.futures
+            _max_workers = int(os.environ.get("MINISTACK_WORKER_THREADS", "64"))
+            asyncio.get_running_loop().set_default_executor(
+                concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_max_workers,
+                    thread_name_prefix="ministack-worker",
+                )
+            )
+            logger.info("Worker thread pool: %d threads", _max_workers)
             _run_init_scripts()
             if PERSIST_STATE:
                 _load_persisted_state()

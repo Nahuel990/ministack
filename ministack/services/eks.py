@@ -21,13 +21,14 @@ import re
 import threading
 import time
 
-from ministack.core.responses import AccountScopedDict, get_account_id, json_response, error_response_json, new_uuid, get_region
+from ministack.core.responses import AccountScopedDict, apply_image_prefix, get_account_id, json_response, error_response_json, new_uuid, get_region
 
 logger = logging.getLogger("eks")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 EKS_K3S_IMAGE = os.environ.get("EKS_K3S_IMAGE", "rancher/k3s:v1.31.4-k3s1")
 EKS_BASE_PORT = int(os.environ.get("EKS_BASE_PORT", "16443"))
+DOCKER_NETWORK = os.environ.get("DOCKER_NETWORK", "")
 
 try:
     docker_lib = importlib.import_module("docker")
@@ -130,6 +131,8 @@ def _get_docker():
 
 def _get_ministack_network(client):
     """Detect the Docker network MiniStack is running on."""
+    if DOCKER_NETWORK:
+        return DOCKER_NETWORK
     try:
         hostname = os.environ.get("HOSTNAME", "")
         if not hostname:
@@ -257,7 +260,7 @@ def _create_cluster(body):
         try:
             ms_network = _get_ministack_network(client)
             run_kwargs = dict(
-                image=EKS_K3S_IMAGE,
+                image=apply_image_prefix(EKS_K3S_IMAGE),
                 command=["server",
                          "--disable=traefik,metrics-server,servicelb",
                          "--tls-san=0.0.0.0",

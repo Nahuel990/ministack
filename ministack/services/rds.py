@@ -41,7 +41,7 @@ from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
 from ministack.core.persistence import load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
+from ministack.core.responses import AccountScopedDict, apply_image_prefix, get_account_id, new_uuid, get_region
 
 logger = logging.getLogger("rds")
 
@@ -49,6 +49,7 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 BASE_PORT = int(os.environ.get("RDS_BASE_PORT", "15432"))
 RDS_TMPFS_SIZE = os.environ.get("RDS_TMPFS_SIZE", "256m")
 RDS_PERSIST = os.environ.get("RDS_PERSIST", "0").lower() in ("1", "true", "yes")
+DOCKER_NETWORK = os.environ.get("DOCKER_NETWORK", "")
 
 _instances = AccountScopedDict()
 _clusters = AccountScopedDict()
@@ -145,6 +146,10 @@ def _get_ministack_network(docker_client):
     global _ministack_network
     if _ministack_network is not None:
         return _ministack_network or None
+    if DOCKER_NETWORK:
+        _ministack_network = DOCKER_NETWORK
+        logger.debug("RDS: using DOCKER_NETWORK=%s", DOCKER_NETWORK)
+        return DOCKER_NETWORK
     try:
         self_container = docker_client.containers.get(
             os.environ.get("HOSTNAME", ""))
@@ -394,6 +399,8 @@ def _create_db_instance(p):
                     if container_ip:
                         internal_host = container_ip
                         internal_port = container_port
+                        endpoint_host = container_ip
+                        endpoint_port = container_port
                         def _bg_wait(cip=container_ip, cport=container_port,
                                      eng=engine, did=db_id, net=ms_network):
                             if _wait_for_port(cip, cport):
@@ -2572,14 +2579,14 @@ def _docker_image_for_engine(engine, engine_version, user, password, db_name):
             major_int = 0
         data_path = "/var/lib/postgresql" if major_int >= 18 else "/var/lib/postgresql/data"
         return (
-            f"postgres:{major}-alpine",
+            apply_image_prefix(f"postgres:{major}-alpine"),
             {"POSTGRES_USER": user, "POSTGRES_PASSWORD": password, "POSTGRES_DB": db_name},
             5432,
             data_path,
         )
     if "mysql" in engine or "aurora-mysql" in engine:
         return (
-            "mysql:8",
+            apply_image_prefix("mysql:8"),
             {"MYSQL_ROOT_PASSWORD": password, "MYSQL_ROOT_HOST": "%",
              "MYSQL_DATABASE": db_name,
              "MYSQL_USER": user, "MYSQL_PASSWORD": password},
@@ -2588,7 +2595,7 @@ def _docker_image_for_engine(engine, engine_version, user, password, db_name):
         )
     if "mariadb" in engine:
         return (
-            "mariadb:latest",
+            apply_image_prefix("mariadb:latest"),
             {"MYSQL_ROOT_PASSWORD": password, "MYSQL_ROOT_HOST": "%",
              "MYSQL_DATABASE": db_name,
              "MYSQL_USER": user, "MYSQL_PASSWORD": password},
