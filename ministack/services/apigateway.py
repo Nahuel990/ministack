@@ -534,7 +534,8 @@ async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers
             return 502, {"Content-Type": "application/json"}, json.dumps({"message": result.get("error")}).encode()
         lambda_response = result.get("result", {})
     else:
-        lambda_response = {"statusCode": 200, "body": "Mock response"}
+        exec_result = await asyncio.to_thread(lambda_svc._execute_function, func_data, event)
+        lambda_response, _ = lambda_svc.lambda_execute_result_to_api_proxy_response(exec_result)
 
     status = lambda_response.get("statusCode", 200)
     resp_headers = {"Content-Type": "application/json"}

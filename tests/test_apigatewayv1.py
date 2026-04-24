@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import time
 import zipfile
 from urllib.parse import urlparse
@@ -443,6 +444,80 @@ def test_apigwv1_execute_lambda_proxy(apigw_v1, lam):
 
     apigw_v1.delete_rest_api(restApiId=api_id)
     lam.delete_function(FunctionName=fname)
+
+
+@pytest.mark.skipif(not shutil.which("curl"), reason="provided bootstrap uses curl for Runtime API")
+def test_apigwv1_execute_lambda_proxy_provided_runtime(apigw_v1, lam):
+    """execute-api AWS_PROXY must run provided.* zips via lambda_svc (Go/terraform parity)."""
+    import urllib.request as _urlreq
+    import uuid as _uuid
+
+    bootstrap_script = (
+        "#!/bin/sh\n"
+        'RUNTIME_API="${AWS_LAMBDA_RUNTIME_API}"\n'
+        "while true; do\n"
+        '  RESP=$(curl -s -D /tmp/hdr '
+        '"http://${RUNTIME_API}/2018-06-01/runtime/invocation/next")\n'
+        '  REQUEST_ID=$(grep -i "Lambda-Runtime-Aws-Request-Id" /tmp/hdr '
+        '| tr -d "\\r" | cut -d" " -f2)\n'
+        '  curl -s -X POST '
+        '"http://${RUNTIME_API}/2018-06-01/runtime/invocation/${REQUEST_ID}/response" '
+        "-d '{\"statusCode\":200,\"body\":\"from-provided-bootstrap\"}'\n"
+        "done\n"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        info = zipfile.ZipInfo("bootstrap")
+        info.external_attr = 0o755 << 16
+        zf.writestr(info, bootstrap_script)
+
+    fname = f"intg-v1-provided-{_uuid.uuid4().hex[:8]}"
+    lam.create_function(
+        FunctionName=fname,
+        Runtime="provided.al2023",
+        Handler="bootstrap",
+        Code={"ZipFile": buf.getvalue()},
+        Role="arn:aws:iam::000000000000:role/test-role",
+        Timeout=30,
+    )
+
+    api_id = apigw_v1.create_rest_api(name=f"v1-provided-{fname}")["id"]
+    root = next(r for r in apigw_v1.get_resources(restApiId=api_id)["items"] if r["path"] == "/")
+    resource_id = apigw_v1.create_resource(
+        restApiId=api_id,
+        parentId=root["id"],
+        pathPart="hit",
+    )["id"]
+    apigw_v1.put_method(
+        restApiId=api_id,
+        resourceId=resource_id,
+        httpMethod="GET",
+        authorizationType="NONE",
+    )
+    apigw_v1.put_integration(
+        restApiId=api_id,
+        resourceId=resource_id,
+        httpMethod="GET",
+        type="AWS_PROXY",
+        integrationHttpMethod="POST",
+        uri=(
+            "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/"
+            f"arn:aws:lambda:us-east-1:000000000000:function:{fname}/invocations"
+        ),
+    )
+    dep_id = apigw_v1.create_deployment(restApiId=api_id)["id"]
+    apigw_v1.create_stage(restApiId=api_id, stageName="test", deploymentId=dep_id)
+
+    url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/test/hit"
+    req = _urlreq.Request(url, method="GET")
+    req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+    resp = _urlreq.urlopen(req, timeout=60)
+    assert resp.status == 200
+    assert resp.read() == b"from-provided-bootstrap"
+
+    apigw_v1.delete_rest_api(restApiId=api_id)
+    lam.delete_function(FunctionName=fname)
+
 
 def test_apigwv1_execute_path_params(apigw_v1, lam):
     """Path parameter {userId} is passed correctly in event['pathParameters']."""

@@ -279,6 +279,7 @@ async def _call_lambda(func_name, event, qualifier=None):
 
     code_zip = func_data.get("code_zip")
     runtime = func_config.get("Runtime", "")
+    # Fast path: in-process warm worker for Python / Node.js zips
     if code_zip and runtime.startswith(("python", "nodejs")):
         worker_key = f"{func_name}:{qualifier}" if qualifier else func_name
         worker = get_or_create_worker(worker_key, func_config, code_zip)
@@ -286,8 +287,10 @@ async def _call_lambda(func_name, event, qualifier=None):
         if result.get("status") == "error":
             return None, result.get("error", "Lambda invocation error")
         return result.get("result", {}), None
-    else:
-        return {"statusCode": 200, "body": "Mock response"}, None
+
+    # provided.*, Image, and other runtimes — same execution path as ``lambda invoke``.
+    exec_result = await asyncio.to_thread(lambda_svc._execute_function, func_data, event)
+    return lambda_svc.lambda_execute_result_to_api_proxy_response(exec_result)
 
 
 # ---- Persistence hooks ----
