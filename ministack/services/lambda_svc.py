@@ -383,6 +383,10 @@ def _layer_arn(name: str) -> str:
     return f"arn:aws:lambda:{get_region()}:{get_account_id()}:layer:{name}"
 
 
+def _esm_arn(uuid: str) -> str:
+    return f"arn:aws:lambda:{get_region()}:{get_account_id()}:event-source-mapping:{uuid}"
+
+
 def _now_iso() -> str:
     now = datetime.now(timezone.utc)
     ms = now.microsecond // 1000
@@ -3775,7 +3779,12 @@ def _delete_provisioned_concurrency(func_name: str, qualifier: str):
 
 def _esm_response(esm: dict) -> dict:
     """Return ESM dict without internal-only fields."""
-    return {k: v for k, v in esm.items() if k not in ("FunctionName", "Enabled")}
+    out = {k: v for k, v in esm.items() if k not in ("FunctionName", "Enabled")}
+    # Backfill EventSourceMappingArn for ESMs persisted before this field was
+    # added (warm boots from older state). New ESMs get it set at create time.
+    if "EventSourceMappingArn" not in out and "UUID" in out:
+        out["EventSourceMappingArn"] = _esm_arn(out["UUID"])
+    return out
 
 
 def _create_esm(data: dict):
@@ -3790,6 +3799,11 @@ def _create_esm(data: dict):
         enabled = enabled.lower() != "false"
     esm = {
         "UUID": esm_id,
+        # EventSourceMappingArn is the ESM's own ARN. terraform-provider-aws's
+        # tag interceptor uses this (via @Tags(identifierAttribute="arn")) to
+        # call ListTagsForResource during refresh; without it, state.tags is
+        # always empty and any provider-default tags drift on every plan.
+        "EventSourceMappingArn": _esm_arn(esm_id),
         "EventSourceArn": event_source_arn,
         "FunctionArn": _func_arn(func_name) + (f":{qualifier}" if qualifier else ""),
         "FunctionName": func_name,

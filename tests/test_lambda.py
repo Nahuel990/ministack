@@ -1093,6 +1093,58 @@ def test_lambda_event_source_mapping_tags(lam, sqs):
     sqs.delete_queue(QueueUrl=q["QueueUrl"])
 
 
+def test_lambda_event_source_mapping_arn_field(lam, sqs):
+    """The ESM's own ARN must be returned as ``EventSourceMappingArn`` in
+    Create/Get/List responses. terraform-provider-aws's tag interceptor uses
+    this (via ``@Tags(identifierAttribute="arn")``) to call ListTagsForResource
+    during refresh; without it, ``state.tags`` is always empty and any
+    provider-default tags drift on every plan.
+
+    Asserted against the raw HTTP response because older botocore lambda
+    service models drop fields they don't recognize, but the AWS Go SDK
+    that terraform-provider-aws uses does parse it.
+    """
+    import json as _json
+    import urllib.request as _ur
+    from tests.conftest import ENDPOINT  # noqa: PLC0415
+
+    code = _zip_lambda("def handler(e,c): return 'ok'")
+    fn = "qa-esm-arn-fn"
+    lam.create_function(
+        FunctionName=fn,
+        Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/r",
+        Handler="index.handler",
+        Code={"ZipFile": code},
+    )
+    q = sqs.create_queue(QueueName="qa-esm-arn-queue")
+    q_arn = sqs.get_queue_attributes(QueueUrl=q["QueueUrl"], AttributeNames=["QueueArn"])["Attributes"]["QueueArn"]
+
+    created = lam.create_event_source_mapping(FunctionName=fn, EventSourceArn=q_arn)
+    uuid = created["UUID"]
+    expected_arn = f"arn:aws:lambda:us-east-1:000000000000:event-source-mapping:{uuid}"
+
+    def _http_json(path: str) -> dict:
+        # The signing details are unchecked; only the service segment is read by
+        # the request router so it knows to dispatch to lambda instead of s3.
+        req = _ur.Request(
+            f"{ENDPOINT}{path}",
+            headers={"Authorization": "AWS4-HMAC-SHA256 Credential=test/x/us-east-1/lambda/aws4_request"},
+        )
+        return _json.loads(_ur.urlopen(req).read().decode())
+
+    got = _http_json(f"/2015-03-31/event-source-mappings/{uuid}")
+    assert got.get("EventSourceMappingArn") == expected_arn
+
+    listed = _http_json(f"/2015-03-31/event-source-mappings/?FunctionName={fn}")
+    match = next(e for e in listed["EventSourceMappings"] if e["UUID"] == uuid)
+    assert match.get("EventSourceMappingArn") == expected_arn
+
+    lam.delete_event_source_mapping(UUID=uuid)
+    lam.delete_function(FunctionName=fn)
+    sqs.delete_queue(QueueUrl=q["QueueUrl"])
+
+
 def test_lambda_publish_version_snapshot(lam):
     """PublishVersion creates a numbered version snapshot."""
     code = _zip_lambda("def handler(e,c): return 'v1'")
