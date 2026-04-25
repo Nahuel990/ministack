@@ -282,8 +282,8 @@ def test_backup_start_job(backup):
         ResourceArn="arn:aws:dynamodb:us-east-1:000000000000:table/MyTable",
         IamRoleArn="arn:aws:iam::000000000000:role/BackupRole",
     )
-    assert "JobId" in resp
-    assert "BackupJobArn" in resp
+    assert "BackupJobId" in resp
+    assert "RecoveryPointArn" in resp
 
 
 def test_backup_describe_job(backup):
@@ -293,9 +293,9 @@ def test_backup_describe_job(backup):
         BackupVaultName=vault_name,
         ResourceArn="arn:aws:dynamodb:us-east-1:000000000000:table/MyTable",
         IamRoleArn="arn:aws:iam::000000000000:role/BackupRole",
-    )["JobId"]
+    )["BackupJobId"]
     resp = backup.describe_backup_job(BackupJobId=job_id)
-    assert resp["JobId"] == job_id
+    assert resp["BackupJobId"] == job_id
     assert resp["State"] == "COMPLETED"
     assert resp["BackupVaultName"] == vault_name
 
@@ -313,9 +313,9 @@ def test_backup_list_jobs(backup):
         BackupVaultName=vault_name,
         ResourceArn="arn:aws:s3:::my-bucket",
         IamRoleArn="arn:aws:iam::000000000000:role/BackupRole",
-    )["JobId"]
+    )["BackupJobId"]
     resp = backup.list_backup_jobs(ByBackupVaultName=vault_name)
-    ids = [j["JobId"] for j in resp["BackupJobs"]]
+    ids = [j["BackupJobId"] for j in resp["BackupJobs"]]
     assert job_id in ids
 
 
@@ -356,7 +356,7 @@ def test_backup_stop_job_aborts_running_job(backup):
         BackupVaultName=vault_name,
         ResourceArn="arn:aws:s3:::my-bucket",
         IamRoleArn="arn:aws:iam::000000000000:role/BackupRole",
-    )["JobId"]
+    )["BackupJobId"]
     # force the job back to a non-terminal state so stop_job can act on it
     svc._jobs[job_id]["State"] = "RUNNING"
     backup.stop_backup_job(BackupJobId=job_id)
@@ -370,12 +370,12 @@ def test_backup_list_jobs_by_state(backup):
         BackupVaultName=vault_name,
         ResourceArn="arn:aws:s3:::my-bucket",
         IamRoleArn="arn:aws:iam::000000000000:role/BackupRole",
-    )["JobId"]
+    )["BackupJobId"]
     resp = backup.list_backup_jobs(ByState="COMPLETED")
-    ids = [j["JobId"] for j in resp["BackupJobs"]]
+    ids = [j["BackupJobId"] for j in resp["BackupJobs"]]
     assert job_id in ids
     resp_fail = backup.list_backup_jobs(ByState="FAILED")
-    ids_fail = [j["JobId"] for j in resp_fail["BackupJobs"]]
+    ids_fail = [j["BackupJobId"] for j in resp_fail["BackupJobs"]]
     assert job_id not in ids_fail
 
 
@@ -387,9 +387,9 @@ def test_backup_list_jobs_by_resource_arn(backup):
         BackupVaultName=vault_name,
         ResourceArn=resource,
         IamRoleArn="arn:aws:iam::000000000000:role/BackupRole",
-    )["JobId"]
+    )["BackupJobId"]
     resp = backup.list_backup_jobs(ByResourceArn=resource)
-    ids = [j["JobId"] for j in resp["BackupJobs"]]
+    ids = [j["BackupJobId"] for j in resp["BackupJobs"]]
     assert job_id in ids
 
 
@@ -400,7 +400,7 @@ def test_backup_stop_job_already_completed(backup):
         BackupVaultName=vault_name,
         ResourceArn="arn:aws:s3:::my-bucket",
         IamRoleArn="arn:aws:iam::000000000000:role/BackupRole",
-    )["JobId"]
+    )["BackupJobId"]
     with pytest.raises(ClientError) as exc:
         backup.stop_backup_job(BackupJobId=job_id)
     assert exc.value.response["Error"]["Code"] == "InvalidRequestException"

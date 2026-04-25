@@ -388,7 +388,7 @@ def _start_job(body):
     job_id = new_uuid()
     now = _epoch()
     record = {
-        "JobId": job_id,
+        "BackupJobId": job_id,
         "BackupJobArn": _job_arn(job_id),
         "BackupVaultName": vault_name,
         "BackupVaultArn": _vault_arn(vault_name) if vault_name else "",
@@ -412,8 +412,8 @@ def _start_job(body):
         _vaults[vault_name]["NumberOfRecoveryPoints"] += 1
     logger.info("StartBackupJob: %s vault=%s", job_id, vault_name)
     return _ok({
-        "JobId": job_id,
-        "BackupJobArn": record["BackupJobArn"],
+        "BackupJobId": job_id,
+        "RecoveryPointArn": record["RecoveryPointArn"],
         "CreationDate": now,
         "IsParent": False,
     })
