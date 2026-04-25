@@ -137,6 +137,7 @@ logger = logging.getLogger("ministack")
 # Single source of truth for routable services, their backing modules, and aliases.
 SERVICE_REGISTRY = {
     "acm": {"module": "acm"},
+    "backup": {"module": "backup"},
     "apigateway": {"module": "apigateway", "aliases": ("execute-api", "apigatewayv2")},
     "appconfig": {"module": "appconfig"},
     "appconfigdata": {"module": "appconfig"},
