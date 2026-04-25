@@ -1324,9 +1324,29 @@ def main():
     parser = argparse.ArgumentParser(description="MiniStack — Local AWS Service Emulator")
     parser.add_argument("-d", "--detach", action="store_true", help="Run in the background (detached mode)")
     parser.add_argument("--stop", action="store_true", help="Stop a detached MiniStack server")
+    parser.add_argument(
+        "-H", "--host",
+        default=None,
+        metavar="HOST",
+        help="Interface to bind on (default: 0.0.0.0). Use 127.0.0.1 to "
+             "restrict to loopback. Note: this is the bind interface, "
+             "distinct from MINISTACK_HOST which controls the hostname used "
+             "for S3 virtual-host / execute-api URL matching.",
+    )
+    parser.add_argument(
+        "-p", "--port",
+        default=None,
+        type=int,
+        metavar="PORT",
+        help="Port to listen on (default: 4566). Overrides GATEWAY_PORT / "
+             "EDGE_PORT env vars when set.",
+    )
     args = parser.parse_args()
 
-    port = int(_resolve_port())
+    # Precedence: CLI flag > env var > default. _resolve_port() walks
+    # GATEWAY_PORT / EDGE_PORT and falls back to "4566".
+    port = args.port if args.port is not None else int(_resolve_port())
+    bind_host = args.host if args.host is not None else "0.0.0.0"
 
     if args.stop:
         pf = _pid_file(port)
@@ -1343,11 +1363,15 @@ def main():
         os.remove(pf)
         return
 
+    # Probe the bind address. 0.0.0.0 reports as 127.0.0.1 to a connect, so
+    # this catches the common case of "MiniStack already running on the
+    # default interface"; for explicit bind hosts we probe that host directly.
+    probe_host = "127.0.0.1" if bind_host == "0.0.0.0" else bind_host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        if s.connect_ex(("127.0.0.1", port)) == 0:
-            print(f"ERROR: Port {port} is already in use. Is MiniStack already running?\n"
+        if s.connect_ex((probe_host, port)) == 0:
+            print(f"ERROR: {probe_host}:{port} is already in use. Is MiniStack already running?\n"
                   f"  Stop it with: ministack --stop\n"
-                  f"  Or use a different port: GATEWAY_PORT=4567 ministack")
+                  f"  Or use a different port: ministack --port 4567")
             raise SystemExit(1)
 
     if args.detach:
@@ -1359,7 +1383,7 @@ def main():
         log_fh = open(log_file, "w")
         proc = subprocess.Popen(
             [sys.executable, "-m", "hypercorn", "ministack.app:app",
-             "--bind", f"0.0.0.0:{port}",
+             "--bind", f"{bind_host}:{port}",
              "--log-level", LOG_LEVEL.upper(),
              "--keep-alive", "75"],
             stdout=log_fh,
@@ -1369,7 +1393,7 @@ def main():
         pf = _pid_file(port)
         with open(pf, "w") as f:
             f.write(str(proc.pid))
-        print(f"MiniStack started in background (PID {proc.pid}) on port {port}.")
+        print(f"MiniStack started in background (PID {proc.pid}) on {bind_host}:{port}.")
         print(f"  Logs: {log_file}")
         print(f"  Stop: ministack --stop")
         return
@@ -1398,10 +1422,11 @@ def main():
         logging.getLogger("hypercorn.access").addFilter(_HealthLogFilter())
 
         config = HypercornConfig()
-        config.bind = [f"0.0.0.0:{port}"]
+        config.bind = [f"{bind_host}:{port}"]
         config.keep_alive_timeout = 75
         config.loglevel = LOG_LEVEL.upper()
 
+        print(f"MiniStack listening on {bind_host}:{port} (PID {os.getpid()})")
         asyncio.run(hypercorn_serve(app, config))
     finally:
         _cleanup()
