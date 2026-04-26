@@ -2533,6 +2533,71 @@ def _apigw_v2_stage_delete(physical_id, props):
 
 
 # ---------------------------------------------------------------------------
+# ApiGatewayV2 Integration
+# ---------------------------------------------------------------------------
+
+def _apigw_v2_integration_create(logical_id, props, stack_name):
+    api_id = props.get("ApiId", "")
+    int_id = new_uuid()[:8]
+    integration = {
+        "integrationId": int_id,
+        "integrationType": props.get("IntegrationType", "AWS_PROXY"),
+        "integrationUri": props.get("IntegrationUri", ""),
+        "integrationMethod": props.get("IntegrationMethod", "POST"),
+        "payloadFormatVersion": props.get("PayloadFormatVersion", "2.0"),
+        "timeoutInMillis": props.get("TimeoutInMillis", 30000),
+        "connectionType": props.get("ConnectionType", "INTERNET"),
+        "connectionId": props.get("ConnectionId", ""),
+        "description": props.get("Description", ""),
+        "requestParameters": props.get("RequestParameters", {}),
+        "requestTemplates": props.get("RequestTemplates", {}),
+        "responseParameters": props.get("ResponseParameters", {}),
+        "contentHandlingStrategy": props.get("ContentHandlingStrategy"),
+    }
+    _apigw_v2._integrations.setdefault(api_id, {})[int_id] = integration
+    physical_id = f"{api_id}/{int_id}"
+    return physical_id, {"IntegrationId": int_id}
+
+
+def _apigw_v2_integration_delete(physical_id, props):
+    parts = physical_id.split("/", 1)
+    if len(parts) == 2:
+        api_id, int_id = parts
+        integrations = _apigw_v2._integrations.get(api_id, {})
+        integrations.pop(int_id, None)
+
+
+# ---------------------------------------------------------------------------
+# ApiGatewayV2 Route
+# ---------------------------------------------------------------------------
+
+def _apigw_v2_route_create(logical_id, props, stack_name):
+    api_id = props.get("ApiId", "")
+    route_id = new_uuid()[:8]
+    route = {
+        "routeId": route_id,
+        "routeKey": props.get("RouteKey", "$default"),
+        "target": props.get("Target", ""),
+        "authorizationType": props.get("AuthorizationType", "NONE"),
+        "apiKeyRequired": props.get("ApiKeyRequired", False),
+        "operationName": props.get("OperationName", ""),
+        "requestModels": props.get("RequestModels", {}),
+        "requestParameters": props.get("RequestParameters", {}),
+    }
+    _apigw_v2._routes.setdefault(api_id, {})[route_id] = route
+    physical_id = f"{api_id}/{route_id}"
+    return physical_id, {"RouteId": route_id}
+
+
+def _apigw_v2_route_delete(physical_id, props):
+    parts = physical_id.split("/", 1)
+    if len(parts) == 2:
+        api_id, route_id = parts
+        routes = _apigw_v2._routes.get(api_id, {})
+        routes.pop(route_id, None)
+
+
+# ---------------------------------------------------------------------------
 # SES EmailIdentity
 # ---------------------------------------------------------------------------
 
@@ -2898,6 +2963,8 @@ _RESOURCE_HANDLERS = {
     "AWS::Route53::RecordSet": {"create": _r53_record_set_create, "delete": _r53_record_set_delete},
     "AWS::ApiGatewayV2::Api": {"create": _apigw_v2_api_create, "delete": _apigw_v2_api_delete},
     "AWS::ApiGatewayV2::Stage": {"create": _apigw_v2_stage_create, "delete": _apigw_v2_stage_delete},
+    "AWS::ApiGatewayV2::Integration": {"create": _apigw_v2_integration_create, "delete": _apigw_v2_integration_delete},
+    "AWS::ApiGatewayV2::Route": {"create": _apigw_v2_route_create, "delete": _apigw_v2_route_delete},
     "AWS::SES::EmailIdentity": {"create": _ses_email_identity_create, "delete": _ses_email_identity_delete},
     "AWS::WAFv2::WebACL": {"create": _waf_web_acl_create, "delete": _waf_web_acl_delete},
     "AWS::CloudFront::Distribution": {"create": _cf_distribution_create, "delete": _cf_distribution_delete},

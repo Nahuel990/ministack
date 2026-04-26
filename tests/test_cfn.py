@@ -2158,3 +2158,277 @@ Outputs:
     )
     assert with_resp["UserPoolClient"].get("ClientSecret"), "GenerateSecret=true should produce a non-empty ClientSecret"
     assert not without_resp["UserPoolClient"].get("ClientSecret"), "GenerateSecret=false should leave ClientSecret empty"
+
+
+# ---------------------------------------------------------------------------
+# ApiGatewayV2 Integration + Route provisioners
+# ---------------------------------------------------------------------------
+
+def test_cfn_apigwv2_integration_basic(cfn, apigw):
+    """CFN stack with ApiGatewayV2 Api + Integration deploys successfully."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "HttpApi": {
+                "Type": "AWS::ApiGatewayV2::Api",
+                "Properties": {
+                    "Name": "cfn-apigwv2-int-t01",
+                    "ProtocolType": "HTTP",
+                },
+            },
+            "Integration": {
+                "Type": "AWS::ApiGatewayV2::Integration",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "IntegrationType": "AWS_PROXY",
+                    "IntegrationUri": "arn:aws:lambda:us-east-1:000000000000:function:dummy",
+                    "PayloadFormatVersion": "2.0",
+                },
+            },
+        },
+    }
+    stack_name = "cfn-apigwv2-int-t01"
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    # Verify integration exists via ApiGatewayV2 API
+    resources = cfn.describe_stack_resources(StackName=stack_name)["StackResources"]
+    api_res = [r for r in resources if r["ResourceType"] == "AWS::ApiGatewayV2::Api"][0]
+    api_id = api_res["PhysicalResourceId"]
+
+    integrations = apigw.get_integrations(ApiId=api_id)["Items"]
+    assert len(integrations) == 1
+    assert integrations[0]["IntegrationType"] == "AWS_PROXY"
+    assert integrations[0]["PayloadFormatVersion"] == "2.0"
+
+    # Delete and verify cleanup
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+    assert apigw.get_integrations(ApiId=api_id)["Items"] == []
+
+
+def test_cfn_apigwv2_route_basic(cfn, apigw):
+    """CFN stack with ApiGatewayV2 Api + Integration + Route deploys successfully."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "HttpApi": {
+                "Type": "AWS::ApiGatewayV2::Api",
+                "Properties": {
+                    "Name": "cfn-apigwv2-route-t01",
+                    "ProtocolType": "HTTP",
+                },
+            },
+            "Integration": {
+                "Type": "AWS::ApiGatewayV2::Integration",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "IntegrationType": "AWS_PROXY",
+                    "IntegrationUri": "arn:aws:lambda:us-east-1:000000000000:function:dummy",
+                    "PayloadFormatVersion": "2.0",
+                },
+            },
+            "DefaultRoute": {
+                "Type": "AWS::ApiGatewayV2::Route",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "RouteKey": "ANY /{proxy+}",
+                    "Target": {"Fn::Join": ["/", ["integrations", {"Ref": "Integration"}]]},
+                },
+            },
+        },
+    }
+    stack_name = "cfn-apigwv2-route-t01"
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    # Verify route exists via ApiGatewayV2 API
+    resources = cfn.describe_stack_resources(StackName=stack_name)["StackResources"]
+    api_res = [r for r in resources if r["ResourceType"] == "AWS::ApiGatewayV2::Api"][0]
+    api_id = api_res["PhysicalResourceId"]
+
+    routes = apigw.get_routes(ApiId=api_id)["Items"]
+    assert len(routes) == 1
+    assert routes[0]["RouteKey"] == "ANY /{proxy+}"
+    assert "integrations/" in routes[0].get("Target", "")
+
+    # Delete and verify cleanup
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+    assert apigw.get_routes(ApiId=api_id)["Items"] == []
+
+
+def test_cfn_apigwv2_integration_getatt(cfn, apigw):
+    """Fn::GetAtt on IntegrationId resolves correctly."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "HttpApi": {
+                "Type": "AWS::ApiGatewayV2::Api",
+                "Properties": {
+                    "Name": "cfn-apigwv2-int-t02",
+                    "ProtocolType": "HTTP",
+                },
+            },
+            "Integration": {
+                "Type": "AWS::ApiGatewayV2::Integration",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "IntegrationType": "AWS_PROXY",
+                    "IntegrationUri": "arn:aws:lambda:us-east-1:000000000000:function:dummy",
+                    "PayloadFormatVersion": "2.0",
+                },
+            },
+        },
+        "Outputs": {
+            "IntegrationId": {"Value": {"Fn::GetAtt": ["Integration", "IntegrationId"]}},
+            "ApiId": {"Value": {"Ref": "HttpApi"}},
+        },
+    }
+    stack_name = "cfn-apigwv2-int-t02"
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    assert "IntegrationId" in outputs
+    assert len(outputs["IntegrationId"]) == 8  # UUID[:8]
+
+    # Verify the integration ID matches what the API returns
+    integrations = apigw.get_integrations(ApiId=outputs["ApiId"])["Items"]
+    assert integrations[0]["IntegrationId"] == outputs["IntegrationId"]
+
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+
+
+def test_cfn_apigwv2_route_getatt(cfn, apigw):
+    """Fn::GetAtt on RouteId resolves correctly."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "HttpApi": {
+                "Type": "AWS::ApiGatewayV2::Api",
+                "Properties": {
+                    "Name": "cfn-apigwv2-route-t02",
+                    "ProtocolType": "HTTP",
+                },
+            },
+            "MyRoute": {
+                "Type": "AWS::ApiGatewayV2::Route",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "RouteKey": "GET /health",
+                },
+            },
+        },
+        "Outputs": {
+            "RouteId": {"Value": {"Fn::GetAtt": ["MyRoute", "RouteId"]}},
+            "ApiId": {"Value": {"Ref": "HttpApi"}},
+        },
+    }
+    stack_name = "cfn-apigwv2-route-t02"
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    assert "RouteId" in outputs
+    assert len(outputs["RouteId"]) == 8  # UUID[:8]
+
+    # Verify the route ID matches what the API returns
+    routes = apigw.get_routes(ApiId=outputs["ApiId"])["Items"]
+    assert routes[0]["RouteId"] == outputs["RouteId"]
+
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+
+
+def test_cfn_apigwv2_integration_idempotent_delete(cfn):
+    """Deleting a stack with an integration twice does not crash."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "HttpApi": {
+                "Type": "AWS::ApiGatewayV2::Api",
+                "Properties": {"Name": "cfn-apigwv2-int-t03", "ProtocolType": "HTTP"},
+            },
+            "Integration": {
+                "Type": "AWS::ApiGatewayV2::Integration",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "IntegrationType": "AWS_PROXY",
+                    "IntegrationUri": "arn:aws:lambda:us-east-1:000000000000:function:dummy",
+                },
+            },
+        },
+    }
+    stack_name = "cfn-apigwv2-int-t03"
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    _wait_stack(cfn, stack_name)
+
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+
+    # Second delete should not raise
+    cfn.delete_stack(StackName=stack_name)
+
+
+def test_cfn_apigwv2_full_http_api_stack(cfn, apigw):
+    """Full HTTP API stack with Api + Stage + Integration + Route deploys and cleans up."""
+    template = {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Resources": {
+            "HttpApi": {
+                "Type": "AWS::ApiGatewayV2::Api",
+                "Properties": {"Name": "cfn-apigwv2-full-t01", "ProtocolType": "HTTP"},
+            },
+            "Stage": {
+                "Type": "AWS::ApiGatewayV2::Stage",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "StageName": "$default",
+                    "AutoDeploy": True,
+                },
+            },
+            "Integration": {
+                "Type": "AWS::ApiGatewayV2::Integration",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "IntegrationType": "AWS_PROXY",
+                    "IntegrationUri": "arn:aws:lambda:us-east-1:000000000000:function:my-handler",
+                    "PayloadFormatVersion": "2.0",
+                },
+            },
+            "ProxyRoute": {
+                "Type": "AWS::ApiGatewayV2::Route",
+                "Properties": {
+                    "ApiId": {"Ref": "HttpApi"},
+                    "RouteKey": "ANY /{proxy+}",
+                    "Target": {"Fn::Join": ["/", ["integrations", {"Ref": "Integration"}]]},
+                },
+            },
+        },
+    }
+    stack_name = "cfn-apigwv2-full-t01"
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+
+    resources = cfn.describe_stack_resources(StackName=stack_name)["StackResources"]
+    api_res = [r for r in resources if r["ResourceType"] == "AWS::ApiGatewayV2::Api"][0]
+    api_id = api_res["PhysicalResourceId"]
+
+    # All four resource types should exist
+    assert len(apigw.get_integrations(ApiId=api_id)["Items"]) == 1
+    assert len(apigw.get_routes(ApiId=api_id)["Items"]) == 1
+    assert len(apigw.get_stages(ApiId=api_id)["Items"]) == 1
+
+    # Delete and verify all resources cleaned up
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+
+    assert apigw.get_integrations(ApiId=api_id)["Items"] == []
+    assert apigw.get_routes(ApiId=api_id)["Items"] == []
