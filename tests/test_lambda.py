@@ -772,6 +772,78 @@ def test_lambda_python_env_vars_at_spawn(lam):
     payload = json.loads(resp["Payload"].read())
     assert payload["myVar"] == "from-spawn-py"
 
+def test_lambda_standard_runtime_env_vars_injected(lam):
+    """Warm-worker Lambdas must inject the same env vars as the Docker
+    execution path (lambda_svc.py:_execute_function_docker), which in turn
+    matches the standard AWS Lambda runtime environment per AWS docs:
+      https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html
+
+    This is the regression test for the warm-worker env var gap.  The vars
+    asserted below are the full set the Docker path injects — any var the
+    Docker path sets but the warm-worker doesn't is a divergence bug.
+    """
+    code = (
+        "import os\n"
+        "def handler(event, context):\n"
+        "    keys = [\n"
+        "        'AWS_REGION', 'AWS_DEFAULT_REGION',\n"
+        "        'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',\n"
+        "        'AWS_LAMBDA_FUNCTION_NAME', 'AWS_LAMBDA_FUNCTION_MEMORY_SIZE',\n"
+        "        'AWS_LAMBDA_FUNCTION_VERSION', 'AWS_LAMBDA_LOG_STREAM_NAME',\n"
+        "        'AWS_ENDPOINT_URL',\n"
+        "    ]\n"
+        "    return {k: os.environ.get(k, '<UNSET>') for k in keys}\n"
+    )
+    name = f"lam-runtime-env-{_uuid_mod.uuid4().hex[:8]}"
+    lam.create_function(
+        FunctionName=name,
+        Runtime="python3.11",
+        Role=_LAMBDA_ROLE,
+        Handler="index.handler",
+        Code={"ZipFile": _make_zip(code)},
+    )
+    resp = lam.invoke(FunctionName=name, Payload=b"{}")
+    payload = json.loads(resp["Payload"].read())
+
+    # Vars that must be non-empty (AWS spec requires a value).
+    must_be_nonempty = [
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_LAMBDA_FUNCTION_NAME",
+        "AWS_LAMBDA_FUNCTION_MEMORY_SIZE",
+        "AWS_LAMBDA_FUNCTION_VERSION",
+        "AWS_LAMBDA_LOG_STREAM_NAME",
+        "AWS_ENDPOINT_URL",
+    ]
+    for key in must_be_nonempty:
+        val = payload.get(key, "<UNSET>")
+        assert val and val != "<UNSET>", (
+            f"{key} must be set and non-empty (got {val!r}). "
+            f"The Docker execution path sets this; warm-worker must too."
+        )
+
+    # AWS_SESSION_TOKEN must be PRESENT (set in the env) but may be empty
+    # when no session creds are configured.  Real AWS sets it to the role
+    # session token; Ministack mirrors what the host process has, defaulting
+    # to "".  The key matters because boto3's credential chain checks for
+    # its presence.
+    assert payload.get("AWS_SESSION_TOKEN", "<UNSET>") != "<UNSET>", (
+        "AWS_SESSION_TOKEN must be present in the env (may be empty string). "
+        "boto3's credential chain looks for this key explicitly."
+    )
+
+    # Function-identity vars must match the configured function.
+    assert payload["AWS_LAMBDA_FUNCTION_NAME"] == name, (
+        f"AWS_LAMBDA_FUNCTION_NAME must equal the function name "
+        f"(got {payload['AWS_LAMBDA_FUNCTION_NAME']!r}, expected {name!r})"
+    )
+    # MEMORY_SIZE defaults to 128 in CreateFunction when unspecified.
+    assert payload["AWS_LAMBDA_FUNCTION_MEMORY_SIZE"] == "128"
+    # VERSION defaults to $LATEST for unpublished functions.
+    assert payload["AWS_LAMBDA_FUNCTION_VERSION"] == "$LATEST"
+
 def test_lambda_endpoint_url_not_overridden_by_function_env(lam):
     """AWS_ENDPOINT_URL from function env vars must not override the
     process-level value.  When MiniStack runs in Docker, the host-mapped
