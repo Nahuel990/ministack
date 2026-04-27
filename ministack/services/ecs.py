@@ -108,6 +108,7 @@ def get_state():
         "tags": copy.deepcopy(_tags),
         "account_settings": copy.deepcopy(_account_settings),
         "capacity_providers": copy.deepcopy(_capacity_providers),
+        "attributes": copy.deepcopy(_attributes),
     }
     # Save tasks but strip Docker container IDs.
     # Iterate _data directly to capture ALL accounts.
@@ -131,6 +132,7 @@ def restore_state(data):
     _tags.update(data.get("tags", {}))
     _account_settings.update(data.get("account_settings", {}))
     _capacity_providers.update(data.get("capacity_providers", {}))
+    _attributes.update(data.get("attributes", {}))
     from ministack.core.responses import AccountScopedDict
     tasks_data = data.get("tasks", {})
     if isinstance(tasks_data, AccountScopedDict):
