@@ -38,6 +38,12 @@ def restore_state(data):
     if data:
         _pipes.update(data.get("pipes", {}))
         _positions.update(data.get("positions", {}))
+        # Restored RUNNING pipes need the background poller — register_pipe
+        # is the only other place that starts it, and it isn't called on
+        # warm-boot. Without this, persisted pipes would silently stop
+        # forwarding events until a new pipe is registered.
+        if any(p.get("CurrentState") == "RUNNING" for p in _pipes.values()):
+            _ensure_poller()
 
 
 try:

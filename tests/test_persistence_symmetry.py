@@ -17,6 +17,7 @@ additionally missing from `_state_map`, so its state is never even saved.
 These tests assert the round-trip works for every persisted service.
 """
 import importlib
+from pathlib import Path
 
 import pytest
 
@@ -44,7 +45,7 @@ def test_service_has_restore_path(svc_key, mod_name):
           `_load_persisted_state()` in app.py.
     """
     mod = _module(mod_name)
-    src = open(mod.__file__).read()
+    src = Path(mod.__file__).read_text()
 
     # (a) self-restore at import: must import load_state AND call it.
     self_restoring = (
@@ -182,13 +183,66 @@ def test_scheduler_round_trip():
 
 
 def test_pipes_round_trip():
+    # Use a complete pipe record matching `register_pipe()` shape so the
+    # background poller (which the restore path may start) doesn't blow up
+    # on KeyError if it iterates this entry. Source/Target are intentionally
+    # non-DDB/non-SNS so `_poll_once` skips them quickly.
+    pipe_arn = "arn:aws:pipes:us-east-1:000000000000:pipe/pipe-test"
+
     def populate(mod):
-        mod._pipes["pipe-test"] = {"Name": "pipe-test", "Source": "x", "Target": "y"}
+        mod._pipes["pipe-test"] = {
+            "Name": "pipe-test",
+            "Arn": pipe_arn,
+            "RoleArn": "",
+            "Source": "arn:aws:sqs:us-east-1:000000000000:irrelevant",
+            "Target": "arn:aws:sqs:us-east-1:000000000000:irrelevant",
+            "DesiredState": "STOPPED",
+            "CurrentState": "STOPPED",
+            "StartingPosition": "LATEST",
+            "Tags": {},
+            "CreationTime": 0,
+        }
+        mod._positions[pipe_arn] = 0
 
     def observe(mod):
         assert "pipe-test" in mod._pipes
+        assert mod._positions.get(pipe_arn) == 0
 
     _round_trip("pipes", "pipes", populate, observe)
+
+
+def test_pipes_restore_starts_poller_for_running_pipes(monkeypatch):
+    """When `restore_state` reloads pipes that are RUNNING, the background
+    poller must be (re)started so events keep flowing after warm-boot."""
+    mod = _module("pipes")
+    mod.reset()
+    # Reset the poller flag so this test is independent of execution order.
+    monkeypatch.setattr(mod, "_poller_started", False)
+
+    pipe_arn = "arn:aws:pipes:us-east-1:000000000000:pipe/poller-test"
+    mod.restore_state({
+        "pipes": {
+            "poller-test": {
+                "Name": "poller-test",
+                "Arn": pipe_arn,
+                "RoleArn": "",
+                "Source": "arn:aws:sqs:us-east-1:000000000000:irrelevant",
+                "Target": "arn:aws:sqs:us-east-1:000000000000:irrelevant",
+                "DesiredState": "RUNNING",
+                "CurrentState": "RUNNING",
+                "StartingPosition": "LATEST",
+                "Tags": {},
+                "CreationTime": 0,
+            },
+        },
+        "positions": {pipe_arn: 0},
+    })
+
+    assert mod._poller_started, (
+        "restore_state() did not start the pipes poller for a RUNNING pipe — "
+        "warm-booted pipes would silently stop forwarding events."
+    )
+    mod.reset()
 
 
 # ── PERSIST_STATE gating ──────────────────────────────────────────────
