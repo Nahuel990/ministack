@@ -33,11 +33,14 @@ def get_state():
     # The cert body and chain still round-trip; only PrivateKey is lost,
     # which means a re-import is required after restart for IMPORTED
     # certs that need the key.
-    scrubbed = AccountScopedDict()
-    for arn, cert in _certificates.items():
-        c = copy.deepcopy(cert)
-        c.pop("_private_key", None)
-        scrubbed[arn] = c
+    # Iterate _data directly (not items()) so the snapshot includes
+    # every tenant's certificates — items() is request-scoped to the
+    # current account and would silently drop other tenants' certs
+    # from the persisted snapshot, breaking multi-tenancy across
+    # warm boots.
+    scrubbed = copy.deepcopy(_certificates)
+    for cert in scrubbed._data.values():
+        cert.pop("_private_key", None)
     return {"_certificates": scrubbed}
 
 
@@ -138,15 +141,18 @@ async def handle_request(method, path, headers, body, query_params):
 
 
 def _synthetic_pem(domain):
-    """A clearly-synthetic but well-formed-looking PEM placeholder for
-    RequestCertificate-issued certs. The emulator does not generate real
-    X.509, so anything that actually parses the cert will fail — but
-    consumers that only do a 'BEGIN CERTIFICATE' substring check (the
-    common Terraform / CDK pattern) work."""
+    """A clearly-synthetic but syntactically PEM-decodable placeholder
+    for RequestCertificate-issued certs. The emulator does not generate
+    real X.509, so anything that actually parses ASN.1 will still fail,
+    but the PEM body must remain valid base64 so consumers that pre-
+    decode (PyOpenSSL, cryptography) don't error before they get to the
+    parser. The requested domain lives in DomainName / SubjectAlternative
+    Names metadata, not embedded in the PEM payload."""
+    _ = domain  # represented in cert metadata, not the base64 block
     return (
-        f"-----BEGIN CERTIFICATE-----\n"
-        f"MIIBsynth-emulator-cert-for-{domain[:40]}\n"
-        f"-----END CERTIFICATE-----\n"
+        "-----BEGIN CERTIFICATE-----\n"
+        "AQIDBAUGBwgJCgsMDQ4PEA==\n"
+        "-----END CERTIFICATE-----\n"
     )
 
 

@@ -45,10 +45,10 @@ TEST_PRIVATE_KEY_PEM = (
 # ── H-7: GetCertificate returns the stored PEM, not a literal ─────────
 
 def test_import_then_get_returns_supplied_certificate_body(acm_client):
-    acm = acm_client
     """ImportCertificate must store the Certificate bytes; GetCertificate
     must return the stored bytes verbatim. Without the fix, GetCertificate
     returned a hard-coded literal containing 'MIIFakeCertificateDataHere'."""
+    acm = acm_client
     resp = acm.import_certificate(
         Certificate=TEST_CERT_PEM,
         PrivateKey=TEST_PRIVATE_KEY_PEM,
@@ -68,9 +68,9 @@ def test_import_then_get_returns_supplied_certificate_body(acm_client):
 
 
 def test_import_then_get_returns_supplied_chain(acm_client):
-    acm = acm_client
     """ImportCertificate's CertificateChain must round-trip through
     GetCertificate."""
+    acm = acm_client
     resp = acm.import_certificate(
         Certificate=TEST_CERT_PEM,
         CertificateChain=TEST_CHAIN_PEM,
@@ -85,10 +85,10 @@ def test_import_then_get_returns_supplied_chain(acm_client):
 
 
 def test_get_certificate_omits_private_key(acm_client):
-    acm = acm_client
     """Real AWS GetCertificate never returns the private key (security).
     The emulator must match this behaviour even though it stores it
     internally for round-trip fidelity."""
+    acm = acm_client
     resp = acm.import_certificate(
         Certificate=TEST_CERT_PEM,
         PrivateKey=TEST_PRIVATE_KEY_PEM,
@@ -106,7 +106,6 @@ def test_get_certificate_omits_private_key(acm_client):
 # ── M-7: ImportCertificate must not lie about the domain ──────────────
 
 def test_imported_certificate_does_not_lie_about_domain(acm_client):
-    acm = acm_client
     """Real AWS parses DomainName / SubjectAlternativeNames from the
     cert's CN/SAN extensions. The emulator does not implement X.509
     parsing (out of scope), so it MUST NOT advertise a fabricated
@@ -121,6 +120,7 @@ def test_imported_certificate_does_not_lie_about_domain(acm_client):
     Returning the literal "imported.example.com" misleads CDK /
     Terraform plans into believing the cert covers a domain it does
     not."""
+    acm = acm_client
     resp = acm.import_certificate(
         Certificate=TEST_CERT_PEM,
         PrivateKey=TEST_PRIVATE_KEY_PEM,
@@ -137,11 +137,11 @@ def test_imported_certificate_does_not_lie_about_domain(acm_client):
 
 
 def test_re_import_preserves_arn_and_replaces_body(acm_client):
-    acm = acm_client
     """When CertificateArn is supplied to ImportCertificate, the cert
     body is replaced in-place (real AWS semantics for cert renewal).
     Without H-7's fix this test would still pass against literal data
     so it's a sanity-check of the new path."""
+    acm = acm_client
     first = acm.import_certificate(
         Certificate=TEST_CERT_PEM,
         PrivateKey=TEST_PRIVATE_KEY_PEM,
@@ -209,3 +209,62 @@ def test_get_state_strips_private_key_from_persisted_snapshot():
     mod.restore_state(snapshot)
     assert arn in mod._certificates
     mod._certificates.clear()
+
+
+def test_get_state_preserves_certs_across_all_tenants():
+    """get_state() must persist every tenant's certificates, not just
+    the current request's account. Iterating `_certificates.items()`
+    is request-scoped via AccountScopedDict's contextvar; iterating
+    `_certificates._data` captures all (account_id, key) pairs."""
+    import importlib
+    from ministack.core.responses import _request_account_id
+    mod = importlib.import_module("ministack.services.acm")
+    mod.reset() if hasattr(mod, "reset") else None
+    mod._certificates._data.clear()  # belt-and-braces
+
+    # Pretend we're tenant A and write a cert.
+    token_a = _request_account_id.set("111111111111")
+    arn_a = "arn:aws:acm:us-east-1:111111111111:certificate/tenant-a"
+    mod._certificates[arn_a] = {"CertificateArn": arn_a, "_pem_body": "a"}
+    _request_account_id.reset(token_a)
+
+    # Switch to tenant B and write another.
+    token_b = _request_account_id.set("222222222222")
+    arn_b = "arn:aws:acm:us-east-1:222222222222:certificate/tenant-b"
+    mod._certificates[arn_b] = {"CertificateArn": arn_b, "_pem_body": "b"}
+    _request_account_id.reset(token_b)
+
+    # Snapshot from tenant B's request scope (worst case).
+    token = _request_account_id.set("222222222222")
+    snapshot = mod.get_state()
+    _request_account_id.reset(token)
+
+    persisted = snapshot["_certificates"]
+    raw_keys = list(persisted._data.keys())
+    accounts_persisted = {acct for acct, _ in raw_keys}
+    assert accounts_persisted == {"111111111111", "222222222222"}, (
+        "get_state() dropped a tenant's certs from the snapshot — only "
+        f"persisted accounts: {accounts_persisted}. AccountScopedDict.items() "
+        "is request-scoped; iterating _data is required to capture all "
+        "tenants."
+    )
+    mod._certificates._data.clear()
+
+
+def test_synthetic_pem_body_is_valid_base64():
+    """The placeholder PEM body issued by RequestCertificate must be
+    valid base64 — consumers that pre-decode (PyOpenSSL,
+    cryptography) error before they reach ASN.1 parsing if it isn't."""
+    import base64
+    import importlib
+    mod = importlib.import_module("ministack.services.acm")
+    pem = mod._synthetic_pem("anything.example.com")
+    body_lines = [
+        line for line in pem.splitlines()
+        if line and not line.startswith("-----")
+    ]
+    body = "".join(body_lines)
+    # Must base64-decode without raising (binascii.Error otherwise).
+    decoded = base64.b64decode(body)
+    assert isinstance(decoded, bytes)
+    assert len(decoded) > 0
