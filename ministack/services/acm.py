@@ -25,7 +25,20 @@ _certificates = AccountScopedDict()  # arn -> certificate dict
 
 
 def get_state():
-    return copy.deepcopy({"_certificates": _certificates})
+    # Strip _private_key before persisting — real AWS only exposes the
+    # private key via passphrase-protected ExportCertificate, and the
+    # GetCertificate path already honours that. Writing it plaintext to
+    # ${STATE_DIR}/acm.json would turn warm-boot persistence into a
+    # side-channel for material that the wire protocol refuses to leak.
+    # The cert body and chain still round-trip; only PrivateKey is lost,
+    # which means a re-import is required after restart for IMPORTED
+    # certs that need the key.
+    scrubbed = AccountScopedDict()
+    for arn, cert in _certificates.items():
+        c = copy.deepcopy(cert)
+        c.pop("_private_key", None)
+        scrubbed[arn] = c
+    return {"_certificates": scrubbed}
 
 
 def restore_state(data):
@@ -124,6 +137,19 @@ async def handle_request(method, path, headers, body, query_params):
     return handler(data)
 
 
+def _synthetic_pem(domain):
+    """A clearly-synthetic but well-formed-looking PEM placeholder for
+    RequestCertificate-issued certs. The emulator does not generate real
+    X.509, so anything that actually parses the cert will fail — but
+    consumers that only do a 'BEGIN CERTIFICATE' substring check (the
+    common Terraform / CDK pattern) work."""
+    return (
+        f"-----BEGIN CERTIFICATE-----\n"
+        f"MIIBsynth-emulator-cert-for-{domain[:40]}\n"
+        f"-----END CERTIFICATE-----\n"
+    )
+
+
 def _request_certificate(data):
     domain = data.get("DomainName", "")
     if not domain:
@@ -148,6 +174,9 @@ def _request_certificate(data):
         "ValidationMethod": method,
         "Tags": data.get("Tags", []),
         "Options": {},
+        "_pem_body": _synthetic_pem(domain),
+        "_pem_chain": "",
+        "_private_key": "",
     }
     logger.info("RequestCertificate: %s -> %s", domain, arn)
     return json_response({"CertificateArn": arn})
@@ -183,31 +212,71 @@ def _delete_certificate(data):
     return json_response({})
 
 
+def _decode_pem_field(value):
+    """ImportCertificate accepts PEM bodies as base64-encoded blobs over
+    the wire. boto3 base64-encodes the bytes for us; the JSON we receive
+    contains the encoded string. We store the decoded UTF-8 PEM so that
+    GetCertificate can return it unchanged."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        # Try base64 first (the AWS-JSON wire shape); fall back to the
+        # raw string when the body is already a PEM (some SDK paths /
+        # tests skip the base64 step).
+        if value.lstrip().startswith("-----"):
+            return value
+        try:
+            import base64
+            return base64.b64decode(value).decode("utf-8", errors="replace")
+        except Exception:
+            return value
+    return ""
+
+
 def _get_certificate(data):
     arn = data.get("CertificateArn", "")
-    if arn not in _certificates:
+    cert = _certificates.get(arn)
+    if cert is None:
         return error_response_json("ResourceNotFoundException", f"Certificate {arn} not found", 400)
-    fake_pem = "-----BEGIN CERTIFICATE-----\nMIIFakeCertificateDataHere\n-----END CERTIFICATE-----"
-    fake_chain = "-----BEGIN CERTIFICATE-----\nMIIFakeChainDataHere\n-----END CERTIFICATE-----"
-    return json_response({"Certificate": fake_pem, "CertificateChain": fake_chain})
+    # PrivateKey is intentionally never returned — real AWS only exposes
+    # it via ExportCertificate (passphrase-protected).
+    return json_response({
+        "Certificate": cert.get("_pem_body", ""),
+        "CertificateChain": cert.get("_pem_chain", ""),
+    })
 
 
 def _import_certificate(data):
     arn = data.get("CertificateArn") or _cert_arn()
     now = now_iso()
+    cert_body = _decode_pem_field(data.get("Certificate"))
+    cert_chain = _decode_pem_field(data.get("CertificateChain"))
+    private_key = _decode_pem_field(data.get("PrivateKey"))
+    # Synthetic DomainName: real AWS parses CN/SAN from the cert; we
+    # don't ship X.509 parsing, so we emit a clearly-synthetic value
+    # that doesn't claim coverage of any specific domain. Re-import
+    # preserves the existing DomainName so downstream resources stay
+    # stable.
+    existing = _certificates.get(arn) or {}
+    domain = existing.get("DomainName") or f"imported-cert-{arn.rsplit('/', 1)[-1][:8]}.invalid"
     _certificates[arn] = {
         "CertificateArn": arn,
-        "DomainName": "imported.example.com",
-        "SubjectAlternativeNames": ["imported.example.com"],
+        "DomainName": domain,
+        "SubjectAlternativeNames": existing.get("SubjectAlternativeNames", [domain]),
         "Status": "ISSUED",
         "Type": "IMPORTED",
-        "CreatedAt": now,
+        "CreatedAt": existing.get("CreatedAt", now),
         "IssuedAt": now,
         "NotBefore": now,
         "NotAfter": _future_iso(365 * 24 * 3600),
         "DomainValidationOptions": [],
-        "Tags": data.get("Tags", []),
-        "Options": {},
+        "Tags": data.get("Tags", existing.get("Tags", [])),
+        "Options": existing.get("Options", {}),
+        "_pem_body": cert_body,
+        "_pem_chain": cert_chain,
+        "_private_key": private_key,
     }
     return json_response({"CertificateArn": arn})
 
