@@ -119,17 +119,24 @@ def _extract_lambda_ref_from_integration_uri(uri: str) -> str:
 # ---- Persistence hooks ----
 
 def get_state() -> dict:
-    """Return full module state for persistence."""
+    """Return full module state for persistence.
+
+    Deep-copies each dict so a concurrent write during shutdown
+    serialisation can't corrupt the persisted JSON. Every other
+    persisted service in this codebase already does the same; the
+    apigateway pair was an outlier.
+    """
+    import copy
     return {
-        "apis": _apis,
-        "routes": _routes,
-        "integrations": _integrations,
-        "stages": _stages,
-        "deployments": _deployments,
-        "authorizers": _authorizers,
-        "api_tags": _api_tags,
-        "route_responses": _route_responses,
-        "integration_responses": _integration_responses,
+        "apis": copy.deepcopy(_apis),
+        "routes": copy.deepcopy(_routes),
+        "integrations": copy.deepcopy(_integrations),
+        "stages": copy.deepcopy(_stages),
+        "deployments": copy.deepcopy(_deployments),
+        "authorizers": copy.deepcopy(_authorizers),
+        "api_tags": copy.deepcopy(_api_tags),
+        "route_responses": copy.deepcopy(_route_responses),
+        "integration_responses": copy.deepcopy(_integration_responses),
     }
 
 
@@ -388,7 +395,9 @@ async def handle_execute(api_id, stage, path, method, headers, body, query_param
     if not route:
         return 404, {"Content-Type": "application/json"}, json.dumps({"message": "No route found"}).encode()
 
-    integration_id = route.get("target", "").replace("integrations/", "")
+    raw_target = route.get("target", "").replace("integrations/", "")
+    # Target may be "{integrationId}" or "{apiId}/{integrationId}" (CFN physical ID)
+    integration_id = raw_target.split("/")[-1] if "/" in raw_target else raw_target
     integration = _integrations.get(api_id, {}).get(integration_id)
     if not integration:
         return 500, {"Content-Type": "application/json"}, json.dumps({"message": "No integration configured"}).encode()
@@ -1119,7 +1128,9 @@ async def _invoke_ws_lambda(api_id: str, account_id: str, route: dict, stage: st
     from ministack.core.lambda_runtime import get_or_create_worker
     from ministack.services import lambda_svc
 
-    integration_id = route.get("target", "").replace("integrations/", "")
+    raw_target = route.get("target", "").replace("integrations/", "")
+    # Target may be "{integrationId}" or "{apiId}/{integrationId}" (CFN physical ID)
+    integration_id = raw_target.split("/")[-1] if "/" in raw_target else raw_target
     integration = _integrations.get(api_id, {}).get(integration_id)
     if not integration:
         return None
