@@ -16,8 +16,8 @@ Bugs (per the project audit):
   H-8  PutIntegration silently dropped `contentHandling` — same family
        as #439 which fixed it for v2 but never backported to v1.
   M-6  PutIntegrationResponse historically dropped `contentHandling`;
-       turns out this was already added at services/apigateway_v1.py:1306
-       in commit 0ef45048. The regression tests below pin both paths.
+       turns out this was already added in `_put_integration_response`
+       (commit 0ef45048). The regression tests below pin both paths.
 
 Uses the session-scoped `apigw_v1` fixture from tests/conftest.py.
 """
@@ -115,8 +115,8 @@ def test_put_integration_omits_content_handling_when_not_set(apigw_v1, method_se
 
 def test_update_integration_can_patch_content_handling(apigw_v1, method_setup):
     """Terraform's apply path uses UpdateIntegration with a JSON Patch
-    op (`replace /contentHandling`). After the fix the field must
-    exist on the integration so the patch applies cleanly."""
+    op (`replace /contentHandling`). The updated contentHandling value
+    must persist and be returned by GetIntegration."""
     api_id, resource_id, method = method_setup
     apigw_v1.put_integration(
         restApiId=api_id,
@@ -147,7 +147,7 @@ def test_update_integration_can_patch_content_handling(apigw_v1, method_setup):
 @pytest.mark.parametrize("ch_value", ["CONVERT_TO_TEXT", "CONVERT_TO_BINARY"])
 def test_put_integration_response_persists_content_handling(apigw_v1, method_setup, ch_value):
     """PutIntegrationResponse persisting `contentHandling` was already
-    implemented at services/apigateway_v1.py:1311 (commit 0ef45048).
+    implemented in `_put_integration_response` (commit 0ef45048).
     This test pins that behaviour so a future refactor can't silently
     regress it (the audit's M-6 listed it as missing, which was wrong —
     keep it covered to make sure it stays right)."""
