@@ -44,8 +44,41 @@ def get_state():
     return {"_certificates": scrubbed}
 
 
+def _synthetic_pem(domain):
+    """A clearly-synthetic but syntactically PEM-decodable placeholder
+    for RequestCertificate-issued certs. The emulator does not generate
+    real X.509, so anything that actually parses ASN.1 will still fail,
+    but the PEM body must remain valid base64 so consumers that pre-
+    decode (PyOpenSSL, cryptography) don't error before they get to the
+    parser. The requested domain lives in DomainName / SubjectAlternative
+    Names metadata, not embedded in the PEM payload.
+
+    Defined above the import-time `restore_state` block (rather than
+    next to its other call site in `_request_certificate`) so the
+    backfill path doesn't NameError when the load_state try block
+    fires at module import."""
+    _ = domain  # represented in cert metadata, not the base64 block
+    return (
+        "-----BEGIN CERTIFICATE-----\n"
+        "AQIDBAUGBwgJCgsMDQ4PEA==\n"
+        "-----END CERTIFICATE-----\n"
+    )
+
+
 def restore_state(data):
     _certificates.update(data.get("_certificates", {}))
+    # Backwards compat: pre-fix snapshots have certificates without
+    # `_pem_body` / `_pem_chain` (the old GetCertificate path returned
+    # a hard-coded literal regardless of stored data). Without backfill,
+    # GetCertificate would return an empty Certificate field for those
+    # certs after warm-boot — strictly worse than the old behaviour.
+    # Use the synthetic placeholder so consumers that just substring-
+    # check 'BEGIN CERTIFICATE' (Terraform / CDK) keep working.
+    for cert in _certificates._data.values():
+        if "_pem_body" not in cert:
+            cert["_pem_body"] = _synthetic_pem(cert.get("DomainName", ""))
+        if "_pem_chain" not in cert:
+            cert["_pem_chain"] = ""
 
 
 try:
@@ -140,20 +173,8 @@ async def handle_request(method, path, headers, body, query_params):
     return handler(data)
 
 
-def _synthetic_pem(domain):
-    """A clearly-synthetic but syntactically PEM-decodable placeholder
-    for RequestCertificate-issued certs. The emulator does not generate
-    real X.509, so anything that actually parses ASN.1 will still fail,
-    but the PEM body must remain valid base64 so consumers that pre-
-    decode (PyOpenSSL, cryptography) don't error before they get to the
-    parser. The requested domain lives in DomainName / SubjectAlternative
-    Names metadata, not embedded in the PEM payload."""
-    _ = domain  # represented in cert metadata, not the base64 block
-    return (
-        "-----BEGIN CERTIFICATE-----\n"
-        "AQIDBAUGBwgJCgsMDQ4PEA==\n"
-        "-----END CERTIFICATE-----\n"
-    )
+# (`_synthetic_pem` is defined near `restore_state` above so the
+# import-time backfill path doesn't NameError.)
 
 
 def _request_certificate(data):

@@ -174,41 +174,77 @@ def test_get_state_strips_private_key_from_persisted_snapshot():
     is exactly what `core/persistence.save_state` would JSON-encode to
     disk, so anything in there ends up readable on the filesystem."""
     import importlib
+    import json
+    from ministack.core.persistence import _json_default
+    from ministack.core.responses import _request_account_id
     mod = importlib.import_module("ministack.services.acm")
-    mod.reset() if hasattr(mod, "reset") else None
-    arn = f"arn:aws:acm:us-east-1:000000000000:certificate/leak-check"
-    mod._certificates[arn] = {
-        "CertificateArn": arn,
-        "DomainName": "leak-check.invalid",
+    mod._certificates._data.clear()  # belt-and-braces
+
+    # Two tenants — the request-scoped iteration would only see one of
+    # them. Both must be scrubbed in the snapshot AND in the
+    # production-encoder JSON blob.
+    arn_a = "arn:aws:acm:us-east-1:000000000000:certificate/leak-check-a"
+    arn_b = "arn:aws:acm:us-east-1:111111111111:certificate/leak-check-b"
+    secret_a = "-----BEGIN PRIVATE KEY-----\nVERY_SECRET_KEY_TENANT_A\n-----END PRIVATE KEY-----\n"
+    secret_b = "-----BEGIN PRIVATE KEY-----\nVERY_SECRET_KEY_TENANT_B\n-----END PRIVATE KEY-----\n"
+
+    token_a = _request_account_id.set("000000000000")
+    mod._certificates[arn_a] = {
+        "CertificateArn": arn_a,
+        "DomainName": "leak-check-a.invalid",
         "Status": "ISSUED",
         "Type": "IMPORTED",
         "_pem_body": "-----BEGIN CERTIFICATE-----\nBODY\n-----END CERTIFICATE-----\n",
         "_pem_chain": "",
-        "_private_key": "-----BEGIN PRIVATE KEY-----\nVERY_SECRET_KEY_MATERIAL\n-----END PRIVATE KEY-----\n",
+        "_private_key": secret_a,
     }
+    _request_account_id.reset(token_a)
+
+    token_b = _request_account_id.set("111111111111")
+    mod._certificates[arn_b] = {
+        "CertificateArn": arn_b,
+        "DomainName": "leak-check-b.invalid",
+        "Status": "ISSUED",
+        "Type": "IMPORTED",
+        "_pem_body": "-----BEGIN CERTIFICATE-----\nBODY\n-----END CERTIFICATE-----\n",
+        "_pem_chain": "",
+        "_private_key": secret_b,
+    }
+    _request_account_id.reset(token_b)
 
     snapshot = mod.get_state()
 
-    persisted_cert = snapshot["_certificates"][arn]
-    assert "_private_key" not in persisted_cert, (
-        "PrivateKey leaked into the persistence snapshot — get_state() "
-        "must scrub it before save_state writes plaintext JSON to disk."
+    # Both tenants must have _private_key stripped — using _data so we
+    # see all accounts, not just the request-scoped one.
+    for cert in snapshot["_certificates"]._data.values():
+        assert "_private_key" not in cert, (
+            "PrivateKey leaked into the persistence snapshot — get_state() "
+            "must scrub it for ALL tenants before save_state writes "
+            "plaintext JSON to disk."
+        )
+        assert cert["_pem_body"].startswith("-----BEGIN CERTIFICATE-----")
+
+    # Defensive: round-trip via the actual production encoder (used by
+    # save_state) — `default=str` was request-scoped via __repr__ and
+    # missed cross-tenant data.
+    blob = json.dumps(snapshot, default=_json_default)
+    assert "VERY_SECRET_KEY_TENANT_A" not in blob, (
+        "Tenant A private-key material found in JSON-serialised "
+        "snapshot — would be written verbatim to ${STATE_DIR}/acm.json."
     )
-    # Cert body and chain must still round-trip; only the key is stripped.
-    assert persisted_cert["_pem_body"].startswith("-----BEGIN CERTIFICATE-----")
-    # Defensive: the secret string must not appear anywhere in the snapshot.
-    import json
-    blob = json.dumps(snapshot, default=str)
-    assert "VERY_SECRET_KEY_MATERIAL" not in blob, (
-        "Private-key material found in JSON-serialised snapshot — would "
-        "be written verbatim to ${STATE_DIR}/acm.json."
+    assert "VERY_SECRET_KEY_TENANT_B" not in blob, (
+        "Tenant B private-key material found in JSON-serialised "
+        "snapshot — get_state() must scrub all tenants."
     )
 
-    # Restoring the scrubbed snapshot must not crash.
-    mod._certificates.clear()
+    # Restoring the scrubbed snapshot must not crash and must preserve
+    # both tenants' certs (minus the private keys).
+    mod._certificates._data.clear()
     mod.restore_state(snapshot)
-    assert arn in mod._certificates
-    mod._certificates.clear()
+    restored_arns = {cert["CertificateArn"] for cert in mod._certificates._data.values()}
+    assert arn_a in restored_arns
+    assert arn_b in restored_arns
+    mod._certificates._data.clear()
 
 
 def test_get_state_preserves_certs_across_all_tenants():
@@ -248,6 +284,45 @@ def test_get_state_preserves_certs_across_all_tenants():
         "is request-scoped; iterating _data is required to capture all "
         "tenants."
     )
+    mod._certificates._data.clear()
+
+
+def test_restore_state_backfills_pem_body_for_pre_upgrade_snapshots():
+    """Pre-fix `acm.json` snapshots have no `_pem_body` / `_pem_chain`
+    keys (the old GetCertificate path returned a hard-coded literal
+    regardless of stored data). Without backfill in restore_state,
+    those certs would return an empty Certificate field after
+    warm-boot — strictly worse than the old behaviour. Backfill must
+    fill them with the synthetic placeholder so consumers that
+    substring-check 'BEGIN CERTIFICATE' (Terraform / CDK) keep
+    working."""
+    import importlib
+    mod = importlib.import_module("ministack.services.acm")
+    mod._certificates._data.clear()
+
+    arn = "arn:aws:acm:us-east-1:000000000000:certificate/legacy-cert"
+    legacy_snapshot = {
+        "_certificates": {
+            arn: {
+                "CertificateArn": arn,
+                "DomainName": "legacy.example.com",
+                "Status": "ISSUED",
+                "Type": "AMAZON_ISSUED",
+                # Note: no _pem_body, no _pem_chain — pre-upgrade shape.
+            },
+        },
+    }
+    mod.restore_state(legacy_snapshot)
+
+    # _get_certificate hits the restored record and reads _pem_body.
+    cert = mod._certificates.get(arn)
+    assert cert is not None, "Restore failed — cert not in dict."
+    assert "_pem_body" in cert, (
+        "restore_state did not backfill _pem_body — pre-upgrade "
+        "GetCertificate would return an empty Certificate field."
+    )
+    assert "BEGIN CERTIFICATE" in cert["_pem_body"]
+    assert cert.get("_pem_chain") == ""
     mod._certificates._data.clear()
 
 
