@@ -24,9 +24,12 @@ Uses the session-scoped `apigw_v1` fixture from tests/conftest.py.
 import pytest
 
 
-def _create_method_setup(apigw_v1):
+@pytest.fixture
+def method_setup(apigw_v1):
     """Create a fresh REST API + resource + method as a foundation for
-    integration tests. Returns (api_id, resource_id, http_method)."""
+    integration tests. Yields (api_id, resource_id, http_method) and
+    deletes the REST API in teardown so the session-scoped client
+    doesn't leak state across tests."""
     api = apigw_v1.create_rest_api(name="ch-test-api")
     api_id = api["id"]
     root_id = apigw_v1.get_resources(restApiId=api_id)["items"][0]["id"]
@@ -46,18 +49,24 @@ def _create_method_setup(apigw_v1):
         httpMethod="POST",
         statusCode="200",
     )
-    return api_id, resource_id, "POST"
+    try:
+        yield api_id, resource_id, "POST"
+    finally:
+        try:
+            apigw_v1.delete_rest_api(restApiId=api_id)
+        except Exception:
+            pass
 
 
 # ── H-8: PutIntegration / GetIntegration round-trip ───────────────────
 
 @pytest.mark.parametrize("ch_value", ["CONVERT_TO_TEXT", "CONVERT_TO_BINARY"])
-def test_put_integration_persists_content_handling(apigw_v1, ch_value):
+def test_put_integration_persists_content_handling(apigw_v1, method_setup, ch_value):
     """PutIntegration accepting `contentHandling` must store the value
     so subsequent GetIntegration returns it. Without the fix, the field
     was silently dropped — breaking Terraform's
     `aws_api_gateway_integration.content_handling` round-trip."""
-    api_id, resource_id, method = _create_method_setup(apigw_v1)
+    api_id, resource_id, method = method_setup
     apigw_v1.put_integration(
         restApiId=api_id,
         resourceId=resource_id,
@@ -77,12 +86,12 @@ def test_put_integration_persists_content_handling(apigw_v1, ch_value):
     )
 
 
-def test_put_integration_omits_content_handling_when_not_set(apigw_v1):
+def test_put_integration_omits_content_handling_when_not_set(apigw_v1, method_setup):
     """When the caller does NOT pass contentHandling, the response must
     not invent one. Real AWS omits the field; some boto3-driven
     Terraform plans diff against an emulator that returns an empty
     string or other default."""
-    api_id, resource_id, method = _create_method_setup(apigw_v1)
+    api_id, resource_id, method = method_setup
     apigw_v1.put_integration(
         restApiId=api_id,
         resourceId=resource_id,
@@ -104,11 +113,11 @@ def test_put_integration_omits_content_handling_when_not_set(apigw_v1):
     )
 
 
-def test_update_integration_can_patch_content_handling(apigw_v1):
+def test_update_integration_can_patch_content_handling(apigw_v1, method_setup):
     """Terraform's apply path uses UpdateIntegration with a JSON Patch
     op (`replace /contentHandling`). After the fix the field must
     exist on the integration so the patch applies cleanly."""
-    api_id, resource_id, method = _create_method_setup(apigw_v1)
+    api_id, resource_id, method = method_setup
     apigw_v1.put_integration(
         restApiId=api_id,
         resourceId=resource_id,
@@ -136,13 +145,13 @@ def test_update_integration_can_patch_content_handling(apigw_v1):
 # ── M-6 regression lock: PutIntegrationResponse still works ───────────
 
 @pytest.mark.parametrize("ch_value", ["CONVERT_TO_TEXT", "CONVERT_TO_BINARY"])
-def test_put_integration_response_persists_content_handling(apigw_v1, ch_value):
+def test_put_integration_response_persists_content_handling(apigw_v1, method_setup, ch_value):
     """PutIntegrationResponse persisting `contentHandling` was already
-    implemented at services/apigateway_v1.py:1306 (commit 0ef45048).
+    implemented at services/apigateway_v1.py:1311 (commit 0ef45048).
     This test pins that behaviour so a future refactor can't silently
     regress it (the audit's M-6 listed it as missing, which was wrong —
     keep it covered to make sure it stays right)."""
-    api_id, resource_id, method = _create_method_setup(apigw_v1)
+    api_id, resource_id, method = method_setup
     apigw_v1.put_integration(
         restApiId=api_id,
         resourceId=resource_id,
