@@ -390,7 +390,7 @@ def _handle_health_request(path: str, request_id: str):
         "x-amzn-requestid": request_id,
     }, json.dumps({
         "services": {s: "available" for s in SERVICE_HANDLERS},
-        "edition": "light",
+        "edition": os.environ.get("MINISTACK_EDITION", "light"),
         "version": _VERSION,
         "ready_scripts": dict(_ready_scripts_state),
     }).encode()
