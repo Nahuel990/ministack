@@ -151,7 +151,7 @@ except Exception:
 
 
 DATA_DIR = os.environ.get("S3_DATA_DIR", "/tmp/ministack-data/s3")
-PERSIST = os.environ.get("S3_PERSIST", "0") == "1"
+S3_PERSIST = os.environ.get("S3_PERSIST", "0") == "1"
 
 # Headers preserved from PUT requests and returned on GET/HEAD.
 _PRESERVED_HEADERS = (
@@ -197,7 +197,7 @@ def _get_object_data(bucket_name: str, key: str) -> bytes | None:
     obj = bucket["objects"].get(key)
     if obj is None:
         return None
-    return obj["body"]
+    return _read_body(bucket_name, key, obj)
 
 
 def _ensure_bucket(name: str):
@@ -620,7 +620,7 @@ def _create_bucket(name: str, body: bytes, headers: dict = None):
         _bucket_object_lock[name] = {"enabled": True, "default_retention": None}
         _bucket_versioning[name] = "Enabled"
 
-    if PERSIST:
+    if S3_PERSIST:
         os.makedirs(os.path.join(DATA_DIR, name), exist_ok=True)
     return 200, {"Location": f"/{name}"}, b""
 
@@ -1636,7 +1636,7 @@ def _put_object(bucket_name: str, key: str, body: bytes, headers: dict):
             return _error("BadRequest", "Object tags cannot be greater than 10", 400)
         _object_tags[(bucket_name, key)] = tags
 
-    if PERSIST:
+    if S3_PERSIST:
         _persist_object(bucket_name, key, obj)
 
     _fire_s3_event_async(
@@ -1657,7 +1657,7 @@ def _put_object(bucket_name: str, key: str, body: bytes, headers: dict):
             "etag": obj["etag"],
             "size": obj["size"],
             "is_latest": True,
-            "data": obj.get("data", body if len(body) < 10_000_000 else None),
+            "data": body,
         })
         # Mark all previous versions as not latest
         for v in _object_versions[vkey][:-1]:
@@ -1717,7 +1717,7 @@ def _get_object(bucket_name: str, key: str, headers: dict, query_params: dict = 
                     "Last-Modified": v["last_modified"],
                     "x-amz-version-id": v["version_id"],
                 }
-                return 200, resp_headers, v.get("data", b"")
+                return 200, resp_headers, v["data"]
         return _error("NoSuchVersion", "The specified version does not exist.", 404, f"/{bucket_name}/{key}")
 
     if key not in bucket["objects"]:
@@ -1732,6 +1732,7 @@ def _get_object(bucket_name: str, key: str, headers: dict, query_params: dict = 
     resp_headers = _object_response_headers(obj, bucket_name, key)
 
     range_header = headers.get("range", "")
+    body = _read_body(bucket_name, key, obj)
     if range_header:
         rng = _parse_range(range_header, obj["size"])
         if rng is None:
@@ -1744,12 +1745,12 @@ def _get_object(bucket_name: str, key: str, headers: dict, query_params: dict = 
                 _xml_body(_range_error_xml(bucket_name, key)),
             )
         start, end = rng
-        slice_body = obj["body"][start : end + 1]
+        slice_body = body[start : end + 1]
         resp_headers["Content-Length"] = str(len(slice_body))
         resp_headers["Content-Range"] = f"bytes {start}-{end}/{obj['size']}"
         return 206, resp_headers, slice_body
 
-    return 200, resp_headers, obj["body"]
+    return 200, resp_headers, body
 
 
 def _range_error_xml(bucket_name: str, key: str) -> Element:
@@ -1817,6 +1818,7 @@ def _delete_object(bucket_name: str, key: str, headers: dict | None = None):
     _object_tags.pop((bucket_name, key), None)
     _object_retention.pop((bucket_name, key), None)
     _object_legal_hold.pop((bucket_name, key), None)
+    _delete_persisted_object(bucket_name, key)
 
     if existed:
         _fire_s3_event_async(bucket_name, key, "s3:ObjectRemoved:Delete")
@@ -1920,8 +1922,9 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
 
     new_etag = src_obj["etag"]
     last_modified = now_iso()
+    src_body = _read_body(src_bucket_name, src_key, src_obj)
     dest_obj = {
-        "body": src_obj["body"],
+        "body": src_body,
         "content_type": content_type,
         "content_encoding": content_encoding,
         "etag": new_etag,
@@ -1962,7 +1965,7 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
     else:
         _object_legal_hold.pop((bucket_name, dest_key), None)
 
-    if PERSIST:
+    if S3_PERSIST:
         _persist_object(bucket_name, dest_key, dest_obj)
 
     _fire_s3_event_async(
@@ -1987,7 +1990,7 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
             "etag": dest_obj["etag"],
             "size": dest_obj["size"],
             "is_latest": True,
-            "data": dest_obj.get("data", src_obj["body"] if src_obj["size"] < 10_000_000 else None),
+            "data": src_body,
         })
         for v in _object_versions[vkey][:-1]:
             v["is_latest"] = False
@@ -2801,7 +2804,7 @@ def _upload_part_copy(bucket_name: str, dest_key: str, query_params: dict, heade
         return _error("NoSuchKey", "The specified key does not exist.", 404)
 
     src_obj = src_bucket["objects"][src_key]
-    src_body = src_obj["body"]
+    src_body = _read_body(src_bucket_name, src_key, src_obj)
 
     # Handle x-amz-copy-source-range
     copy_range = headers.get("x-amz-copy-source-range", "")
@@ -2903,7 +2906,7 @@ def _complete_multipart_upload(
     }
     bucket["objects"][key] = obj
 
-    if PERSIST:
+    if S3_PERSIST:
         _persist_object(bucket_name, key, obj)
 
     del _multipart_uploads[upload_id]
@@ -2930,7 +2933,7 @@ def _complete_multipart_upload(
             "etag": obj["etag"],
             "size": obj["size"],
             "is_latest": True,
-            "data": obj.get("data", combined if len(combined) < 10_000_000 else None),
+            "data": combined,
         })
         for v in _object_versions[vkey][:-1]:
             v["is_latest"] = False
@@ -3108,8 +3111,12 @@ def _persist_object(bucket: str, key: str, obj):
             return
         os.makedirs(os.path.dirname(fpath), exist_ok=True)
         data = obj["body"] if isinstance(obj, dict) else obj
-        with open(fpath, "wb") as f:
+        # Atomic write: write to temp file then rename to avoid
+        # concurrent readers seeing partial content.
+        tmp = fpath + ".tmp"
+        with open(tmp, "wb") as f:
             f.write(data)
+        os.replace(tmp, fpath)
         if isinstance(obj, dict):
             meta = {
                 "content_type": obj.get("content_type", "application/octet-stream"),
@@ -3120,14 +3127,57 @@ def _persist_object(bucket: str, key: str, obj):
                 "metadata": obj.get("metadata", {}),
                 "preserved_headers": obj.get("preserved_headers", {}),
             }
-            with open(fpath + ".meta.json", "w") as mf:
+            tmp_meta = fpath + ".meta.json.tmp"
+            with open(tmp_meta, "w") as mf:
                 json.dump(meta, mf)
+            os.replace(tmp_meta, fpath + ".meta.json")
+        # Drop body from in-memory record to save RAM
+        if isinstance(obj, dict):
+            obj["body"] = None
     except Exception as e:
         logger.warning("Failed to persist S3 object %s/%s: %s", bucket, key, e)
 
 
+def _object_disk_path(bucket: str, key: str, account_id: str = None):
+    """Return the resolved filesystem path for a persisted object."""
+    if account_id is None:
+        account_id = get_account_id()
+    return os.path.realpath(os.path.join(DATA_DIR, account_id, bucket, key))
+
+
+def _read_body(bucket_name: str, key: str, obj: dict) -> bytes:
+    """Return object body — from memory if available, else from disk."""
+    body = obj.get("body")
+    if body is not None:
+        return body
+    if not S3_PERSIST:
+        return b""
+    try:
+        fpath = _object_disk_path(bucket_name, key)
+        with open(fpath, "rb") as f:
+            return f.read()
+    except Exception as e:
+        logger.warning("Failed to read persisted S3 object %s/%s: %s", bucket_name, key, e)
+        return b""
+
+
+def _delete_persisted_object(bucket_name: str, key: str):
+    """Remove an object's data and metadata files from disk."""
+    if not S3_PERSIST:
+        return
+    try:
+        fpath = _object_disk_path(bucket_name, key)
+        if os.path.exists(fpath):
+            os.remove(fpath)
+        meta_path = fpath + ".meta.json"
+        if os.path.exists(meta_path):
+            os.remove(meta_path)
+    except Exception as e:
+        logger.warning("Failed to delete persisted S3 object %s/%s: %s", bucket_name, key, e)
+
+
 def _load_persisted_data():
-    if not PERSIST or not os.path.isdir(DATA_DIR):
+    if not S3_PERSIST or not os.path.isdir(DATA_DIR):
         return
     try:
         # Support both layouts:
@@ -3180,8 +3230,6 @@ def _load_persisted_bucket(account_id, bucket_name, bucket_path):
             abs_path = os.path.join(dirpath, fname)
             key = os.path.relpath(abs_path, bucket_path)
             meta_path = abs_path + ".meta.json"
-            with open(abs_path, "rb") as f:
-                data = f.read()
             meta = {}
             if os.path.exists(meta_path):
                 try:
@@ -3189,13 +3237,23 @@ def _load_persisted_bucket(account_id, bucket_name, bucket_path):
                         meta = json.load(mf)
                 except Exception:
                     pass
+            # Body stays on disk — only load metadata into memory.
+            # Compute size/etag from meta sidecar; fall back to reading
+            # the file only when the sidecar is missing or incomplete.
+            size = meta.get("size")
+            etag = meta.get("etag")
+            if size is None or not etag:
+                with open(abs_path, "rb") as f:
+                    data = f.read()
+                size = len(data)
+                etag = etag or f'"{md5_hash(data)}"'
             bucket["objects"][key] = {
-                "body": data,
+                "body": None,
                 "content_type": meta.get("content_type", "application/octet-stream"),
                 "content_encoding": meta.get("content_encoding"),
-                "etag": meta.get("etag") or f'"{md5_hash(data)}"',
+                "etag": etag,
                 "last_modified": meta.get("last_modified") or now_iso(),
-                "size": len(data),
+                "size": size,
                 "metadata": meta.get("metadata", {}),
                 "preserved_headers": meta.get("preserved_headers", {}),
             }
