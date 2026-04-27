@@ -16,20 +16,52 @@ Plus a follow-on consistency bug:
        still references a destination that no longer exists in
        _destinations.
 
-Each test exercises the public get_state / restore_state contract
-without going through the live HTTP server.
+Each test exercises the FULL warm-boot path:
+  1. populate the in-memory dict
+  2. `get_state()` snapshot
+  3. `persistence.save_state()` → JSON-encode to a tmp `STATE_DIR`
+  4. `mod.reset()` (simulate process restart)
+  5. `persistence.load_state()` → JSON-decode from disk
+  6. `restore_state(loaded)`
+
+Going through `save_state` / `load_state` (rather than just calling
+get_state / restore_state in-memory) is what catches encoder /
+decoder regressions — most notably the tuple-key path used by
+`_metric_filters`, which round-trips through repr → JSON string →
+ast.literal_eval in `core/persistence.py::_json_default` /
+`_json_object_hook`.
 """
 import importlib
+
+import pytest
+
+from ministack.core import persistence
 
 
 def _module():
     return importlib.import_module("ministack.services.cloudwatch_logs")
 
 
-def _round_trip(mod):
-    snapshot = mod.get_state()
+@pytest.fixture(autouse=True)
+def _enable_persistence(monkeypatch, tmp_path):
+    """Force PERSIST_STATE on and point STATE_DIR at a tmp dir for the
+    duration of each test so save_state / load_state actually write and
+    read JSON instead of short-circuiting."""
+    monkeypatch.setattr(persistence, "PERSIST_STATE", True)
+    monkeypatch.setattr(persistence, "STATE_DIR", str(tmp_path))
+
+
+def _round_trip(mod, svc_key="cloudwatch_logs"):
+    """Simulate a full warm-boot through the on-disk JSON path."""
+    persistence.save_state(svc_key, mod.get_state())
     mod.reset()
-    mod.restore_state(snapshot)
+    loaded = persistence.load_state(svc_key)
+    assert loaded is not None, (
+        f"persistence.load_state({svc_key!r}) returned None — state "
+        "file was not written by save_state(). Check get_state() "
+        "correctness and that PERSIST_STATE is True."
+    )
+    mod.restore_state(loaded)
 
 
 # ── H-2: _destinations ─────────────────────────────────────────────────
