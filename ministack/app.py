@@ -193,6 +193,33 @@ SERVICE_HANDLERS = {
     for service_name, service_config in SERVICE_REGISTRY.items()
 }
 
+# Maps the on-disk persistence key to the service module name. `save_all`
+# (lifespan.shutdown) consumes this. Restore happens at module import time
+# in each service via its own `load_state()` call (see e.g. services/sqs.py);
+# a small allow-list is also restored centrally by `_load_persisted_state`
+# below. Symmetry between save and restore is enforced by
+# tests/test_persistence_symmetry.py.
+_state_map = {
+    "apigateway": "apigateway", "apigateway_v1": "apigateway_v1",
+    "sqs": "sqs", "sns": "sns", "ssm": "ssm",
+    "secretsmanager": "secretsmanager", "iam": "iam",
+    "dynamodb": "dynamodb", "kms": "kms", "eventbridge": "eventbridge",
+    "cloudwatch_logs": "cloudwatch_logs", "kinesis": "kinesis",
+    "ec2": "ec2", "route53": "route53", "cognito": "cognito",
+    "ecr": "ecr", "cloudwatch": "cloudwatch", "s3": "s3",
+    "lambda": "lambda_svc", "rds": "rds", "ecs": "ecs",
+    "elasticache": "elasticache", "appsync": "appsync",
+    "stepfunctions": "stepfunctions", "alb": "alb",
+    "glue": "glue", "efs": "efs", "waf": "waf",
+    "athena": "athena", "emr": "emr", "cloudfront": "cloudfront",
+    "codebuild": "codebuild", "acm": "acm", "firehose": "firehose",
+    "ses": "ses", "ses_v2": "ses_v2",
+    "servicediscovery": "servicediscovery", "s3files": "s3files",
+    "appconfig": "appconfig", "transfer": "transfer",
+    "scheduler": "scheduler", "autoscaling": "autoscaling",
+    "eks": "eks", "backup": "backup", "pipes": "pipes",
+}
+
 SERVICE_NAME_ALIASES = {
     alias: service_name
     for service_name, service_config in SERVICE_REGISTRY.items()
@@ -1133,26 +1160,6 @@ async def _handle_lifespan(scope, receive, send):
             logger.info("MiniStack shutting down...")
             if PERSIST_STATE:
                 # Only save state for modules that were actually loaded
-                _state_map = {
-                    "apigateway": "apigateway", "apigateway_v1": "apigateway_v1",
-                    "sqs": "sqs", "sns": "sns", "ssm": "ssm",
-                    "secretsmanager": "secretsmanager", "iam": "iam",
-                    "dynamodb": "dynamodb", "kms": "kms", "eventbridge": "eventbridge",
-                    "cloudwatch_logs": "cloudwatch_logs", "kinesis": "kinesis",
-                    "ec2": "ec2", "route53": "route53", "cognito": "cognito",
-                    "ecr": "ecr", "cloudwatch": "cloudwatch", "s3": "s3",
-                    "lambda": "lambda_svc", "rds": "rds", "ecs": "ecs",
-                    "elasticache": "elasticache", "appsync": "appsync",
-                    "stepfunctions": "stepfunctions", "alb": "alb",
-                    "glue": "glue", "efs": "efs", "waf": "waf",
-                    "athena": "athena", "emr": "emr", "cloudfront": "cloudfront",
-                    "codebuild": "codebuild", "acm": "acm", "firehose": "firehose",
-                    "ses": "ses", "ses_v2": "ses_v2",
-                    "servicediscovery": "servicediscovery", "s3files": "s3files",
-                    "appconfig": "appconfig", "transfer": "transfer",
-                    "scheduler": "scheduler", "autoscaling": "autoscaling",
-                    "eks": "eks", "backup": "backup",
-                }
                 save_dict = {}
                 for key, mod_name in _state_map.items():
                     if mod_name in _loaded_modules:
@@ -1372,6 +1379,10 @@ def main():
     args = parser.parse_args()
 
     port = int(_resolve_port())
+    # BIND_HOST controls the bind interface; defaults to 0.0.0.0 (existing
+    # behaviour). Distinct from MINISTACK_HOST, which is the virtual hostname
+    # used for S3 virtual-host / execute-api URL matching.
+    bind_host = os.environ.get("BIND_HOST", "0.0.0.0")
 
     if args.stop:
         pf = _pid_file(port)
@@ -1388,9 +1399,12 @@ def main():
         os.remove(pf)
         return
 
+    # 0.0.0.0 binds every interface so 127.0.0.1 always works as a probe;
+    # for an explicit BIND_HOST, probe that host directly.
+    probe_host = "127.0.0.1" if bind_host == "0.0.0.0" else bind_host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        if s.connect_ex(("127.0.0.1", port)) == 0:
-            print(f"ERROR: Port {port} is already in use. Is MiniStack already running?\n"
+        if s.connect_ex((probe_host, port)) == 0:
+            print(f"ERROR: {probe_host}:{port} is already in use. Is MiniStack already running?\n"
                   f"  Stop it with: ministack --stop\n"
                   f"  Or use a different port: GATEWAY_PORT=4567 ministack")
             raise SystemExit(1)
@@ -1404,7 +1418,7 @@ def main():
         log_fh = open(log_file, "w")
         proc = subprocess.Popen(
             [sys.executable, "-m", "hypercorn", "ministack.app:app",
-             "--bind", f"0.0.0.0:{port}",
+             "--bind", f"{bind_host}:{port}",
              "--log-level", LOG_LEVEL.upper(),
              "--keep-alive", "75"],
             stdout=log_fh,
@@ -1443,7 +1457,7 @@ def main():
         logging.getLogger("hypercorn.access").addFilter(_HealthLogFilter())
 
         config = HypercornConfig()
-        config.bind = [f"0.0.0.0:{port}"]
+        config.bind = [f"{bind_host}:{port}"]
         config.keep_alive_timeout = 75
         config.loglevel = LOG_LEVEL.upper()
 
