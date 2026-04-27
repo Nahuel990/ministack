@@ -23,16 +23,39 @@ import importlib
 
 import pytest
 
+from ministack.core import persistence
+
 
 def _module(mod_name):
     return importlib.import_module(f"ministack.services.{mod_name}")
 
 
-def _round_trip(mod):
-    """Snapshot → reset → restore via the module's public hooks."""
-    snapshot = mod.get_state()
+@pytest.fixture(autouse=True)
+def _enable_persistence(monkeypatch, tmp_path):
+    """Force PERSIST_STATE on and point STATE_DIR at a tmp dir for the
+    duration of each test so save_state / load_state actually write and
+    read JSON files instead of short-circuiting."""
+    monkeypatch.setattr(persistence, "PERSIST_STATE", True)
+    monkeypatch.setattr(persistence, "STATE_DIR", str(tmp_path))
+
+
+def _round_trip(mod, svc_key):
+    """Simulate a full warm-boot through the on-disk JSON path.
+
+    Going through `save_state` / `load_state` (rather than calling
+    `get_state` / `restore_state` directly in-memory) catches encoder
+    / decoder regressions AND import-order bugs (a `restore_state`
+    that references a globals-only symbol declared further down the
+    module would NameError on real warm-boot but pass an in-memory
+    test that already has the symbol bound)."""
+    persistence.save_state(svc_key, mod.get_state())
     mod.reset()
-    mod.restore_state(snapshot)
+    loaded = persistence.load_state(svc_key)
+    assert loaded is not None, (
+        f"persistence.load_state({svc_key!r}) returned None — state "
+        "file was not written by save_state()."
+    )
+    mod.restore_state(loaded)
 
 
 # ── H-1: secretsmanager._resource_policies ─────────────────────────────
@@ -46,7 +69,7 @@ def test_secretsmanager_resource_policies_survive_warm_boot():
     arn = "arn:aws:secretsmanager:us-east-1:000000000000:secret:my-secret-AbCdEf"
     mod._resource_policies[arn] = '{"Version":"2012-10-17","Statement":[]}'
 
-    _round_trip(mod)
+    _round_trip(mod, "secretsmanager")
 
     assert mod._resource_policies.get(arn) == '{"Version":"2012-10-17","Statement":[]}', (
         "Resource policy lost across get_state → restore_state — "
@@ -74,7 +97,7 @@ def test_kinesis_consumers_survive_warm_boot():
         "ConsumerCreationTimestamp": 1700000000.0,
     }
 
-    _round_trip(mod)
+    _round_trip(mod, "kinesis")
 
     assert consumer_arn in mod._consumers, (
         "Kinesis consumer lost across get_state → restore_state — "
@@ -97,7 +120,7 @@ def test_ecs_attributes_survive_warm_boot():
         "targetId": "i-deadbeef",
     }
 
-    _round_trip(mod)
+    _round_trip(mod, "ecs")
 
     assert "i-deadbeef:my-attr" in mod._attributes, (
         "ECS attribute lost across get_state → restore_state — "
@@ -119,7 +142,7 @@ def test_sns_platform_applications_survive_warm_boot():
         "Attributes": {"Platform": "GCM"},
     }
 
-    _round_trip(mod)
+    _round_trip(mod, "sns")
 
     assert app_arn in mod._platform_applications, (
         "SNS platform application lost across get_state → restore_state — "
@@ -139,10 +162,53 @@ def test_sns_platform_endpoints_survive_warm_boot():
         "Enabled": "true",
     }
 
-    _round_trip(mod)
+    _round_trip(mod, "sns")
 
     assert ep_arn in mod._platform_endpoints, (
         "SNS platform endpoint lost across get_state → restore_state — "
         "_platform_endpoints must be in both."
+    )
+    mod.reset()
+
+
+# ── Import-order regression for the ECS NameError trap ───────────────
+
+def test_ecs_module_reload_with_persisted_attributes_does_not_namerror():
+    """Regression for the import-order trap: `restore_state()` runs at
+    module import time (via the `try: load_state("ecs")` block at the
+    bottom of services/ecs.py). If `_attributes` is declared AFTER that
+    block, the restore call NameErrors and the surrounding try/except
+    silently swallows it — wiping all ECS state on warm-boot.
+
+    This test simulates a real warm-boot: write a populated `ecs.json`
+    to STATE_DIR, then `importlib.reload()` the module so the load_state
+    block runs against the file. If `_attributes` (or any other
+    referenced symbol) is declared too late, the restored state will
+    be missing because the entire restore_state body crashed."""
+    mod = _module("ecs")
+    mod.reset()
+    arn = "arn:aws:ecs:us-east-1:000000000000:cluster/reload-canary"
+    mod._clusters[arn] = {"clusterArn": arn, "status": "ACTIVE"}
+    mod._attributes["i-canary:reload-attr"] = {
+        "name": "reload-attr",
+        "value": "v",
+        "targetType": "container-instance",
+        "targetId": "i-canary",
+    }
+
+    # Persist via the same path save_all uses on shutdown.
+    persistence.save_state("ecs", mod.get_state())
+
+    # Force a full reload so the module-level try/load_state/restore_state
+    # block at the bottom of ecs.py executes against the on-disk JSON.
+    importlib.reload(mod)
+
+    assert arn in mod._clusters, (
+        "Cluster lost after reload — likely NameError in restore_state "
+        "swallowed by the try/except. Check that every referenced state "
+        "dict (_attributes etc.) is declared BEFORE the load_state block."
+    )
+    assert "i-canary:reload-attr" in mod._attributes, (
+        "ECS _attributes lost after reload — same root cause."
     )
     mod.reset()

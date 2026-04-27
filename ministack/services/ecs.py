@@ -53,6 +53,12 @@ _tasks = AccountScopedDict()
 _tags = AccountScopedDict()
 _account_settings = AccountScopedDict()
 _capacity_providers = AccountScopedDict()
+# `_attributes` was originally declared next to its handler block much
+# further down the file. Moved up here so the import-time `load_state`
+# block (which calls `restore_state` and references `_attributes`) sees
+# it defined; otherwise warm-boot fires NameError, the surrounding
+# try/except swallows it, and ALL ECS state silently fails to restore.
+_attributes = AccountScopedDict()
 
 _docker = None
 
@@ -1496,9 +1502,9 @@ def _delete_account_setting(data):
 
 # ---------------------------------------------------------------------------
 # Attributes (PutAttributes / DeleteAttributes / ListAttributes)
+# (state dict `_attributes` is declared at module top with the other
+# state — see the comment there for why.)
 # ---------------------------------------------------------------------------
-
-_attributes = AccountScopedDict()
 
 def _put_attributes(data):
     attrs = data.get("attributes", [])
