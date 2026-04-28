@@ -95,3 +95,40 @@ def test_sts_assume_role_with_web_identity(sts, iam):
     assert "SecretAccessKey" in creds
     assert "SessionToken" in creds
     assert "Expiration" in creds
+
+
+def test_sts_get_web_identity_token():
+    """GetWebIdentityToken returns a valid JWT with expected claims."""
+    import urllib.request, re, base64
+    endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
+    req = urllib.request.Request(
+        endpoint,
+        data=b"Action=GetWebIdentityToken&Audience=my-service&SigningAlgorithm=RS256&DurationSeconds=300",
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": "AWS4-HMAC-SHA256 Credential=test/20240101/us-east-1/sts/aws4_request, SignedHeaders=host, Signature=fake",
+        },
+    )
+    with urllib.request.urlopen(req) as r:
+        assert r.status == 200
+        body = r.read().decode()
+
+    assert "<WebIdentityToken>" in body
+    token = re.search(r"<WebIdentityToken>(.+?)</WebIdentityToken>", body).group(1)
+    parts = token.split(".")
+    assert len(parts) == 3, f"JWT should have 3 parts, got {len(parts)}"
+
+    def _pad(s):
+        return s + "=" * (-len(s) % 4)
+
+    header = json.loads(base64.urlsafe_b64decode(_pad(parts[0])))
+    payload = json.loads(base64.urlsafe_b64decode(_pad(parts[1])))
+
+    assert header["alg"] == "RS256"
+    assert header["typ"] == "JWT"
+    assert payload["aud"] == "my-service"
+    assert payload["iss"] == "https://sts.amazonaws.com"
+    assert "sub" in payload
+    assert "exp" in payload
+    assert payload["exp"] - payload["iat"] == 300

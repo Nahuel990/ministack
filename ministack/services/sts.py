@@ -3,9 +3,12 @@ STS Service Emulator (AWS-compatible).
 
 Actions:
   GetCallerIdentity, AssumeRole, AssumeRoleWithWebIdentity,
-  GetSessionToken, GetAccessKeyInfo.
+  GetSessionToken, GetAccessKeyInfo, GetWebIdentityToken.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import time
 from urllib.parse import parse_qs
@@ -153,6 +156,49 @@ async def handle_request(method, path, headers, body, query_params):
                     f"<GetAccessKeyInfoResult>"
                     f"<Account>{get_account_id()}</Account>"
                     f"</GetAccessKeyInfoResult>",
+                    ns="sts")
+
+    if action == "GetWebIdentityToken":
+        audiences = [v for k, v in params.items() for v in (v if isinstance(v, list) else [v]) if k.startswith("Audience")]
+        if not audiences:
+            audiences = [_p(params, "Audience", "sts.amazonaws.com")]
+        duration = int(_p(params, "DurationSeconds") or 300)
+        now = int(time.time())
+        exp = now + duration
+        expiration = _future(duration)
+
+        # Build a minimal JWT (header.payload.signature)
+        header = {"alg": _p(params, "SigningAlgorithm", "RS256"), "typ": "JWT"}
+        payload = {
+            "sub": f"arn:aws:iam::{get_account_id()}:root",
+            "aud": audiences if len(audiences) > 1 else audiences[0],
+            "iss": "https://sts.amazonaws.com",
+            "iat": now,
+            "exp": exp,
+        }
+        # Include tags as custom claims if provided
+        for k, v in params.items():
+            if k.startswith("Tags.member."):
+                pass  # simplified — tags ignored in emulator
+
+        def _b64url(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        h = _b64url(json.dumps(header, separators=(",", ":")).encode())
+        p = _b64url(json.dumps(payload, separators=(",", ":")).encode())
+        sig = _b64url(hmac.new(b"ministack-fake-key", f"{h}.{p}".encode(), hashlib.sha256).digest())
+        token = f"{h}.{p}.{sig}"
+
+        if use_json:
+            return json_response({
+                "WebIdentityToken": token,
+                "Expiration": exp,
+            })
+        return _xml(200, "GetWebIdentityTokenResponse",
+                    f"<GetWebIdentityTokenResult>"
+                    f"<WebIdentityToken>{token}</WebIdentityToken>"
+                    f"<Expiration>{expiration}</Expiration>"
+                    f"</GetWebIdentityTokenResult>",
                     ns="sts")
 
     return _error(400, "InvalidAction", f"Unknown STS action: {action}", ns="sts")
