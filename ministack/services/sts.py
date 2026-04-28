@@ -3,9 +3,12 @@ STS Service Emulator (AWS-compatible).
 
 Actions:
   GetCallerIdentity, AssumeRole, AssumeRoleWithWebIdentity,
-  GetSessionToken, GetAccessKeyInfo.
+  GetSessionToken, GetAccessKeyInfo, GetWebIdentityToken.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import time
 from urllib.parse import parse_qs
@@ -173,6 +176,93 @@ async def handle_request(method, path, headers, body, query_params):
                     f"<GetAccessKeyInfoResult>"
                     f"<Account>{get_account_id()}</Account>"
                     f"</GetAccessKeyInfoResult>",
+                    ns="sts")
+
+    if action == "GetWebIdentityToken":
+        # --- AWS-spec validation ---
+        # SigningAlgorithm: REQUIRED, must be RS256 or ES384.
+        signing_alg = _p(params, "SigningAlgorithm")
+        if not signing_alg:
+            return _error(400, "MissingParameter",
+                          "The request must contain the parameter SigningAlgorithm.",
+                          ns="sts")
+        if signing_alg not in ("RS256", "ES384"):
+            return _error(400, "ValidationError",
+                          f"Value '{signing_alg}' at 'signingAlgorithm' failed to satisfy constraint: "
+                          f"Member must satisfy enum value set: [RS256, ES384]",
+                          ns="sts")
+
+        # Audience: REQUIRED, 1-10 items, each 1-1000 chars.
+        audiences = []
+        for k, v in params.items():
+            if k == "Audience" or k.startswith("Audience.member."):
+                vals = v if isinstance(v, list) else [v]
+                audiences.extend(vals)
+        if not audiences:
+            return _error(400, "MissingParameter",
+                          "The request must contain the parameter Audience.",
+                          ns="sts")
+        if len(audiences) > 10:
+            return _error(400, "ValidationError",
+                          "1 validation error detected: Value at 'audience' failed to satisfy constraint: "
+                          "Member must have length less than or equal to 10",
+                          ns="sts")
+        for a in audiences:
+            if not (1 <= len(a) <= 1000):
+                return _error(400, "ValidationError",
+                              "1 validation error detected: Value at 'audience' failed to satisfy constraint: "
+                              "Member must have length between 1 and 1000",
+                              ns="sts")
+
+        # DurationSeconds: optional, 60-3600, default 300.
+        try:
+            duration = int(_p(params, "DurationSeconds") or 300)
+        except (TypeError, ValueError):
+            return _error(400, "ValidationError",
+                          "Value for DurationSeconds must be an integer.",
+                          ns="sts")
+        if not (60 <= duration <= 3600):
+            return _error(400, "ValidationError",
+                          f"1 validation error detected: Value '{duration}' at 'durationSeconds' "
+                          f"failed to satisfy constraint: Member must have value between 60 and 3600",
+                          ns="sts")
+
+        now = int(time.time())
+        exp = now + duration
+        expiration = _future(duration)
+
+        # Emulator stub: real STS signs RS256/ES384 via JWKS-published keys; we
+        # HMAC-sign so the token is self-contained and parseable but not
+        # publicly verifiable. Header reports HS256 to stay honest about the
+        # signature. Workloads that only inspect claims work; workloads that
+        # verify against AWS JWKS are not in scope for the emulator.
+        header = {"alg": "HS256", "typ": "JWT"}
+        payload = {
+            "sub": f"arn:aws:iam::{get_account_id()}:root",
+            "aud": audiences if len(audiences) > 1 else audiences[0],
+            "iss": "https://sts.amazonaws.com",
+            "iat": now,
+            "exp": exp,
+        }
+
+        def _b64url(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        h = _b64url(json.dumps(header, separators=(",", ":")).encode())
+        p = _b64url(json.dumps(payload, separators=(",", ":")).encode())
+        sig = _b64url(hmac.new(b"ministack-fake-key", f"{h}.{p}".encode(), hashlib.sha256).digest())
+        token = f"{h}.{p}.{sig}"
+
+        if use_json:
+            return json_response({
+                "WebIdentityToken": token,
+                "Expiration": exp,
+            })
+        return _xml(200, "GetWebIdentityTokenResponse",
+                    f"<GetWebIdentityTokenResult>"
+                    f"<WebIdentityToken>{token}</WebIdentityToken>"
+                    f"<Expiration>{expiration}</Expiration>"
+                    f"</GetWebIdentityTokenResult>",
                     ns="sts")
 
     return _error(400, "InvalidAction", f"Unknown STS action: {action}", ns="sts")
