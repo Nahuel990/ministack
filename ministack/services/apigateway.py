@@ -395,7 +395,11 @@ async def handle_execute(api_id, stage, path, method, headers, body, query_param
     if not route:
         return 404, {"Content-Type": "application/json"}, json.dumps({"message": "No route found"}).encode()
 
-    integration_id = route.get("target", "").replace("integrations/", "")
+    raw_target = route.get("target", "").replace("integrations/", "")
+    # Target is "{integrationId}" — the current Ref / CFN physical ID.
+    # Legacy stacks created against the broken #480 provisioner (fixed in
+    # #487) wrote "{apiId}/{integrationId}"; strip the prefix for compat.
+    integration_id = raw_target.split("/")[-1] if "/" in raw_target else raw_target
     integration = _integrations.get(api_id, {}).get(integration_id)
     if not integration:
         return 500, {"Content-Type": "application/json"}, json.dumps({"message": "No integration configured"}).encode()
@@ -643,7 +647,7 @@ def _get_api(api_id):
 
 
 def _get_apis():
-    return _apigw_response({"items": list(_apis.values()), "nextToken": None})
+    return _apigw_response({"items": list(_apis.values())})
 
 
 def _delete_api(api_id):
@@ -688,7 +692,7 @@ def _create_route(api_id, data):
 
 
 def _get_routes(api_id):
-    return _apigw_response({"items": list(_routes.get(api_id, {}).values()), "nextToken": None})
+    return _apigw_response({"items": list(_routes.get(api_id, {}).values())})
 
 
 def _get_route(api_id, route_id):
@@ -741,7 +745,7 @@ def _create_integration(api_id, data):
 
 
 def _get_integrations(api_id):
-    return _apigw_response({"items": list(_integrations.get(api_id, {}).values()), "nextToken": None})
+    return _apigw_response({"items": list(_integrations.get(api_id, {}).values())})
 
 
 def _get_integration(api_id, int_id):
@@ -791,7 +795,7 @@ def _create_stage(api_id, data):
 
 
 def _get_stages(api_id):
-    return _apigw_response({"items": list(_stages.get(api_id, {}).values()), "nextToken": None})
+    return _apigw_response({"items": list(_stages.get(api_id, {}).values())})
 
 
 def _get_stage(api_id, stage_name):
@@ -835,7 +839,7 @@ def _create_deployment(api_id, data):
 
 
 def _get_deployments(api_id):
-    return _apigw_response({"items": list(_deployments.get(api_id, {}).values()), "nextToken": None})
+    return _apigw_response({"items": list(_deployments.get(api_id, {}).values())})
 
 
 def _get_deployment(api_id, deployment_id):
@@ -893,7 +897,7 @@ def _create_authorizer(api_id, data):
 
 
 def _get_authorizers(api_id):
-    return _apigw_response({"items": list(_authorizers.get(api_id, {}).values()), "nextToken": None})
+    return _apigw_response({"items": list(_authorizers.get(api_id, {}).values())})
 
 
 def _get_authorizer(api_id, auth_id):
@@ -1126,7 +1130,11 @@ async def _invoke_ws_lambda(api_id: str, account_id: str, route: dict, stage: st
     from ministack.core.lambda_runtime import get_or_create_worker
     from ministack.services import lambda_svc
 
-    integration_id = route.get("target", "").replace("integrations/", "")
+    raw_target = route.get("target", "").replace("integrations/", "")
+    # Target is "{integrationId}" — the current Ref / CFN physical ID.
+    # Legacy stacks created against the broken #480 provisioner (fixed in
+    # #487) wrote "{apiId}/{integrationId}"; strip the prefix for compat.
+    integration_id = raw_target.split("/")[-1] if "/" in raw_target else raw_target
     integration = _integrations.get(api_id, {}).get(integration_id)
     if not integration:
         return None

@@ -399,6 +399,12 @@ def _lambda_create(logical_id, props, stack_name):
     layers = props.get("Layers", [])
     code = props.get("Code", {})
 
+    # Resolve the actual code bytes:
+    #  - inline ZipFile is wrapped to a real zip archive
+    #  - S3{Bucket,Key,ObjectVersion} fetches from the in-memory S3
+    #    service so AWS::Lambda::Function deployments backed by S3 work
+    #    end-to-end (matching real CFN). Falls back to inline if S3
+    #    fetch fails.
     code_zip = _zip_inline(code.get("ZipFile"), handler, runtime)
     if code_zip is None and code.get("S3Bucket") and code.get("S3Key"):
         code_zip = _lambda_svc._fetch_code_from_s3(
@@ -433,6 +439,7 @@ def _lambda_create(logical_id, props, stack_name):
         "code_zip": code_zip,
         "code_s3_bucket": code.get("S3Bucket"),
         "code_s3_key": code.get("S3Key"),
+        "code_s3_object_version": code.get("S3ObjectVersion"),
         "versions": {},
         "next_version": 1,
         "tags": {},
@@ -2563,14 +2570,19 @@ def _apigw_v2_integration_create(logical_id, props, stack_name):
         "contentHandlingStrategy": props.get("ContentHandlingStrategy"),
     }
     _apigw_v2._integrations.setdefault(api_id, {})[int_id] = integration
-    physical_id = f"{api_id}/{int_id}"
-    return physical_id, {"IntegrationId": int_id}
+    # AWS returns just the integration ID as the physical ID (Ref).
+    # Store apiId in outputs so delete can find the right API.
+    return int_id, {"IntegrationId": int_id, "ApiId": api_id}
 
 
 def _apigw_v2_integration_delete(physical_id, props):
-    parts = physical_id.split("/", 1)
-    if len(parts) == 2:
-        api_id, int_id = parts
+    api_id = props.get("ApiId", "")
+    int_id = physical_id
+    # Backwards compat: old physical IDs were "{apiId}/{integrationId}"
+    if "/" in physical_id:
+        parts = physical_id.split("/", 1)
+        api_id, int_id = parts[0], parts[1]
+    if api_id:
         integrations = _apigw_v2._integrations.get(api_id, {})
         integrations.pop(int_id, None)
 
