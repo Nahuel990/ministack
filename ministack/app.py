@@ -182,6 +182,7 @@ SERVICE_REGISTRY = {
     "elasticfilesystem": {"module": "efs"},
     "elasticloadbalancing": {"module": "alb", "aliases": ("elbv2", "elb")},
     "elasticmapreduce": {"module": "emr"},
+    "es": {"module": "opensearch", "aliases": ("opensearch",)},
     "events": {"module": "eventbridge", "aliases": ("eventbridge",)},
     "firehose": {"module": "firehose", "aliases": ("kinesis-firehose",)},
     "glue": {"module": "glue"},

@@ -234,6 +234,15 @@ SERVICE_PATTERNS = {
         "path_prefixes": ["/backup-vaults", "/backup/plans", "/backup-jobs", "/untag"],
         "credential_scope": "backup",
     },
+    # Amazon OpenSearch Service — management plane served by MiniStack on the
+    # /2021-01-01/* REST path. boto3's opensearch client signs with the legacy
+    # "es" credential scope (inherited from Amazon Elasticsearch Service);
+    # host-based fallbacks cover both SDK variants.
+    "es": {
+        "host_patterns": [r"\bes\.", r"\bopensearch\."],
+        "path_prefixes": ["/2021-01-01/"],
+        "credential_scope": "es",
+    },
 }
 
 
@@ -297,6 +306,8 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
                 "scheduler": "scheduler",
                 "eks": "eks",
                 "tagging": "tagging",
+                "es": "es",
+                "opensearch": "es",
             }
             if svc_name in scope_map:
                 return scope_map[svc_name]
@@ -525,6 +536,15 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
         return "apigateway"
     if _LAMBDA_PATH_RE.match(path_lower):
         return "lambda"
+    # OpenSearch control plane — guards against unsigned requests (which
+    # never populate the SigV4 scope_map path) and against host="localhost"
+    # lacking any explicit service hint.
+    if path_lower.startswith("/2021-01-01/") and (
+        "/opensearch/" in path_lower
+        or path_lower.rstrip("/").endswith("/2021-01-01/domain")
+        or "/tags" in path_lower
+    ):
+        return "es"
     if path_lower.startswith(("/oauth2/", "/login", "/logout")):
         return "cognito-idp"
     if path_lower.startswith("/oauth2/authorize"):

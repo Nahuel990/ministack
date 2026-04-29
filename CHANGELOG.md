@@ -9,6 +9,18 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Amazon OpenSearch Service** — new `ministack/services/opensearch.py` implements the OpenSearch management plane on the `/2021-01-01/*` REST path, with a data plane that is in-memory by default and containerized on demand:
+  - `boto3.client("opensearch")` (SigV4 scope `es`) — `CreateDomain`, `DescribeDomain`, `DescribeDomains`, `DeleteDomain`, `ListDomainNames` (with `EngineType` filter), `UpdateDomainConfig`, `DescribeDomainConfig` (wrapped `Options`/`Status` shape), `DescribeDomainChangeProgress`, `ListVersions`, `GetCompatibleVersions`, and `AddTags`/`ListTags`/`RemoveTags`.
+  - Default data plane is a stub endpoint (`<domain>.ministack.local:9200`) so management-plane tests stay fast and offline. Set `OPENSEARCH_DATAPLANE=1` to spawn one `opensearchproject/opensearch` container per `CreateDomain` (same pattern as ElastiCache and RDS); containers are labeled `com.docker.compose.project=ministack` and `DeleteDomain` stops/removes them. **Docker networking:** with `OPENSEARCH_DATAPLANE=1`, domains attach to MiniStack’s own network (inspect `HOSTNAME` or fall back to `ministack-opensearch-net`); `DescribeDomain` reports `<container_name>:9200` for sibling resolution on the bridge instead of host-only `localhost` ports.
+  - Endpoint resolution: `MINISTACK_OPENSEARCH_ENDPOINT` override → spawned container at `localhost:<OPENSEARCH_BASE_PORT + N>` (default base `14571`, image `opensearchproject/opensearch:2.15.0`) → stub `<domain>.ministack.local:9200`. `DescribeDomain.Endpoint` follows whichever backend is active.
+  - **OpenSearch Dashboards sidecar** — set `OPENSEARCH_DASHBOARDS=1` (with `OPENSEARCH_DATAPLANE=1`) to spawn one `opensearchproject/opensearch-dashboards` container per domain on `ministack-opensearch-net`, published on `localhost:<OPENSEARCH_DASHBOARDS_BASE_PORT + N>` (default `15601`), `DescribeDomain.DomainStatus.DashboardEndpoint` when enabled.
+  - ARNs use `arn:aws:es:<region>:<account>:domain/<name>`; name validation and `ResourceAlreadyExistsException` match AWS.
+  - **Tests** — `tests/test_opensearch.py` matches the `aws_opensearch_domain` wire shape; optional data-plane test with `OPENSEARCH_DATAPLANE=1` (cluster health, index, search).
+
+### Fixed
+- **Lambda Docker executor: network auto-detect, default `AWS_ENDPOINT_URL`, AppSync vhost DNS, and Linux `host.docker.internal`** — sibling Lambda containers spawned by the Docker executor now (a) auto-attach to MiniStack's own Docker network when `LAMBDA_DOCKER_NETWORK` / `DOCKER_NETWORK` are unset (`get_ministack_network()` inspects the MiniStack container); (b) get a synthesized `AWS_ENDPOINT_URL` when none is supplied — process env > function env > `LOCALSTACK_HOSTNAME` > `http://<MINISTACK_HOST or host.docker.internal>:<GATEWAY_PORT|EDGE_PORT|4566>` — so the in-function AWS SDK never falls back to public AWS with the dummy credentials; (c) get MiniStack's IP prepended to their `dns` list when the wildcard DNS resolver is active so `{apiId}.appsync-api.*` vhosts resolve back to MiniStack on the same Docker network; (d) get `host.docker.internal:host-gateway` added to `extra_hosts` only when the resolved endpoint actually uses that hostname (plain Linux Docker; Docker Desktop already injects the name). `LAMBDA_DOCKER_FLAGS --add-host` still wins. Required for OpenSearch, AppSync Events, and any sibling-container service.
+
 ---
 
 ## [1.3.18] — 2026-04-28
@@ -55,7 +67,6 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **SNS → SQS raw delivery did not forward message attributes** — raw subscriptions delivered the message body but stripped `MessageAttributes`, so SQS receivers never saw them. Forwarded now, plus the follow-up that adds the matching `MD5OfMessageAttributes` header so Java / Go SDK receivers (which verify the digest) match real AWS. Contributed by @arischow.
 - **Three medium / low correctness bugs.** `apigateway` and `apigateway_v1` `get_state()` returned live `AccountScopedDict` references instead of deep copies, so a concurrent write during shutdown serialisation could corrupt the persisted snapshot. `secretsmanager._delete_secret(force=True)` deleted the secret but left orphan entries in `_resource_policies` keyed by ARN — invisible to the API but accumulating in memory and surviving warm-boot. `acm._list_certificates` returned `{"NextToken": null}` unconditionally — boto3 strips it client-side, but Java / Go / raw-HTTP pagination clients that loop on `if NextToken in response` looped forever. Contributed by @bognari. Pattern extended in this release with a sweep across `ses_v2`, `apigateway` v2, and `apigateway` v1 (ten more endpoints) so every list response now omits `NextToken` when there is no next page; AppSync's GraphQL `{items, nextToken}` shape is intentionally unchanged.
 - **`/health` reported `version: dev` in the published Docker image** — `pip` is stripped from the runtime image, so the `importlib.metadata` lookup that worked under `pip install ministack` returned the fallback. Now reads from a `MINISTACK_VERSION` env var injected at image build time.
-
 
 ---
 ## [1.3.15] — 2026-04-26

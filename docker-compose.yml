@@ -14,6 +14,29 @@ services:
       - RDS_BASE_PORT=15432
       # - DOCKER_NETWORK=ministack_default  # Docker network for RDS/EKS/ElastiCache/Lambda containers
       - ELASTICACHE_BASE_PORT=16379
+      # OpenSearch: in-memory by default. Override at launch to spawn a real
+      # `opensearchproject/opensearch` container per CreateDomain (same
+      # pattern as ElastiCache/RDS). Spawned containers are labeled with
+      # `com.docker.compose.project=ministack` so they show up in the
+      # ministack group in Docker Desktop. Per-domain endpoint returned by
+      # DescribeDomain is `localhost:<OPENSEARCH_BASE_PORT + N>`.
+      #
+      # Add OPENSEARCH_DASHBOARDS=1 to additionally spawn a per-domain
+      # `opensearchproject/opensearch-dashboards` sidecar, wired to the
+      # cluster container over a shared `ministack-opensearch-net` bridge
+      # and published on localhost:<OPENSEARCH_DASHBOARDS_BASE_PORT + N>.
+      # DescribeDomain then populates `DomainStatus.DashboardEndpoint`.
+      #
+      # Override without editing this file by setting the env var in the
+      # shell or a `.env` file next to docker-compose.yml, e.g.
+      #   OPENSEARCH_DATAPLANE=1 docker compose up -d
+      #   OPENSEARCH_DATAPLANE=1 OPENSEARCH_DASHBOARDS=1 docker compose up -d
+      - OPENSEARCH_DATAPLANE=${OPENSEARCH_DATAPLANE:-0}
+      - OPENSEARCH_BASE_PORT=${OPENSEARCH_BASE_PORT:-14571}
+      - OPENSEARCH_IMAGE=${OPENSEARCH_IMAGE:-opensearchproject/opensearch:2.15.0}
+      - OPENSEARCH_DASHBOARDS=${OPENSEARCH_DASHBOARDS:-0}
+      - OPENSEARCH_DASHBOARDS_BASE_PORT=${OPENSEARCH_DASHBOARDS_BASE_PORT:-15601}
+      - OPENSEARCH_DASHBOARDS_IMAGE=${OPENSEARCH_DASHBOARDS_IMAGE:-opensearchproject/opensearch-dashboards:2.15.0}
     volumes:
       - ./data/s3:/tmp/ministack-data/s3
       - /var/run/docker.sock:/var/run/docker.sock
