@@ -187,6 +187,13 @@ SERVICE_PATTERNS = {
         "path_prefixes": ["/v1/apis", "/v1/tags"],
         "credential_scope": "appsync",
     },
+    # AppSync Events data plane — HTTP publish lives on
+    # {apiId}.appsync-api.<host>; its control plane reuses the "appsync"
+    # credential scope and is delegated from services/appsync.py for /v2/apis
+    # paths, so no separate credential_scope here.
+    "appsync-events": {
+        "host_patterns": [r"appsync-api\.", r"appsync-realtime-api\."],
+    },
     "servicediscovery": {
         "target_prefixes": ["Route53AutoNaming_v20170314"],
         "host_patterns": [r"servicediscovery\."],
@@ -250,6 +257,22 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
             for prefix in patterns.get("target_prefixes", []):
                 if target.startswith(prefix):
                     return svc
+
+    # 1.5 AppSync Events HTTP publish: POST /event on {apiId}.appsync-api.<host>.
+    # Step 2 below would otherwise route this to "appsync" because AWS SDKs
+    # sign Event-API publishes with the legacy "appsync" SigV4 scope (shared
+    # with AppSync GraphQL). Real AWS routes by DNS so the collision is
+    # local-only. NOTE: we deliberately do NOT broaden this to every path on
+    # appsync-api.* — the AppSync GraphQL data plane (POST /graphql) lives on
+    # the SAME vhost and is correctly served by services/appsync.py. The rule
+    # is symmetric in spirit with the existing /v2/apis host-priority rule
+    # at step 4, but must run before step 2 to override the SigV4 scope.
+    if (
+        method == "POST"
+        and path == "/event"
+        and re.search(r"\.appsync-api\.", host)
+    ):
+        return "appsync-events"
 
     # 2. Check Authorization header for service name in credential scope
     if auth:
@@ -518,6 +541,14 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
         return "cloudfront"
     if path_lower.startswith("/2013-04-01/"):
         return "route53"
+    # AppSync Events management plane lives under /v2/apis and /v2/tags but is
+    # served from {apiId}.appsync-api.* / appsync-realtime-api.* hosts. Anonymous
+    # browser discovery has no SigV4 scope, so host-match must win over the
+    # generic /v2/apis → apigateway rule below.
+    if (path_lower.startswith("/v2/apis") or path_lower.startswith("/v2/tags")) and (
+        re.search(r"appsync-api\.", host) or re.search(r"appsync-realtime-api\.", host)
+    ):
+        return "appsync-events"
     if path_lower.startswith("/v2/apis"):
         return "apigateway"
     if (path_lower.startswith("/restapis") or path_lower.startswith("/apikeys")

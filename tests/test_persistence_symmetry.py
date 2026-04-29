@@ -58,7 +58,7 @@ def test_service_has_restore_path(svc_key, mod_name):
     # the explicit allow-list in app.py's `_load_persisted_state()`.
     has_central_method = hasattr(mod, "load_persisted_state")
     centrally_restored = has_central_method and svc_key in {
-        "apigateway", "apigateway_v1", "servicediscovery",
+        "apigateway", "apigateway_v1", "servicediscovery", "appsync_events",
     }
 
     assert self_restoring or centrally_restored, (

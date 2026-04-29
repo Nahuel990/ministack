@@ -41,8 +41,9 @@ import time
 import zipfile
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
+from ministack.core.docker_network import get_ministack_network
 from ministack.core.persistence import load_state, PERSIST_STATE
 from ministack.core.responses import AccountScopedDict, apply_image_prefix, get_account_id, _request_account_id, error_response_json, json_response, new_uuid, get_region
 from ministack.core.lambda_runtime import get_or_create_worker, invalidate_worker
@@ -1928,8 +1929,13 @@ def _invoke_rie(container, event: dict, timeout: int) -> dict:
             networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
             # Try Docker network first (container-to-container)
             container_ip = None
-            if LAMBDA_DOCKER_NETWORK:
-                container_ip = networks.get(LAMBDA_DOCKER_NETWORK, {}).get("IPAddress", "")
+            effective_net = LAMBDA_DOCKER_NETWORK
+            if not effective_net:
+                dc = _get_docker_client()
+                if dc is not None:
+                    effective_net = get_ministack_network(dc) or ""
+            if effective_net:
+                container_ip = networks.get(effective_net, {}).get("IPAddress", "")
             if not container_ip and _running_in_container():
                 # DinD: host-mapped ports aren't reachable from inside this container.
                 # Use the Lambda container's IP on any available Docker network.
@@ -2063,7 +2069,8 @@ def _spawn_lambda_container(config: dict, code_zip: bytes | None):
     and for `_kill_pool_entry` on cleanup (tmpdir is None for Image-type).
 
     Handles both Zip and Image PackageType, provided runtimes (bootstrap), Lambda
-    Layers (Zip only), DinD (docker cp), LAMBDA_DOCKER_NETWORK, ImageConfig
+    Layers (Zip only), DinD (docker cp), Docker network (LAMBDA_DOCKER_NETWORK /
+    DOCKER_NETWORK or auto-detected MiniStack network), ImageConfig
     overrides (EntryPoint/Command/WorkingDirectory), and AWS_ENDPOINT_URL.
     """
     client = _get_docker_client()
@@ -2147,14 +2154,32 @@ def _spawn_lambda_container(config: dict, code_zip: bytes | None):
             f"/opt/layer_{i}" for i in range(len(layers_dirs))
         )
     container_env.update(env_vars)
-    # AWS_ENDPOINT_URL set *after* function env so it always points at ministack
+    # Resolve AWS_ENDPOINT_URL for the spawned Lambda container.
+    # Precedence: MiniStack process env > function env > LOCALSTACK_HOSTNAME
+    # compat shim > sibling-reachable default. Real AWS Lambda always sees a
+    # working endpoint, so a MiniStack Lambda should too — otherwise the AWS
+    # SDK inside the function falls back to public AWS and rejects the dummy
+    # credentials. The Docker executor spawns sibling containers, each in its
+    # own network namespace, so 127.0.0.1 inside the Lambda points at itself;
+    # the fallback host is `host.docker.internal` when MINISTACK_HOST is
+    # unset or `localhost`, else MINISTACK_HOST (e.g. a Compose service name).
+    # If the resolved URL uses `host.docker.internal`, we add a host-gateway
+    # extra_host for Linux (Docker Desktop already injects the name).
     endpoint = _normalize_endpoint_url(os.environ.get("AWS_ENDPOINT_URL", ""))
     if not endpoint:
         endpoint = _normalize_endpoint_url(env_vars.get("AWS_ENDPOINT_URL", ""))
     if not endpoint:
         endpoint = _normalize_endpoint_url(env_vars.get("LOCALSTACK_HOSTNAME", ""))
-    if endpoint:
-        container_env["AWS_ENDPOINT_URL"] = endpoint
+    if not endpoint:
+        # Default to a sibling-reachable URL. MINISTACK_HOST wins if explicitly set
+        # to anything other than "localhost" (which is meaningless for siblings);
+        # otherwise fall back to host.docker.internal.
+        fallback_host = os.environ.get("MINISTACK_HOST") or ""
+        if not fallback_host or fallback_host == "localhost":
+            fallback_host = "host.docker.internal"
+        fallback_port = os.environ.get("GATEWAY_PORT") or os.environ.get("EDGE_PORT") or "4566"
+        endpoint = f"http://{fallback_host}:{fallback_port}"
+    container_env["AWS_ENDPOINT_URL"] = endpoint
 
     # Mounts (Zip only — Image bakes code in)
     _use_docker_cp = False
@@ -2200,8 +2225,19 @@ def _spawn_lambda_container(config: dict, code_zip: bytes | None):
 
     if mounts:
         run_kwargs["mounts"] = mounts
-    if LAMBDA_DOCKER_NETWORK:
-        run_kwargs["network"] = LAMBDA_DOCKER_NETWORK
+    lambda_network = LAMBDA_DOCKER_NETWORK or get_ministack_network(client)
+    if lambda_network:
+        run_kwargs["network"] = lambda_network
+    # Linux Docker (not Desktop): resolve `host.docker.internal` only when the
+    # default endpoint above actually uses that hostname. Compose users who set
+    # MINISTACK_HOST to a service name get http://<that>:<port> and do not need
+    # this mapping. Docker Desktop on Windows/macOS already injects the name.
+    # Merged with LAMBDA_DOCKER_FLAGS below; explicit --add-host wins.
+    _ep_host = urlparse(container_env.get("AWS_ENDPOINT_URL", "")).hostname
+    if _ep_host == "host.docker.internal":
+        run_kwargs.setdefault("extra_hosts", {})
+        if isinstance(run_kwargs["extra_hosts"], dict):
+            run_kwargs["extra_hosts"].setdefault("host.docker.internal", "host-gateway")
 
     # Apply LAMBDA_DOCKER_FLAGS — merge parsed kwargs into run_kwargs
     if LAMBDA_DOCKER_FLAGS:
@@ -2213,6 +2249,21 @@ def _spawn_lambda_container(config: dict, code_zip: bytes | None):
         if df_mounts:
             run_kwargs.setdefault("mounts", []).extend(df_mounts)
         run_kwargs.update(df_kwargs)
+
+    # AppSync Events: ``{apiId}.appsync-api.*`` vhosts resolve via MiniStack's
+    # wildcard DNS (UDP/53 on the same Docker network as this process).
+    try:
+        from ministack.core.docker_network import get_ministack_container_ipv4_on_network
+        from ministack.services import dns_resolver
+
+        if dns_resolver.is_active() and lambda_network:
+            ms_ip = get_ministack_container_ipv4_on_network(client, lambda_network)
+            if ms_ip:
+                d = run_kwargs.setdefault("dns", [])
+                if ms_ip not in d:
+                    d.insert(0, ms_ip)
+    except Exception:
+        logger.debug("lambda docker: MiniStack --dns not applied", exc_info=True)
 
     # Pull the image on first use (both Zip RIE images and user Image types)
     try:

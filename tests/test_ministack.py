@@ -119,6 +119,28 @@ def test_ministack_package_core_importable():
     assert callable(get_or_create_worker)
     assert callable(save_all)
 
+
+@_requires_package
+def test_detect_service_v2_apis_with_appsync_events_host_returns_appsync_events():
+    from ministack.core.router import detect_service
+
+    assert (
+        detect_service(
+            "GET",
+            "/v2/apis",
+            {"host": "abc123.appsync-api.localhost:4566"},
+            {},
+        )
+        == "appsync-events"
+    )
+
+
+@_requires_package
+def test_detect_service_v2_apis_without_appsync_host_stays_on_apigateway():
+    from ministack.core.router import detect_service
+
+    assert detect_service("GET", "/v2/apis", {"host": "localhost:4566"}, {}) == "apigateway"
+
 @_requires_package
 def test_ministack_package_services_importable():
     """All 25 ministack.services modules must be importable and expose handle_request."""

@@ -474,6 +474,13 @@ _PATH_RE = re.compile(r"^/v1/apis(?:/([^/]+))?(?:/([^/]+))?(?:/([^/]+))?(?:/([^/
 async def handle_request(method, path, headers, body, query_params):
     """Main entry point — route AppSync REST requests."""
 
+    # AppSync Events Event API lives under /v2/apis and shares the
+    # ``appsync`` credential scope with GraphQL, so delegate here instead
+    # of teaching the central router to differentiate by path.
+    if path.startswith("/v2/apis") or path.startswith("/v2/tags"):
+        from ministack.services import appsync_events
+        return await appsync_events.handle_request(method, path, headers, body, query_params)
+
     # Tags endpoint: /v1/tags/{resourceArn}
     if path.startswith("/v1/tags/"):
         from urllib.parse import unquote
@@ -533,7 +540,24 @@ async def handle_request(method, path, headers, body, query_params):
             return _delete_graphql_api(api_id)
 
     # /v1/apis/{apiId}/apikeys
+    #
+    # The AWS SDK (and the Terraform AWS provider's aws_appsync_api_key
+    # resource) always routes CreateApiKey/ListApiKeys/DeleteApiKey through
+    # the v1 path — even for Event APIs, which live in the v2 registry.
+    # If the caller's apiId isn't a GraphQL API but IS an Event API, hand
+    # the request off to appsync_events so Terraform can manage keys on
+    # aws_appsync_api just like it does on aws_appsync_graphql_api.
     if sub1 == "apikeys":
+        if api_id and api_id not in _apis:
+            from ministack.services import appsync_events
+            if api_id in appsync_events._apis:
+                if sub2 is None:
+                    if method == "POST":
+                        return appsync_events._create_api_key(api_id, body or b"{}")
+                    if method == "GET":
+                        return appsync_events._list_api_keys(api_id)
+                elif method == "DELETE":
+                    return appsync_events._delete_api_key(api_id, sub2)
         if sub2 is None:
             if method == "POST":
                 return _create_api_key(api_id, data)

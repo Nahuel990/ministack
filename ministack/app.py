@@ -37,6 +37,10 @@ if _VERSION == "dev":
 _EXECUTE_API_RE = re.compile(
     r"^([a-f0-9]{8})\.execute-api\." + re.escape(_MINISTACK_HOST) + r"(?::\d+)?$"
 )
+# AppSync Events realtime WebSocket: {apiId}.appsync-realtime-api.<anything>[:port]
+# The host suffix is not constrained (tests use the real AWS-style suffix
+# appsync-realtime-api.us-east-1.amazonaws.com even when connecting to localhost).
+_APPSYNC_REALTIME_RE = re.compile(r"^([a-z0-9]+)\.appsync-realtime-api\.")
 # Virtual-hosted S3 bucket extraction. AWS-aligned per
 # docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html and
 # bucketnamingrules.html (HTTP vhost — ministack is HTTP). Works for any
@@ -79,6 +83,11 @@ _NON_S3_VHOST_NAMES = frozenset({
     "secretsmanager", "logs", "ssm", "events", "kinesis", "monitoring", "ses",
     "states", "ecs", "rds", "rds-data", "elasticache", "glue", "athena",
     "apigateway", "cloudformation", "autoscaling", "codebuild", "transfer",
+    # AppSync GraphQL / Events local hostnames are `{id}.appsync*.localhost` or
+    # `appsync-api.localhost` (unsigned discovery from browsers / HTTP clients);
+    # they must not match S3 vhost `{bucket}.localhost` (bucket would be
+    # mis-parsed as "appsync-api").
+    "appsync", "appsync-api", "appsync-realtime-api",
 })
 
 from ministack.core.hypercorn_compat import install as _install_hypercorn_compat
@@ -174,6 +183,7 @@ SERVICE_REGISTRY = {
     "cognito-identity": {"module": "cognito"},
     "cognito-idp": {"module": "cognito"},
     "dynamodb": {"module": "dynamodb"},
+    "appsync-events": {"module": "appsync_events"},
     "ec2": {"module": "ec2"},
     "ecr": {"module": "ecr"},
     "ecs": {"module": "ecs"},
@@ -231,6 +241,7 @@ _state_map = {
     "ecr": "ecr", "cloudwatch": "cloudwatch", "s3": "s3",
     "lambda": "lambda_svc", "rds": "rds", "ecs": "ecs",
     "elasticache": "elasticache", "appsync": "appsync",
+    "appsync_events": "appsync_events",
     "stepfunctions": "stepfunctions", "alb": "alb",
     "glue": "glue", "efs": "efs", "waf": "waf",
     "athena": "athena", "emr": "emr", "cloudfront": "cloudfront",
@@ -1060,16 +1071,22 @@ async def app(scope, receive, send):
         ws_host = ws_headers.get("host", "")
         ws_path = scope.get("path", "")
         parsed = _parse_execute_api_url(ws_host, ws_path)
-        if not parsed:
+        appsync_rt_m = None if parsed else _APPSYNC_REALTIME_RE.match(ws_host)
+        if not parsed and not appsync_rt_m:
             msg = await receive()
             if msg.get("type") == "websocket.connect":
                 await send({"type": "websocket.close", "code": 1008})
             return
-        ws_api_id, _stage, _execute_path = parsed
         try:
-            await _get_module("apigateway").handle_websocket(
-                scope, receive, send, ws_api_id, path_override=_execute_path,
-            )
+            if parsed:
+                ws_api_id, _stage, _execute_path = parsed
+                await _get_module("apigateway").handle_websocket(
+                    scope, receive, send, ws_api_id, path_override=_execute_path,
+                )
+            else:
+                await _get_module("appsync_events").handle_websocket(
+                    scope, receive, send, appsync_rt_m.group(1)
+                )
         except Exception:
             logger.exception("Error in WebSocket dispatch")
             try:
@@ -1169,6 +1186,23 @@ async def _handle_lifespan(scope, receive, send):
                 await transfer.sftp_start()
             except Exception as e:
                 logger.warning("Transfer SFTP startup failed: %s", e)
+            try:
+                from ministack.services import dns_resolver
+
+                ip_bytes = dns_resolver.resolve_ministack_dns_answer_ip()
+                if ip_bytes:
+                    logger.info(
+                        "MiniStack wildcard DNS A records -> %s",
+                        socket.inet_ntoa(ip_bytes),
+                    )
+                started = await dns_resolver.start_dns_resolver(ip_bytes)
+                if dns_resolver.resolver_enabled() and not started:
+                    logger.warning(
+                        "MiniStack DNS resolver did not bind (check privileged UDP/53 "
+                        "or set MINISTACK_DNS_PORT / MINISTACK_DNS_RESOLVER=0)."
+                    )
+            except Exception as e:
+                logger.warning("DNS resolver startup failed: %s", e)
             await send({"type": "lifespan.startup.complete"})
             logger.info("Ready.")
             for svc in SERVICE_HANDLERS:
@@ -1176,6 +1210,12 @@ async def _handle_lifespan(scope, receive, send):
             asyncio.create_task(_run_ready_scripts())
         elif message["type"] == "lifespan.shutdown":
             logger.info("MiniStack shutting down...")
+            try:
+                from ministack.services import dns_resolver
+
+                await dns_resolver.stop_dns_resolver()
+            except Exception as e:
+                logger.debug("DNS resolver shutdown: %s", e)
             if PERSIST_STATE:
                 # Only save state for modules that were actually loaded
                 save_dict = {}
@@ -1215,7 +1255,7 @@ def _stop_docker_containers():
 
 def _load_persisted_state():
     """Load persisted state for services that support it."""
-    for svc_key in ("apigateway", "apigateway_v1", "servicediscovery"):
+    for svc_key in ("apigateway", "apigateway_v1", "servicediscovery", "appsync_events"):
         data = load_state(svc_key)
         if data:
             _get_module(svc_key).load_persisted_state(data)

@@ -3031,3 +3031,121 @@ def test_lambda_docker_flags_applied_to_run_kwargs(monkeypatch):
     assert captured["privileged"] is True
     assert captured["read_only"] is True
     assert "unknown_flag" not in captured
+
+
+# ── Lambda Docker: AWS_ENDPOINT_URL + extra_hosts (sibling reachability) ──
+
+def _lambda_spawn_captured_run_kwargs(monkeypatch, **env) -> dict:
+    """Call _spawn_lambda_container with a fake Docker client; return containers.run kwargs."""
+    for key, val in env.items():
+        if val is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, val)
+
+    monkeypatch.setattr(lsvc, "LAMBDA_DOCKER_FLAGS", "")
+    monkeypatch.setattr(lsvc, "_docker_available", True)
+    monkeypatch.setattr(lsvc, "_running_in_container", lambda: False)
+
+    captured: dict = {}
+    fake_container = _mk_container()
+    fake_container.ports = {"8080/tcp": [{"HostPort": "9999"}]}
+
+    def _fake_run(**kwargs):
+        captured.update(kwargs)
+        return fake_container
+
+    fake_client = MagicMock()
+    fake_client.containers.run = _fake_run
+    fake_client.images.get = MagicMock()
+    monkeypatch.setattr(lsvc, "_get_docker_client", lambda: fake_client)
+
+    code = b""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("index.py", "def handler(e,c): pass")
+    code = buf.getvalue()
+
+    lsvc._spawn_lambda_container(
+        {
+            "FunctionName": "test-fn",
+            "Runtime": "python3.12",
+            "Handler": "index.handler",
+            "PackageType": "Zip",
+            "Timeout": 3,
+            "MemorySize": 128,
+        },
+        code,
+    )
+    return captured
+
+
+def test_lambda_docker_default_endpoint_uses_host_docker_internal_and_extra_host(monkeypatch):
+    """When no AWS_ENDPOINT_URL and MINISTACK_HOST is unset, sibling URL and Linux extra_host."""
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("MINISTACK_HOST", raising=False)
+    monkeypatch.delenv("GATEWAY_PORT", raising=False)
+    monkeypatch.delenv("EDGE_PORT", raising=False)
+    captured = _lambda_spawn_captured_run_kwargs(monkeypatch)
+    assert captured["environment"]["AWS_ENDPOINT_URL"] == "http://host.docker.internal:4566"
+    assert captured.get("extra_hosts") == {"host.docker.internal": "host-gateway"}
+
+
+def test_lambda_docker_compose_ministack_host_omits_host_docker_internal_extra_host(monkeypatch):
+    """When MINISTACK_HOST names a Docker network alias, do not add host.docker.internal extra_hosts."""
+    monkeypatch.delenv("AWS_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("GATEWAY_PORT", raising=False)
+    monkeypatch.delenv("EDGE_PORT", raising=False)
+    captured = _lambda_spawn_captured_run_kwargs(monkeypatch, MINISTACK_HOST="ministack")
+    assert captured["environment"]["AWS_ENDPOINT_URL"] == "http://ministack:4566"
+    assert "extra_hosts" not in captured
+
+
+def test_lambda_prepends_ministack_dns_when_resolver_active(monkeypatch):
+    """MiniStack IPv4 is inserted first in ``dns`` when the wildcard DNS resolver is active.
+
+    Regression guard for the AppSync Events vhost resolver path in
+    ``_spawn_lambda_container``: when the resolver is up and the Lambda
+    container is attached to a known Docker network, MiniStack's IP on that
+    network must be prepended to the container's ``dns`` list so that
+    ``{apiId}.appsync-api.*.localhost`` lookups resolve to MiniStack.
+
+    Skipped on builds where ``ministack.services.dns_resolver`` is not shipped
+    (e.g. branches that don't carry the AppSync Events service)."""
+    dns_resolver = pytest.importorskip("ministack.services.dns_resolver")
+    from ministack.core import docker_network as docker_network_mod
+
+    monkeypatch.setattr(lsvc, "LAMBDA_DOCKER_FLAGS", "--dns 172.30.0.2 --network=my-net")
+    monkeypatch.setattr(lsvc, "_docker_available", True)
+
+    captured: dict = {}
+
+    def _fake_run(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    fake_client = MagicMock()
+    fake_client.containers.run = _fake_run
+    fake_client.images.get = MagicMock()
+    monkeypatch.setattr(lsvc, "_get_docker_client", lambda: fake_client)
+
+    monkeypatch.setattr(lsvc, "LAMBDA_DOCKER_NETWORK", "my-net")
+    monkeypatch.setattr(dns_resolver, "is_active", lambda: True)
+    monkeypatch.setattr(
+        docker_network_mod,
+        "get_ministack_container_ipv4_on_network",
+        lambda _c, _n: "10.11.12.13",
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("index.py", "def handler(e,c): pass")
+
+    lsvc._spawn_lambda_container(
+        {"FunctionName": "test-fn", "Runtime": "python3.12", "Handler": "index.handler",
+         "PackageType": "Zip", "Timeout": 3, "MemorySize": 128},
+        buf.getvalue(),
+    )
+
+    assert captured["dns"] == ["10.11.12.13", "172.30.0.2"]
+    assert captured["network"] == "my-net"
