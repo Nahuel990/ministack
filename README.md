@@ -657,6 +657,9 @@ ecs.stop_task(cluster="dev", task=task_arn)
 | `SFN_MOCK_CONFIG` | _(unset)_ | Path to JSON file for Step Functions mock testing; compatible with AWS SFN Local format. Also accepts `LOCALSTACK_SFN_MOCK_CONFIG` |
 | `ATHENA_ENGINE` | `auto` | SQL engine for Athena: `auto`, `duckdb`, `mock` |
 | `SMTP_HOST` | _(unset)_ | SMTP server for SES email relay (e.g. `mailhog:1025`). When set, SES SendEmail/SendRawEmail actually deliver mail. When unset, emails are stored in-memory only |
+| `USE_SSL` | `0` | Set `1` (also accepts `true` / `yes`) to serve the gateway over HTTPS. Self-signed cert auto-generated unless BYO paths are provided. LocalStack-compatible. See [TLS / HTTPS](#tls--https) |
+| `MINISTACK_SSL_CERT` | _(unset)_ | Optional. PEM path to a server certificate (e.g. `mkcert`-issued). Required together with `MINISTACK_SSL_KEY` |
+| `MINISTACK_SSL_KEY` | _(unset)_ | Optional. PEM path to the matching private key |
 
 ### Startup Scripts
 
@@ -707,6 +710,31 @@ Set `ATHENA_ENGINE` to control Athena's SQL execution engine. In `auto` mode, Du
 | APPROX\_DISTINCT, REGEXP\_EXTRACT | Yes | No |
 
 Install DuckDB for full Athena SQL compatibility: `pip install ministack[full]`.
+
+### TLS / HTTPS
+
+Set `USE_SSL=1` to make the gateway listener speak HTTPS on the same port (default `4566`). Drop-in compatible with LocalStack's `USE_SSL=true`, so `compose.yml` files switching between the two don't need TLS-specific changes.
+
+By default, MiniStack auto-generates a self-signed RSA cert (CN: `ministack-local`; SAN: `localhost`, `ministack`, `127.0.0.1`, `::1`) cached under `${TMPDIR}/ministack-tls/` so it survives restarts. To pin a specific cert (e.g. `mkcert`-issued for browser trust), set `MINISTACK_SSL_CERT` and `MINISTACK_SSL_KEY` to PEM paths.
+
+```yaml
+services:
+  ministack:
+    image: ministackorg/ministack:latest
+    environment:
+      - USE_SSL=1   # remove this line for plain HTTP (default)
+      # Optional BYO cert:
+      # - MINISTACK_SSL_CERT=/certs/cert.pem
+      # - MINISTACK_SSL_KEY=/certs/key.pem
+    # volumes:
+    #   - ./certs:/certs:ro
+```
+
+```bash
+curl -k https://localhost:4566/_ministack/health   # -k for self-signed cert
+```
+
+Unblocks AWS SDKs that hardcode `https://` against Cognito Hosted UI endpoints (e.g. Amplify v6) without needing a separate TLS-terminating proxy.
 
 ### State Persistence
 
