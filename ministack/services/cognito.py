@@ -87,11 +87,39 @@ logger = logging.getLogger("cognito")
 _RSA_PRIVATE_KEY = None
 _JWKS_KEY: dict = {}
 
+# Real Cognito keeps its signing key stable across restarts and exposes the
+# matching public key on the JWKS endpoint. Without persistence, every Python
+# process (server, tests, helper scripts) would generate a fresh RSA key and
+# tokens minted in one process would fail to verify in another. Persist the
+# key to STATE_DIR so all processes share the same key.
+_STATE_DIR = os.environ.get("STATE_DIR", "/tmp/ministack-state")
+_RSA_KEY_PATH = os.path.join(_STATE_DIR, "cognito-rsa-key.pem")
+
 try:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
-    _rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    _rsa_key = None
+    if os.path.exists(_RSA_KEY_PATH):
+        try:
+            with open(_RSA_KEY_PATH, "rb") as _f:
+                _rsa_key = serialization.load_pem_private_key(_f.read(), password=None)
+        except Exception:
+            _rsa_key = None
+    if _rsa_key is None:
+        _rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        try:
+            os.makedirs(_STATE_DIR, exist_ok=True)
+            _pem = _rsa_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            with open(_RSA_KEY_PATH, "wb") as _f:
+                _f.write(_pem)
+        except Exception:
+            # Persistence is best-effort — if it fails, fall back to in-memory key.
+            pass
     _RSA_PRIVATE_KEY = _rsa_key
 
     _pub = _rsa_key.public_key()

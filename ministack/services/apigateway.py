@@ -41,15 +41,18 @@ Data plane:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
-from ministack.core.responses import AccountScopedDict, error_response_json, get_account_id, get_region, new_uuid
+from ministack.core.nonblocking_http import timeout_from_env, urlopen as nb_urlopen
+from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, new_uuid, get_region
 
 _HOST = os.environ.get("MINISTACK_HOST", "localhost")
 _PORT = os.environ.get("GATEWAY_PORT", "4566")
@@ -57,6 +60,8 @@ _PORT = os.environ.get("GATEWAY_PORT", "4566")
 logger = logging.getLogger("apigateway")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
+_PROXY_TIMEOUT_SECONDS = timeout_from_env("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", 30.0)
+_JWKS_TIMEOUT_SECONDS = timeout_from_env("MINISTACK_APIGW_JWKS_TIMEOUT_SECONDS", 5.0)
 
 # ---- Module-level state ----
 _apis = AccountScopedDict()          # api_id -> api object
@@ -68,6 +73,7 @@ _authorizers = AccountScopedDict()   # api_id -> {authorizer_id -> authorizer ob
 _api_tags = AccountScopedDict()      # resource_arn -> {key -> value}
 _route_responses = AccountScopedDict()         # api_id -> {route_id -> {rr_id -> route_response}}
 _integration_responses = AccountScopedDict()   # api_id -> {integration_id -> {ir_id -> int_response}}
+_jwks_cache: dict = {}
 
 # WebSocket connection registry — connections are not per-account-scoped at the store level
 # because the @connections management API may arrive on any host/account; instead we store
@@ -76,12 +82,48 @@ _integration_responses = AccountScopedDict()   # api_id -> {integration_id -> {i
 #                    close_event (asyncio.Event), lastActiveAt, identity} }
 _ws_connections: dict = {}
 
+_RESERVED_HEADER_EXACT = {
+    "authorization",
+    "connection",
+    "content-encoding",
+    "content-length",
+    "content-location",
+    "forwarded",
+    "keep-alive",
+    "origin",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "via",
+}
+_RESERVED_HEADER_PREFIXES = ("access-control-", "apigw-", "x-amz-", "x-amzn-")
+
 
 # ---- Response helpers ----
 
+def _prune_none_for_apigw_json(obj):
+    """Drop None members so the wire never emits JSON `null` (real AWS typically omits optional nulls;
+    boto3 then maps the same shape for clients as AWS). Recurses into dict values."""
+    if isinstance(obj, dict):
+        return {k: _prune_none_for_apigw_json(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_prune_none_for_apigw_json(x) for x in obj]
+    return obj
+
+
 def _apigw_response(data: dict, status: int = 200) -> tuple:
     """API Gateway v2 uses application/json (not application/x-amz-json-1.0)."""
-    return status, {"Content-Type": "application/json"}, json.dumps(data, ensure_ascii=False).encode("utf-8")
+    return (
+        status,
+        {"Content-Type": "application/json"},
+        json.dumps(_prune_none_for_apigw_json(data), ensure_ascii=False).encode("utf-8"),
+    )
 
 
 def _apigw_error(code: str, message: str, status: int) -> tuple:
@@ -374,6 +416,314 @@ def _cors_preflight_response(cors_cfg: dict, origin: str) -> tuple:
     return 204, base, b""
 
 
+def _b64url_decode(segment: str) -> bytes:
+    padded = segment + "=" * ((4 - len(segment) % 4) % 4)
+    return base64.urlsafe_b64decode(padded.encode("utf-8"))
+
+
+def _jwt_unauthorized(message: str = "Unauthorized") -> tuple:
+    return 401, {"Content-Type": "application/json"}, json.dumps({"message": message}).encode("utf-8")
+
+
+def _jwt_forbidden(message: str = "Forbidden") -> tuple:
+    return 403, {"Content-Type": "application/json"}, json.dumps({"message": message}).encode("utf-8")
+
+
+def _get_stage_variables(api_id: str, stage: str) -> dict:
+    stage_obj = _stages.get(api_id, {}).get(stage) or {}
+    return stage_obj.get("stageVariables") or {}
+
+
+def _extract_token_from_identity_source(identity_source, headers: dict, query_params: dict) -> str | None:
+    sources = identity_source if isinstance(identity_source, list) else [identity_source]
+    headers_lc = {k.lower(): v for k, v in (headers or {}).items()}
+    for src in sources:
+        if not isinstance(src, str):
+            continue
+        if src.startswith("$request.header."):
+            name = src[len("$request.header.") :].lower()
+            value = headers_lc.get(name)
+            if not value:
+                continue
+            value = value.strip()
+            if value.lower().startswith("bearer "):
+                return value.split(" ", 1)[1].strip()
+            return value
+        if src.startswith("$request.querystring."):
+            name = src[len("$request.querystring.") :]
+            vals = query_params.get(name)
+            if not vals:
+                continue
+            value = vals[-1] if isinstance(vals, list) else vals
+            if isinstance(value, str) and value.lower().startswith("bearer "):
+                return value.split(" ", 1)[1].strip()
+            return str(value)
+    return None
+
+
+def _resolve_jwks_url(authorizer: dict) -> str | None:
+    jwt_cfg = authorizer.get("jwtConfiguration") or {}
+    issuer = jwt_cfg.get("issuer") or jwt_cfg.get("Issuer")
+    if not issuer:
+        return None
+    issuer = str(issuer).rstrip("/")
+    if issuer.startswith("https://cognito-idp.") and ".amazonaws.com/" in issuer:
+        pool_id = issuer.rsplit("/", 1)[-1]
+        return f"http://{_HOST}:{_PORT}/{pool_id}/.well-known/jwks.json"
+    return f"{issuer}/.well-known/jwks.json"
+
+
+async def _fetch_jwks(url: str) -> dict:
+    cached = _jwks_cache.get(url)
+    now = time.time()
+    if cached and cached.get("expiresAt", 0) > now:
+        return cached["jwks"]
+    _, _, body = await nb_urlopen(url, _JWKS_TIMEOUT_SECONDS)
+    payload = json.loads(body or b"{}")
+    _jwks_cache[url] = {
+        "jwks": payload,
+        "expiresAt": now + 7200,
+    }
+    return payload
+
+
+def _verify_rs256_signature(token: str, jwk: dict) -> bool:
+    try:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    except Exception:
+        return False
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        n = int.from_bytes(_b64url_decode(jwk.get("n", "")), "big")
+        e = int.from_bytes(_b64url_decode(jwk.get("e", "")), "big")
+        pub = rsa.RSAPublicNumbers(e, n).public_key()
+        signed = f"{parts[0]}.{parts[1]}".encode("utf-8")
+        signature = _b64url_decode(parts[2])
+        pub.verify(signature, signed, padding.PKCS1v15(), hashes.SHA256())
+        return True
+    except Exception:
+        return False
+
+
+def _get_claim(claims: dict, path: str):
+    """Resolve a dot-separated claim path. Matches the AWS HTTP API parameter
+    mapping rule that only `.` and `_` are supported in context variable names
+    (no bracket / quote / colon)."""
+    if not path:
+        return None
+    cur = claims
+    for part in path.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+    return cur
+
+
+async def _validate_jwt_authorizer(route: dict, authorizer: dict, headers: dict, query_params: dict) -> tuple[dict | None, list | None, tuple | None]:
+    token = _extract_token_from_identity_source(authorizer.get("identitySource", []), headers, query_params)
+    if not token:
+        return None, None, _jwt_unauthorized()
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None, None, _jwt_unauthorized()
+
+    try:
+        header = json.loads(_b64url_decode(parts[0]))
+        claims = json.loads(_b64url_decode(parts[1]))
+    except Exception:
+        return None, None, _jwt_unauthorized()
+
+    kid = header.get("kid")
+    jwks_url = _resolve_jwks_url(authorizer)
+    if not kid or not jwks_url:
+        return None, None, _jwt_unauthorized()
+
+    try:
+        keys = ((await _fetch_jwks(jwks_url)).get("keys") or [])
+    except Exception:
+        return None, None, _jwt_unauthorized()
+    jwk = next((k for k in keys if k.get("kid") == kid), None)
+    if not jwk or not _verify_rs256_signature(token, jwk):
+        return None, None, _jwt_unauthorized()
+
+    now = int(time.time())
+    jwt_cfg = authorizer.get("jwtConfiguration") or {}
+    issuer = jwt_cfg.get("issuer") or jwt_cfg.get("Issuer")
+    if issuer and claims.get("iss") != issuer:
+        return None, None, _jwt_unauthorized()
+    if "exp" in claims and int(claims["exp"]) <= now:
+        return None, None, _jwt_unauthorized()
+    if "nbf" in claims and int(claims["nbf"]) > now:
+        return None, None, _jwt_unauthorized()
+    if "iat" in claims and int(claims["iat"]) > now:
+        return None, None, _jwt_unauthorized()
+
+    aud_cfg = jwt_cfg.get("audience") or jwt_cfg.get("Audience") or []
+    aud_cfg = [str(a) for a in aud_cfg]
+    if aud_cfg:
+        token_aud = claims.get("aud")
+        if token_aud is None:
+            token_aud = claims.get("client_id")
+            token_aud_values = [str(token_aud)] if token_aud is not None else []
+        elif isinstance(token_aud, list):
+            token_aud_values = [str(a) for a in token_aud]
+        else:
+            token_aud_values = [str(token_aud)]
+        if not any(a in aud_cfg for a in token_aud_values):
+            return None, None, _jwt_unauthorized()
+
+    route_scopes = route.get("authorizationScopes") or []
+    token_scopes = []
+    raw_scope = claims.get("scope")
+    raw_scp = claims.get("scp")
+    if isinstance(raw_scope, str):
+        token_scopes.extend([s for s in raw_scope.split(" ") if s])
+    if isinstance(raw_scp, list):
+        token_scopes.extend([str(s) for s in raw_scp])
+    elif isinstance(raw_scp, str):
+        token_scopes.extend([s for s in raw_scp.split(" ") if s])
+    token_scopes = sorted(set(token_scopes))
+    if route_scopes and not any(scope in token_scopes for scope in route_scopes):
+        return None, None, _jwt_forbidden()
+
+    return claims, token_scopes, None
+
+
+def _is_reserved_header(name: str) -> bool:
+    lc = (name or "").lower()
+    if lc in _RESERVED_HEADER_EXACT:
+        return True
+    return any(lc.startswith(prefix) for prefix in _RESERVED_HEADER_PREFIXES)
+
+
+def _resolve_mapping_atom(expr: str, *, request_headers: dict, request_query: dict, path_params: dict, context_vars: dict, stage_vars: dict):
+    if expr.startswith("$request.header."):
+        name = expr[len("$request.header.") :].lower()
+        return request_headers.get(name)
+    if expr.startswith("$request.querystring."):
+        name = expr[len("$request.querystring.") :]
+        vals = request_query.get(name)
+        if vals is None:
+            return None
+        return ",".join(vals) if isinstance(vals, list) else str(vals)
+    if expr.startswith("$request.path."):
+        name = expr[len("$request.path.") :]
+        return path_params.get(name)
+    if expr == "$request.path":
+        return context_vars.get("request.path")
+    if expr.startswith("$stageVariables."):
+        key = expr[len("$stageVariables.") :]
+        return stage_vars.get(key)
+    if expr.startswith("$context."):
+        path = expr[len("$context.") :]
+        # AWS HTTP API parameter mapping supports only `.` and `_` in context
+        # variable names — bracket notation is NOT supported (see
+        # https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-parameter-mapping.html).
+        # Use only dot form for JWT claim lookup, e.g.
+        #   $context.authorizer.jwt.claims.sub
+        # Claim names with characters outside `.` and `_` must be read by the
+        # backend, just like real API Gateway HTTP APIs.
+        if path.startswith("authorizer.jwt.claims."):
+            claim_path = path[len("authorizer.jwt.claims.") :]
+            return _get_claim(context_vars.get("authorizer.jwt.claims") or {}, claim_path)
+        if path.startswith("authorizer.claims."):
+            claim_path = path[len("authorizer.claims.") :]
+            return _get_claim(context_vars.get("authorizer.jwt.claims") or {}, claim_path)
+        return context_vars.get(path)
+    return expr
+
+
+def _resolve_mapping_value(value, *, request_headers: dict, request_query: dict, path_params: dict, context_vars: dict, stage_vars: dict):
+    if value is None:
+        return None
+    value = str(value)
+    if "${" in value:
+        def _sub(match):
+            atom = match.group(1)
+            resolved = _resolve_mapping_atom(
+                f"${atom}",
+                request_headers=request_headers,
+                request_query=request_query,
+                path_params=path_params,
+                context_vars=context_vars,
+                stage_vars=stage_vars,
+            )
+            return "" if resolved is None else str(resolved)
+
+        return re.sub(r"\$\{([^}]+)\}", _sub, value)
+    if value.startswith("$"):
+        resolved = _resolve_mapping_atom(
+            value,
+            request_headers=request_headers,
+            request_query=request_query,
+            path_params=path_params,
+            context_vars=context_vars,
+            stage_vars=stage_vars,
+        )
+        return None if resolved is None else str(resolved)
+    return value
+
+
+def _apply_request_parameter_mappings(
+    integration: dict,
+    *,
+    request_headers: dict,
+    request_query: dict,
+    request_path: str,
+    path_params: dict,
+    context_vars: dict,
+    stage_vars: dict,
+) -> tuple[dict, dict, str]:
+    out_headers = dict(request_headers)
+    out_query = {k: list(v) if isinstance(v, list) else [str(v)] for k, v in (request_query or {}).items()}
+    out_path = request_path
+    mappings = integration.get("requestParameters") or {}
+
+    for key, value in mappings.items():
+        if ":" not in key:
+            continue
+        op, location = key.split(":", 1)
+        resolved = _resolve_mapping_value(
+            value,
+            request_headers=request_headers,
+            request_query=request_query,
+            path_params=path_params,
+            context_vars=context_vars,
+            stage_vars=stage_vars,
+        )
+        if location.startswith("header."):
+            header_name = location[len("header.") :]
+            header_lc = header_name.lower()
+            if _is_reserved_header(header_name):
+                continue
+            if op == "remove":
+                out_headers.pop(header_lc, None)
+            elif resolved is not None:
+                if op == "append" and header_lc in out_headers:
+                    out_headers[header_lc] = f"{out_headers[header_lc]},{resolved}"
+                else:
+                    out_headers[header_lc] = resolved
+        elif location.startswith("querystring."):
+            query_name = location[len("querystring.") :]
+            if op == "remove":
+                out_query.pop(query_name, None)
+            elif resolved is not None:
+                if op == "append":
+                    out_query.setdefault(query_name, []).append(resolved)
+                else:
+                    out_query[query_name] = [resolved]
+        elif location == "path" and op == "overwrite" and resolved is not None:
+            out_path = resolved if resolved.startswith("/") else "/" + resolved
+
+    return out_headers, out_query, out_path
+
+
 async def handle_execute(api_id, stage, path, method, headers, body, query_params):
     """Execute an API request through a deployed API (data plane)."""
     api = _apis.get(api_id)
@@ -395,6 +745,30 @@ async def handle_execute(api_id, stage, path, method, headers, body, query_param
     if not route:
         return 404, {"Content-Type": "application/json"}, json.dumps({"message": "No route found"}).encode()
 
+    request_headers = {k.lower(): v for k, v in (headers or {}).items()}
+    route_key = route.get("routeKey", "$default")
+    route_path = None
+    rk_parts = route_key.split(" ", 1)
+    if len(rk_parts) == 2:
+        route_path = rk_parts[1]
+    path_params = _extract_path_params(route_path, path) if route_path else {}
+
+    auth_type = (route.get("authorizationType") or "NONE").upper()
+    authorizer_claims = None
+    authorizer_scopes = []
+    if auth_type == "JWT":
+        authorizer_id = route.get("authorizerId")
+        if not authorizer_id:
+            return _jwt_unauthorized()
+        authorizer = _authorizers.get(api_id, {}).get(authorizer_id)
+        if not authorizer:
+            return _jwt_unauthorized()
+        claims, scopes, auth_error = await _validate_jwt_authorizer(route, authorizer, request_headers, query_params or {})
+        if auth_error:
+            return auth_error
+        authorizer_claims = claims or {}
+        authorizer_scopes = scopes or []
+
     raw_target = route.get("target", "").replace("integrations/", "")
     # Target is "{integrationId}" — the current Ref / CFN physical ID.
     # Legacy stacks created against the broken #480 provisioner (fixed in
@@ -405,16 +779,50 @@ async def handle_execute(api_id, stage, path, method, headers, body, query_param
         return 500, {"Content-Type": "application/json"}, json.dumps({"message": "No integration configured"}).encode()
 
     integration_type = integration.get("integrationType", "")
+    stage_vars = _get_stage_variables(api_id, stage)
+    context_vars = {
+        "requestId": new_uuid(),
+        "httpMethod": method,
+        "path": f"/{stage}{path}",
+        "routeKey": route_key,
+        "stage": stage,
+        "authorizer.jwt.claims": authorizer_claims or {},
+        "authorizer.jwt.scopes": authorizer_scopes,
+    }
 
     if integration_type == "AWS_PROXY":
-        route_key = route.get("routeKey", "$default")
-        path_params = None
-        rk_parts = route_key.split(" ", 1)
-        if len(rk_parts) == 2:
-            path_params = _extract_path_params(rk_parts[1], path) or None
-        response = await _invoke_lambda_proxy(integration, api_id, stage, path, method, headers, body, query_params, route_key, path_params)
+        response = await _invoke_lambda_proxy(
+            integration,
+            api_id,
+            stage,
+            path,
+            method,
+            request_headers,
+            body,
+            query_params,
+            route_key,
+            (path_params or None),
+            authorizer_claims=authorizer_claims,
+            authorizer_scopes=authorizer_scopes,
+        )
     elif integration_type == "HTTP_PROXY":
-        response = await _invoke_http_proxy(integration, path, method, headers, body, query_params)
+        mapped_headers, mapped_query, mapped_path = _apply_request_parameter_mappings(
+            integration,
+            request_headers=request_headers,
+            request_query=query_params or {},
+            request_path=path,
+            path_params=path_params or {},
+            context_vars=context_vars,
+            stage_vars=stage_vars,
+        )
+        response = await _invoke_http_proxy(
+            integration,
+            mapped_path,
+            method,
+            mapped_headers,
+            body,
+            mapped_query,
+        )
     else:
         return 500, {"Content-Type": "application/json"}, json.dumps({"message": f"Unsupported integration type: {integration_type}"}).encode()
 
@@ -481,7 +889,21 @@ def _path_matches(route_path: str, request_path: str) -> bool:
     return _extract_path_params(route_path, request_path) is not None
 
 
-async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers, body, query_params, route_key="$default", path_params=None):
+async def _invoke_lambda_proxy(
+    integration,
+    api_id,
+    stage,
+    path,
+    method,
+    headers,
+    body,
+    query_params,
+    route_key="$default",
+    path_params=None,
+    *,
+    authorizer_claims=None,
+    authorizer_scopes=None,
+):
     """Invoke a Lambda function using the API Gateway v2 proxy event format."""
     from ministack.services import lambda_svc
 
@@ -531,6 +953,13 @@ async def _invoke_lambda_proxy(integration, api_id, stage, path, method, headers
         "body": body.decode("utf-8", errors="replace") if body else None,
         "isBase64Encoded": False,
     }
+    if authorizer_claims is not None:
+        event["requestContext"]["authorizer"] = {
+            "jwt": {
+                "claims": authorizer_claims or {},
+                "scopes": authorizer_scopes or [],
+            }
+        }
 
     # Route through the central _execute_function dispatcher so CloudWatch
     # Logs emission and Docker log output work for API Gateway invocations.
@@ -557,16 +986,26 @@ async def _invoke_http_proxy(integration, path, method, headers, body, query_par
     """Forward a request to an HTTP backend."""
     uri = integration.get("integrationUri", "")
     url = uri.rstrip("/") + path
+    if query_params:
+        pairs = []
+        for key, vals in query_params.items():
+            if isinstance(vals, list):
+                for val in vals:
+                    pairs.append((key, val))
+            else:
+                pairs.append((key, vals))
+        qs = urllib.parse.urlencode(pairs, doseq=True)
+        if qs:
+            url = f"{url}?{qs}"
 
     req = urllib.request.Request(url, data=body or None, method=method)
     for k, v in headers.items():
         if k.lower() not in ("host", "content-length"):
             req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            resp_body = resp.read()
-            resp_headers = {"Content-Type": resp.headers.get("Content-Type", "application/json")}
-            return resp.status, resp_headers, resp_body
+        status, resp_headers_raw, resp_body = await nb_urlopen(req, _PROXY_TIMEOUT_SECONDS)
+        resp_headers = {"Content-Type": resp_headers_raw.get("Content-Type", "application/json")}
+        return status, resp_headers, resp_body
     except urllib.error.HTTPError as e:
         return e.code, {"Content-Type": "application/json"}, e.read()
     except Exception as ex:
@@ -684,9 +1123,15 @@ def _create_route(api_id, data):
         "authorizationType": data.get("authorizationType", "NONE"),
         "apiKeyRequired": data.get("apiKeyRequired", False),
         "operationName": data.get("operationName", ""),
-        "requestModels": data.get("requestModels", {}),
-        "requestParameters": data.get("requestParameters", {}),
     }
+    if data.get("authorizerId"):
+        route["authorizerId"] = data["authorizerId"]
+    if data.get("authorizationScopes") is not None:
+        route["authorizationScopes"] = list(data["authorizationScopes"] or [])
+    if data.get("requestModels"):
+        route["requestModels"] = data["requestModels"]
+    if data.get("requestParameters"):
+        route["requestParameters"] = data["requestParameters"]
     _routes.setdefault(api_id, {})[route_id] = route
     return _apigw_response(route, 201)
 
@@ -706,9 +1151,38 @@ def _update_route(api_id, route_id, data):
     route = _routes.get(api_id, {}).get(route_id)
     if not route:
         return _apigw_error("NotFoundException", f"Route {route_id} not found", 404)
-    for k in ("routeKey", "target", "authorizationType", "apiKeyRequired", "operationName"):
-        if k in data:
-            route[k] = data[k]
+    for k in (
+        "routeKey",
+        "target",
+        "authorizationType",
+        "authorizerId",
+        "authorizationScopes",
+        "apiKeyRequired",
+        "operationName",
+    ):
+        if k not in data:
+            continue
+        v = data[k]
+        if k == "authorizerId":
+            if v:
+                route["authorizerId"] = v
+            else:
+                route.pop("authorizerId", None)
+        elif k == "authorizationScopes":
+            if v is not None:
+                route["authorizationScopes"] = list(v)
+            else:
+                route.pop("authorizationScopes", None)
+        else:
+            route[k] = v
+    for rk in ("requestModels", "requestParameters"):
+        if rk not in data:
+            continue
+        v = data.get(rk)
+        if v:
+            route[rk] = v
+        else:
+            route.pop(rk, None)
     return _apigw_response(route)
 
 
@@ -732,14 +1206,18 @@ def _create_integration(api_id, data):
         "timeoutInMillis": data.get("timeoutInMillis", 30000),
         "connectionType": data.get("connectionType", "INTERNET"),
         "description": data.get("description", ""),
-        "requestParameters": data.get("requestParameters", {}),
-        "requestTemplates": data.get("requestTemplates", {}),
-        "responseParameters": data.get("responseParameters", {}),
-        # #439: contentHandlingStrategy (CONVERT_TO_TEXT | CONVERT_TO_BINARY)
-        # is accepted on Create/Update and echoed back by Get; Terraform's
-        # aws_apigatewayv2_integration otherwise plans to re-add it on every apply.
-        "contentHandlingStrategy": data.get("contentHandlingStrategy"),
     }
+    if data.get("requestParameters"):
+        integration["requestParameters"] = data["requestParameters"]
+    if data.get("requestTemplates"):
+        integration["requestTemplates"] = data["requestTemplates"]
+    if data.get("responseParameters"):
+        integration["responseParameters"] = data["responseParameters"]
+    # #439: contentHandlingStrategy (CONVERT_TO_TEXT | CONVERT_TO_BINARY)
+    # is accepted on Create/Update and echoed back by Get; Terraform's
+    # aws_apigatewayv2_integration otherwise plans to re-add it on every apply.
+    if data.get("contentHandlingStrategy") is not None:
+        integration["contentHandlingStrategy"] = data["contentHandlingStrategy"]
     _integrations.setdefault(api_id, {})[int_id] = integration
     return _apigw_response(integration, 201)
 
@@ -763,8 +1241,21 @@ def _update_integration(api_id, int_id, data):
               "payloadFormatVersion", "timeoutInMillis", "connectionType",
               "description", "requestParameters", "requestTemplates", "responseParameters",
               "contentHandlingStrategy"):
-        if k in data:
-            integration[k] = data[k]
+        if k not in data:
+            continue
+        v = data[k]
+        if k in ("requestParameters", "requestTemplates", "responseParameters"):
+            if v:
+                integration[k] = v
+            else:
+                integration.pop(k, None)
+        elif k == "contentHandlingStrategy":
+            if v is not None:
+                integration[k] = v
+            else:
+                integration.pop("contentHandlingStrategy", None)
+        else:
+            integration[k] = v
     return _apigw_response(integration)
 
 

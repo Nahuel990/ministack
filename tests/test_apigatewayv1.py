@@ -679,6 +679,61 @@ def test_apigwv1_execute_missing_resource_404(apigw_v1):
 
     apigw_v1.delete_rest_api(restApiId=api_id)
 
+
+def test_apigwv1_http_proxy_does_not_block_parallel_ddb(monkeypatch):
+    import asyncio
+    from ministack.core import nonblocking_http
+    from ministack.services import apigateway_v1 as apigw_v1_mod
+    from ministack.services import dynamodb as ddb_mod
+
+    def _slow_urlopen(_request_or_url, _timeout_seconds):
+        time.sleep(0.4)
+        return 200, {"Content-Type": "application/json"}, b"{}"
+
+    monkeypatch.setattr(nonblocking_http, "_urlopen_sync", _slow_urlopen)
+
+    async def _run():
+        slow_call = asyncio.create_task(
+            apigw_v1_mod._invoke_http_proxy_v1(
+                {"uri": "http://example.test"},
+                "/slow",
+                "GET",
+                {},
+                None,
+                {},
+            )
+        )
+        await asyncio.sleep(0.05)
+        started = time.perf_counter()
+        status, _, _ = await ddb_mod.handle_request(
+            "POST",
+            "/",
+            {"x-amz-target": "DynamoDB_20120810.ListTables"},
+            b"{}",
+            {},
+        )
+        elapsed = time.perf_counter() - started
+        await slow_call
+        return status, elapsed
+
+    status, elapsed = asyncio.run(_run())
+    assert status == 200
+    assert elapsed < 0.2, f"Parallel DDB request was delayed for {elapsed:.2f}s"
+
+
+def test_apigwv1_http_proxy_timeout_is_configurable(monkeypatch):
+    import importlib
+    from ministack.services import apigateway_v1 as apigateway_v1_module
+
+    monkeypatch.setenv("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", "55")
+    reloaded = importlib.reload(apigateway_v1_module)
+    try:
+        assert reloaded._PROXY_TIMEOUT_SECONDS == 55.0
+    finally:
+        monkeypatch.delenv("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", raising=False)
+        importlib.reload(reloaded)
+
+
 def test_apigwv1_no_conflict_with_v2(apigw_v1, apigw, lam):
     """v1 and v2 APIs can coexist; execute-api routes them independently."""
     import urllib.request as _urlreq

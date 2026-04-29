@@ -1,8 +1,16 @@
 """API Gateway v2 tests — HTTP API + WebSocket + common lifecycle."""
 
+import base64
 import io
 import json
 import os
+import pytest
+import threading
+import time
+import uuid as _uuid_mod
+import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from botocore.exceptions import ClientError
 import time
 import uuid as _uuid_mod
 import zipfile
@@ -28,6 +36,51 @@ def _make_zip_js(code: str, filename: str = "index.js") -> bytes:
     return buf.getvalue()
 
 _LAMBDA_ROLE = "arn:aws:iam::000000000000:role/lambda-role"
+
+
+def _start_echo_server():
+    captured = {"headers": {}, "path": "", "query": {}}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            from urllib.parse import parse_qs, urlparse
+
+            parsed = urlparse(self.path)
+            captured["path"] = parsed.path
+            captured["query"] = parse_qs(parsed.query, keep_blank_values=True)
+            captured["headers"] = {k.lower(): v for k, v in self.headers.items()}
+            body = json.dumps(captured).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, captured
+
+
+def _make_signed_token(claims: dict) -> str:
+    from ministack.services import cognito as _cognito
+
+    if _cognito._RSA_PRIVATE_KEY is None:
+        pytest.skip("cryptography-backed Cognito signing key unavailable")
+
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    header = {"alg": "RS256", "kid": "ministack-key-1"}
+    h = base64.urlsafe_b64encode(json.dumps(header).encode()).rstrip(b"=").decode()
+    p = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    signed = f"{h}.{p}".encode()
+    sig = _cognito._RSA_PRIVATE_KEY.sign(signed, padding.PKCS1v15(), hashes.SHA256())
+    s = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+    return f"{h}.{p}.{s}"
 
 def test_apigw_create_api(apigw):
     resp = apigw.create_api(Name="test-api", ProtocolType="HTTP")
@@ -734,6 +787,232 @@ def test_apigw_authorizer_crud(apigw):
     assert not any(a["AuthorizerId"] == auth_id for a in listed2["Items"])
 
     apigw.delete_api(ApiId=api_id)
+
+
+def test_apigw_route_persists_authorizer_fields(apigw):
+    api_id = apigw.create_api(Name=f"route-authz-{_uuid_mod.uuid4().hex[:8]}", ProtocolType="HTTP")["ApiId"]
+    auth_id = apigw.create_authorizer(
+        ApiId=api_id,
+        AuthorizerType="JWT",
+        Name="route-authz-jwt",
+        IdentitySource=["$request.header.Authorization"],
+        JwtConfiguration={"Audience": ["ms-client"], "Issuer": "https://cognito-idp.us-east-1.amazonaws.com/test-pool"},
+    )["AuthorizerId"]
+    route_id = apigw.create_route(
+        ApiId=api_id,
+        RouteKey="GET /secure",
+        AuthorizationType="JWT",
+        AuthorizerId=auth_id,
+        AuthorizationScopes=["scope:messages"],
+    )["RouteId"]
+    route = apigw.get_route(ApiId=api_id, RouteId=route_id)
+    assert route["AuthorizationType"] == "JWT"
+    # AWS omits optional fields when unset; here they are set, so they must be echoed.
+    # Use .get() so the assertion failure mode is "wrong value" rather than KeyError.
+    assert route.get("AuthorizerId") == auth_id
+    assert route.get("AuthorizationScopes") == ["scope:messages"]
+    apigw.delete_api(ApiId=api_id)
+
+
+def test_apigw_route_without_authorizer_optional_fields_open_route(apigw):
+    """An open route (no authorizer) must not leak `AuthorizerId` / `AuthorizationScopes`
+    on the wire. Real AWS omits unset optional fields; boto3 then omits them from the
+    deserialized response. This guards against regressions where defaults like `""` or
+    `[]` are stored on the route and surface as falsy-but-present keys."""
+    api_id = apigw.create_api(Name=f"route-open-{_uuid_mod.uuid4().hex[:8]}", ProtocolType="HTTP")["ApiId"]
+    route_id = apigw.create_route(ApiId=api_id, RouteKey="GET /open")["RouteId"]
+    route = apigw.get_route(ApiId=api_id, RouteId=route_id)
+    assert route.get("AuthorizerId") in (None, "")
+    assert route.get("AuthorizationScopes") in (None, [])
+    apigw.delete_api(ApiId=api_id)
+
+
+def test_apigw_integration_without_request_parameters_optional_map(apigw):
+    """An integration without RequestParameters must not echo `RequestParameters: {}`
+    or `null`. Real AWS omits the key when unset; the conditional-storage logic in
+    `_create_integration` should leave the key absent from the stored dict."""
+    api_id = apigw.create_api(Name=f"int-noparams-{_uuid_mod.uuid4().hex[:8]}", ProtocolType="HTTP")["ApiId"]
+    int_id = apigw.create_integration(
+        ApiId=api_id,
+        IntegrationType="AWS_PROXY",
+        IntegrationUri="arn:aws:lambda:us-east-1:000000000000:function:noop",
+        PayloadFormatVersion="2.0",
+    )["IntegrationId"]
+    integ = apigw.get_integration(ApiId=api_id, IntegrationId=int_id)
+    assert integ.get("RequestParameters") in (None, {})
+    apigw.delete_api(ApiId=api_id)
+
+
+def test_apigw_jwt_authorizer_enforced_in_data_plane(apigw):
+    import urllib.error as _urlerr
+    import urllib.request as _urlreq
+    from ministack.services import cognito as _cognito
+
+    api_id = apigw.create_api(Name=f"jwt-enforce-{_uuid_mod.uuid4().hex[:8]}", ProtocolType="HTTP")["ApiId"]
+    server, _thread, _captured = _start_echo_server()
+    try:
+        integ_id = apigw.create_integration(
+            ApiId=api_id,
+            IntegrationType="HTTP_PROXY",
+            IntegrationUri=f"http://127.0.0.1:{server.server_port}",
+            IntegrationMethod="GET",
+        )["IntegrationId"]
+        auth_id = apigw.create_authorizer(
+            ApiId=api_id,
+            AuthorizerType="JWT",
+            Name="jwt-auth",
+            IdentitySource=["$request.header.Authorization"],
+            JwtConfiguration={"Audience": ["ms-client"], "Issuer": "https://cognito-idp.us-east-1.amazonaws.com/test-pool"},
+        )["AuthorizerId"]
+        apigw.create_route(
+            ApiId=api_id,
+            RouteKey="GET /secure",
+            Target=f"integrations/{integ_id}",
+            AuthorizationType="JWT",
+            AuthorizerId=auth_id,
+        )
+        apigw.create_stage(ApiId=api_id, StageName="$default")
+
+        url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/$default/secure"
+        req_missing = _urlreq.Request(url, method="GET")
+        req_missing.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+        with pytest.raises(_urlerr.HTTPError) as exc:
+            _urlreq.urlopen(req_missing)
+        assert exc.value.code == 401
+
+        token = _cognito._fake_token("user-1", "test-pool", "ms-client", token_type="access")
+        req_ok = _urlreq.Request(url, method="GET")
+        req_ok.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+        req_ok.add_header("Authorization", f"Bearer {token}")
+        resp_ok = _urlreq.urlopen(req_ok)
+        assert resp_ok.status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        apigw.delete_api(ApiId=api_id)
+
+
+def test_apigw_request_mapping_claims_to_headers(apigw):
+    import urllib.request as _urlreq
+
+    api_id = apigw.create_api(Name=f"jwt-map-{_uuid_mod.uuid4().hex[:8]}", ProtocolType="HTTP")["ApiId"]
+    server, _thread, _captured = _start_echo_server()
+    try:
+        integ_id = apigw.create_integration(
+            ApiId=api_id,
+            IntegrationType="HTTP_PROXY",
+            IntegrationUri=f"http://127.0.0.1:{server.server_port}",
+            IntegrationMethod="GET",
+            RequestParameters={
+                "overwrite:header.X-User-Id": "$context.authorizer.jwt.claims.sub",
+                "overwrite:header.X-Account-Id": "$context.authorizer.jwt.claims.account_id",
+                "overwrite:path": "/backend/messages",
+                "append:querystring.tag": "mapped",
+            },
+        )["IntegrationId"]
+        auth_id = apigw.create_authorizer(
+            ApiId=api_id,
+            AuthorizerType="JWT",
+            Name="jwt-map-auth",
+            IdentitySource=["$request.header.Authorization"],
+            JwtConfiguration={"Audience": ["ms-client"], "Issuer": "https://cognito-idp.us-east-1.amazonaws.com/test-pool"},
+        )["AuthorizerId"]
+        apigw.create_route(
+            ApiId=api_id,
+            RouteKey="GET /secure",
+            Target=f"integrations/{integ_id}",
+            AuthorizationType="JWT",
+            AuthorizerId=auth_id,
+        )
+        apigw.create_stage(ApiId=api_id, StageName="$default")
+
+        now = int(time.time())
+        token = _make_signed_token(
+            {
+                "sub": "auth0|abc123",
+                "iss": "https://cognito-idp.us-east-1.amazonaws.com/test-pool",
+                "aud": "ms-client",
+                "iat": now,
+                "nbf": now - 1,
+                "exp": now + 3600,
+                "scope": "scope:messages",
+                "account_id": "acc-777",
+            }
+        )
+
+        url = f"http://{api_id}.execute-api.localhost:{_EXECUTE_PORT}/$default/secure?tag=orig"
+        req = _urlreq.Request(url, method="GET")
+        req.add_header("Host", f"{api_id}.execute-api.localhost:{_EXECUTE_PORT}")
+        req.add_header("Authorization", f"Bearer {token}")
+        resp = _urlreq.urlopen(req)
+        assert resp.status == 200
+        body = json.loads(resp.read())
+        assert body["path"] == "/backend/messages"
+        assert body["headers"]["x-user-id"] == "auth0|abc123"
+        assert body["headers"]["x-account-id"] == "acc-777"
+        assert body["query"]["tag"] == ["orig", "mapped"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        apigw.delete_api(ApiId=api_id)
+
+
+def test_apigw_http_proxy_does_not_block_parallel_ddb(monkeypatch):
+    import asyncio
+    from ministack.core import nonblocking_http
+    from ministack.services import apigateway as apigw_mod
+    from ministack.services import dynamodb as ddb_mod
+
+    def _slow_urlopen(_request_or_url, _timeout_seconds):
+        time.sleep(0.4)
+        return 200, {"Content-Type": "application/json"}, b"{}"
+
+    monkeypatch.setattr(nonblocking_http, "_urlopen_sync", _slow_urlopen)
+
+    async def _run():
+        slow_call = asyncio.create_task(
+            apigw_mod._invoke_http_proxy(
+                {"integrationUri": "http://example.test"},
+                "/slow",
+                "GET",
+                {},
+                None,
+                {},
+            )
+        )
+        await asyncio.sleep(0.05)
+        started = time.perf_counter()
+        status, _, _ = await ddb_mod.handle_request(
+            "POST",
+            "/",
+            {"x-amz-target": "DynamoDB_20120810.ListTables"},
+            b"{}",
+            {},
+        )
+        elapsed = time.perf_counter() - started
+        await slow_call
+        return status, elapsed
+
+    status, elapsed = asyncio.run(_run())
+    assert status == 200
+    assert elapsed < 0.2, f"Parallel DDB request was delayed for {elapsed:.2f}s"
+
+
+def test_apigw_http_proxy_timeout_is_configurable(monkeypatch):
+    import importlib
+    from ministack.services import apigateway as apigateway_module
+
+    monkeypatch.setenv("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", "41")
+    monkeypatch.setenv("MINISTACK_APIGW_JWKS_TIMEOUT_SECONDS", "9")
+    reloaded = importlib.reload(apigateway_module)
+    try:
+        assert reloaded._PROXY_TIMEOUT_SECONDS == 41.0
+        assert reloaded._JWKS_TIMEOUT_SECONDS == 9.0
+    finally:
+        monkeypatch.delenv("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", raising=False)
+        monkeypatch.delenv("MINISTACK_APIGW_JWKS_TIMEOUT_SECONDS", raising=False)
+        importlib.reload(reloaded)
+
 
 def test_apigw_routekey_in_lambda_event(apigw, lam):
     """routeKey in Lambda event should reflect the matched route, not hardcoded $default."""

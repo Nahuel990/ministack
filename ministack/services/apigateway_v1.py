@@ -77,7 +77,8 @@ import time
 import urllib.error
 import urllib.request
 
-from ministack.core.responses import AccountScopedDict, get_account_id, get_region, new_uuid
+from ministack.core.nonblocking_http import timeout_from_env, urlopen as nb_urlopen
+from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
 
 
 def _now_unix():
@@ -87,6 +88,7 @@ def _now_unix():
     return int(time.time())
 
 logger = logging.getLogger("apigateway_v1")
+_PROXY_TIMEOUT_SECONDS = timeout_from_env("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", 30.0)
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
@@ -918,10 +920,9 @@ async def _invoke_http_proxy_v1(integration, path, method, headers, body, query_
         if k.lower() not in ("host", "content-length"):
             req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            resp_body = resp.read()
-            resp_headers = {"Content-Type": resp.headers.get("Content-Type", "application/json")}
-            return resp.status, resp_headers, resp_body
+        status, resp_headers_raw, resp_body = await nb_urlopen(req, _PROXY_TIMEOUT_SECONDS)
+        resp_headers = {"Content-Type": resp_headers_raw.get("Content-Type", "application/json")}
+        return status, resp_headers, resp_body
     except urllib.error.HTTPError as e:
         return e.code, {"Content-Type": "application/json"}, e.read()
     except Exception as ex:
