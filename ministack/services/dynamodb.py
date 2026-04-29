@@ -13,9 +13,9 @@ Uses X-Amz-Target header for action routing (JSON API).
 """
 
 import copy
-import os
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -24,19 +24,19 @@ from decimal import Decimal, InvalidOperation
 
 from ministack.core.responses import (
     AccountScopedDict,
-    get_account_id,
     error_response_json,
+    get_account_id,
+    get_region,
     json_response,
     new_uuid,
     now_iso,
-    get_region,
 )
 
 logger = logging.getLogger("dynamodb")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-from ministack.core.persistence import load_state, PERSIST_STATE
+from ministack.core.persistence import PERSIST_STATE, load_state
 
 _tables = AccountScopedDict()
 _tags = AccountScopedDict()
@@ -1134,7 +1134,7 @@ def _batch_write_item(data):
         if not table:
             return error_response_json(
                 "ResourceNotFoundException",
-                f"Requested resource not found",
+                "Requested resource not found",
                 400,
             )
         for req in requests:
