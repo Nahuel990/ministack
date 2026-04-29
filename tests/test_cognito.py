@@ -1,6 +1,7 @@
-"""Cognito tests — user pools, identity pools, OAuth2/OIDC flows."""
+"""Cognito tests — user pools, identity pools, OAuth2/OIDC flows, auth-code persistence."""
 
 import base64
+import importlib
 import io
 import json
 import os
@@ -15,6 +16,8 @@ from urllib.parse import urlparse
 
 import pytest
 from botocore.exceptions import ClientError
+
+from ministack.core import persistence
 
 # ========== from test_cognito.py ==========
 
@@ -2192,3 +2195,77 @@ def test_oauth2_full_flow():
     status, headers, _ = _get(logout_url, follow_redirects=False)
     assert status == 302
     assert headers.get('location', '') == 'http://localhost:3000/logout'
+
+
+# ========== from test_cognito_auth_codes_persistence.py ==========
+# Two distinct OAuth2 code stores exist in services/cognito.py:
+#   - _authorization_codes — managed-login PKCE flow (already persisted)
+#   - _auth_codes — hosted-UI / SAML-OIDC federation relay flow (5-minute TTL)
+# Both must survive warm-boot. Both stay PLAIN dicts (not AccountScopedDict)
+# because the OAuth2 token endpoint has no AWS auth context — lookup is by
+# random unguessable token, so wrapping them in AccountScopedDict would
+# silently break the flow under any non-default tenant.
+
+
+def _cognito_module():
+    return importlib.import_module("ministack.services.cognito")
+
+
+@pytest.fixture
+def _enable_persistence(monkeypatch, tmp_path):
+    """Force PERSIST_STATE on and point STATE_DIR at a tmp dir so
+    save_state / load_state actually write and read JSON files."""
+    monkeypatch.setattr(persistence, "PERSIST_STATE", True)
+    monkeypatch.setattr(persistence, "STATE_DIR", str(tmp_path))
+
+
+def _cognito_round_trip(mod, svc_key="cognito"):
+    """Simulate a full warm-boot via the on-disk JSON path."""
+    persistence.save_state(svc_key, mod.get_state())
+    mod.reset()
+    loaded = persistence.load_state(svc_key)
+    assert loaded is not None, "load_state returned None — get_state may be wrong"
+    mod.restore_state(loaded)
+
+
+def test_auth_codes_survive_warm_boot(_enable_persistence):
+    """`_auth_codes` populated by the hosted-UI / federation flow must
+    survive a warm-boot through the on-disk JSON path. Without the fix
+    `_auth_codes` was missing from get_state/restore_state, so any
+    in-flight hosted-UI sign-in within the 5-minute code TTL was
+    silently invalidated by a restart."""
+    mod = _cognito_module()
+    mod.reset()
+
+    relay_state = "test-relay-12345"
+    mod._auth_codes[relay_state] = {
+        "type": "code",
+        "pool_id": "us-east-1_TestPool",
+        "client_id": "client-id-abc",
+        "username": "user@example.com",
+        "sub": "user-sub-12345",
+        "redirect_uri": "https://app.example.com/callback",
+        "scopes": "openid email",
+        "created_at": 1700000000.0,
+    }
+
+    _cognito_round_trip(mod)
+
+    assert relay_state in mod._auth_codes, (
+        "Hosted-UI relay code lost across warm-boot — _auth_codes must "
+        "be in both get_state() and restore_state()."
+    )
+    assert mod._auth_codes[relay_state]["pool_id"] == "us-east-1_TestPool"
+    assert mod._auth_codes[relay_state]["client_id"] == "client-id-abc"
+    mod.reset()
+
+
+def test_auth_codes_dict_types_are_plain_builtin_dict():
+    """`_auth_codes` and `_authorization_codes` must remain plain `dict`
+    instances. They're looked up by random unguessable token from a public
+    OAuth2 callback with no AWS auth context — wrapping in AccountScopedDict
+    would make the lookup happen under a default account, invisible to codes
+    issued under any other tenant."""
+    mod = _cognito_module()
+    assert type(mod._auth_codes) is dict
+    assert type(mod._authorization_codes) is dict

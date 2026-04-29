@@ -546,7 +546,7 @@ def _delete_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _resolve_instance(db_id)
     if not instance:
-        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
 
     _unregister_instance_from_clusters(db_id)
 
@@ -581,7 +581,7 @@ def _describe_db_instances(p):
     if db_id:
         instance = _resolve_instance(db_id)
         if not instance:
-            return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+            return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
         instances = [instance]
     else:
         instances = list(_instances.values())
@@ -652,7 +652,7 @@ def _modify_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _resolve_instance(db_id)
     if not instance:
-        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
 
     apply_immediately = _p(p, "ApplyImmediately") == "true"
 
@@ -724,7 +724,7 @@ def _start_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _resolve_instance(db_id)
     if not instance:
-        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
     instance["DBInstanceStatus"] = "available"
     return _single_instance_response("StartDBInstanceResponse", "StartDBInstanceResult", instance)
 
@@ -733,7 +733,7 @@ def _stop_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _resolve_instance(db_id)
     if not instance:
-        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
     instance["DBInstanceStatus"] = "stopped"
     return _single_instance_response("StopDBInstanceResponse", "StopDBInstanceResult", instance)
 
@@ -742,7 +742,7 @@ def _reboot_db_instance(p):
     db_id = _p(p, "DBInstanceIdentifier")
     instance = _resolve_instance(db_id)
     if not instance:
-        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
     instance["DBInstanceStatus"] = "available"
     return _single_instance_response("RebootDBInstanceResponse", "RebootDBInstanceResult", instance)
 
@@ -757,7 +757,7 @@ def _create_read_replica(p):
 
     source = _resolve_instance(source_id)
     if not source:
-        return _error("DBInstanceNotFoundFault", f"DBInstance {source_id} not found.", 404)
+        return _error("DBInstanceNotFound", f"DBInstance {source_id} not found.", 404)
     if replica_id in _instances:
         return _error("DBInstanceAlreadyExistsFault", f"DBInstance {replica_id} already exists.", 400)
 
@@ -1112,7 +1112,7 @@ def _create_db_snapshot(p):
 
     instance = _resolve_instance(db_id)
     if not instance:
-        return _error("DBInstanceNotFoundFault", f"DBInstance {db_id} not found.", 404)
+        return _error("DBInstanceNotFound", f"DBInstance {db_id} not found.", 404)
 
     snap = _create_snapshot_internal(snap_id, instance)
 
@@ -1255,7 +1255,7 @@ def _delete_param_group(p):
     name = _p(p, "DBParameterGroupName")
     pg = _param_groups.pop(name, None)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault", f"Parameter group {name} not found.", 404)
+        return _error("DBParameterGroupNotFound", f"Parameter group {name} not found.", 404)
     _tags.pop(pg.get("DBParameterGroupArn", ""), None)
     return _xml(200, "DeleteDBParameterGroupResponse", "")
 
@@ -1265,7 +1265,7 @@ def _describe_param_groups(p):
     if name:
         pg = _param_groups.get(name)
         if not pg:
-            return _error("DBParameterGroupNotFoundFault", f"Parameter group {name} not found.", 404)
+            return _error("DBParameterGroupNotFound", f"Parameter group {name} not found.", 404)
         groups = [pg]
     else:
         groups = list(_param_groups.values())
@@ -1284,7 +1284,7 @@ def _describe_db_parameters(p):
     name = _p(p, "DBParameterGroupName")
     pg = _param_groups.get(name)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault", f"Parameter group {name} not found.", 404)
+        return _error("DBParameterGroupNotFound", f"Parameter group {name} not found.", 404)
 
     source_filter = _p(p, "Source")  # "user", "engine-default", or None (all)
 
@@ -1351,7 +1351,7 @@ def _modify_param_group(p):
     name = _p(p, "DBParameterGroupName")
     pg = _param_groups.get(name)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault", f"Parameter group {name} not found.", 404)
+        return _error("DBParameterGroupNotFound", f"Parameter group {name} not found.", 404)
 
     params = pg.setdefault("Parameters", {})
     prefix = _parameter_member_prefix(p)
@@ -1371,7 +1371,7 @@ def _reset_param_group(p):
     name = _p(p, "DBParameterGroupName")
     pg = _param_groups.get(name)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault", f"Parameter group {name} not found.", 404)
+        return _error("DBParameterGroupNotFound", f"Parameter group {name} not found.", 404)
 
     params = pg.setdefault("Parameters", {})
     prefix = _parameter_member_prefix(p)
@@ -1434,7 +1434,7 @@ def _describe_db_cluster_param_groups(p):
     if name:
         pg = _db_cluster_param_groups.get(name)
         if not pg:
-            return _error("DBParameterGroupNotFoundFault",
+            return _error("DBParameterGroupNotFound",
                 f"DB cluster parameter group {name} not found.", 404)
         groups = [pg]
     else:
@@ -1454,7 +1454,7 @@ def _delete_db_cluster_param_group(p):
     name = _p(p, "DBClusterParameterGroupName")
     pg = _db_cluster_param_groups.pop(name, None)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault",
+        return _error("DBParameterGroupNotFound",
             f"DB cluster parameter group {name} not found.", 404)
     _tags.pop(pg.get("DBClusterParameterGroupArn", ""), None)
     return _xml(200, "DeleteDBClusterParameterGroupResponse", "")
@@ -1465,7 +1465,7 @@ def _describe_db_cluster_parameters(p):
     source_filter = _p(p, "Source")
     pg = _db_cluster_param_groups.get(name)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault",
+        return _error("DBParameterGroupNotFound",
             f"DB cluster parameter group {name} not found.", 404)
     params = pg.get("Parameters", {})
     # When filtering by source, treat all stored params as "user" source.
@@ -1496,7 +1496,7 @@ def _modify_db_cluster_param_group(p):
     name = _p(p, "DBClusterParameterGroupName")
     pg = _db_cluster_param_groups.get(name)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault",
+        return _error("DBParameterGroupNotFound",
             f"DB cluster parameter group {name} not found.", 404)
 
     params = pg.setdefault("Parameters", {})
@@ -1517,7 +1517,7 @@ def _reset_db_cluster_param_group(p):
     name = _p(p, "DBClusterParameterGroupName")
     pg = _db_cluster_param_groups.get(name)
     if not pg:
-        return _error("DBParameterGroupNotFoundFault",
+        return _error("DBParameterGroupNotFound",
             f"DB cluster parameter group {name} not found.", 404)
 
     params = pg.setdefault("Parameters", {})
@@ -2649,9 +2649,13 @@ def _xml(status, root_tag, inner):
 
 
 def _error(code, message, status):
+    # Real AWS Query-protocol responses include <Type>Sender|Receiver</Type>
+    # — Sender for 4xx (caller's fault), Receiver for 5xx. Most SDKs ignore
+    # this field but it's part of the documented AWS shape.
+    fault_type = "Sender" if 400 <= status < 500 else "Receiver"
     body = f"""<?xml version="1.0" encoding="UTF-8"?>
 <ErrorResponse xmlns="http://rds.amazonaws.com/doc/2014-10-31/">
-    <Error><Code>{code}</Code><Message>{message}</Message></Error>
+    <Error><Type>{fault_type}</Type><Code>{code}</Code><Message>{message}</Message></Error>
     <RequestId>{new_uuid()}</RequestId>
 </ErrorResponse>""".encode("utf-8")
     return status, {"Content-Type": "application/xml"}, body

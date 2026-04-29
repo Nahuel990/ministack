@@ -362,3 +362,53 @@ def test_secretsmanager_list_include_planned_deletion(sm):
     assert entry is not None
     assert "DeletedDate" in entry
 
+
+
+# ========== from test_misc_medium_low_fixes.py ==========
+# ForceDeleteWithoutRecovery must clean up the orphan _resource_policies[arn]
+# entry, not just the _secrets[name] entry. Tests the in-process module
+# directly so it can observe both dicts together.
+
+import asyncio as _sm_asyncio
+import importlib as _sm_importlib
+import json as _sm_json
+
+
+def _sm_invoke_action(mod, action, params):
+    """Run a service module's action handler synchronously, return raw JSON body."""
+    headers = {"x-amz-target": f"secretsmanager.{action}"}
+    body = _sm_json.dumps(params).encode()
+    status, _resp_headers, resp_body = _sm_asyncio.run(
+        mod.handle_request("POST", "/", headers, body, {})
+    )
+    if status >= 300:
+        raise AssertionError(f"{action} failed: {status} {resp_body!r}")
+    return resp_body.decode() if isinstance(resp_body, bytes) else resp_body
+
+
+def test_secretsmanager_force_delete_removes_resource_policy():
+    sm = _sm_importlib.import_module("ministack.services.secretsmanager")
+    sm.reset()
+
+    create_resp = _sm_json.loads(_sm_invoke_action(
+        sm, "CreateSecret",
+        {"Name": "force-delete-canary", "SecretString": "x"},
+    ))
+    arn = create_resp["ARN"]
+    _sm_invoke_action(sm, "PutResourcePolicy", {
+        "SecretId": arn,
+        "ResourcePolicy": '{"Version":"2012-10-17","Statement":[]}',
+    })
+    assert arn in sm._resource_policies, "Test setup failed — policy didn't register"
+
+    _sm_invoke_action(sm, "DeleteSecret", {
+        "SecretId": arn,
+        "ForceDeleteWithoutRecovery": True,
+    })
+
+    assert arn not in sm._resource_policies, (
+        "Force-deleting a secret left an orphan entry in _resource_policies "
+        "keyed by the now-deleted ARN. The delete path must pop both "
+        "_secrets[name] AND _resource_policies[arn]."
+    )
+    sm.reset()

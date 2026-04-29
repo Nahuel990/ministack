@@ -4,8 +4,8 @@ Pytest fixtures for MiniStack integration tests.
 import contextlib
 import os
 import socket
-from urllib.parse import urlparse
 import urllib.request
+from urllib.parse import urlparse
 
 import boto3
 import pytest
@@ -59,12 +59,12 @@ _SERIAL_TESTS = {
     "tests/test_ministack.py::test_ministack_config_invalid_key_ignored",
     "tests/test_ses.py::test_ses_messages_endpoint_reset",
     "tests/test_ses.py::test_ses_messages_endpoint_account_filter",
-    "tests/test_sfn.py::test_sfn_mock_config_return",
-    "tests/test_sfn.py::test_sfn_mock_config_throw",
-    "tests/test_sfn.py::test_sfn_wait_scale_zero_does_not_timeout_lambda_tasks",
-    "tests/test_sfn.py::test_sfn_wait_scale_zero_skips_wait",
-    "tests/test_rds_lambda_network.py::test_rds_lambda_network_connectivity",
-    "tests/test_elasticache_lambda_network.py::test_elasticache_lambda_network_connectivity",
+    "tests/test_stepfunctions.py::test_sfn_mock_config_return",
+    "tests/test_stepfunctions.py::test_sfn_mock_config_throw",
+    "tests/test_stepfunctions.py::test_sfn_wait_scale_zero_does_not_timeout_lambda_tasks",
+    "tests/test_stepfunctions.py::test_sfn_wait_scale_zero_skips_wait",
+    "tests/test_rds.py::test_rds_lambda_network_connectivity",
+    "tests/test_elasticache.py::test_elasticache_lambda_network_connectivity",
     # API Gateway execute-api → Lambda invoke under tight urlopen / WS recv
     # timeouts. These pass cleanly when run serially but are sensitive to
     # xdist parallel load on shared CI runners (cold-start time bursts past
@@ -260,10 +260,6 @@ def emr():
 def elbv2():
     return make_client("elbv2")
                                                                                                           
-@pytest.fixture(scope="session")
-def ebs():
-    return make_client("ec2")
-
 @pytest.fixture(scope="session")
 def efs():
     return make_client("efs")

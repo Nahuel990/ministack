@@ -642,7 +642,8 @@ def test_persistence_s3_writes_state_after_ownership_and_public_access_block(tmp
 # Unit tests for _S3_VHOST_RE / _S3_VHOST_EXCLUDE_RE / _NON_S3_VHOST_NAMES
 # ---------------------------------------------------------------------------
 
-from ministack.app import _S3_VHOST_EXCLUDE_RE, _NON_S3_VHOST_NAMES
+from ministack.app import _NON_S3_VHOST_NAMES, _S3_VHOST_EXCLUDE_RE
+
 
 class TestS3VhostExcludeRe:
     """_S3_VHOST_EXCLUDE_RE gates out sub-service hostnames that look like vhosts."""

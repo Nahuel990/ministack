@@ -4,8 +4,8 @@ from urllib.parse import urlparse
 
 import pytest
 from botocore.exceptions import ClientError
+from conftest import ENDPOINT_HOST, make_client, patch_endpoint_dns
 
-from conftest import make_client, patch_endpoint_dns, ENDPOINT_HOST
 
 def test_s3_create_bucket(s3):
     s3.create_bucket(Bucket="intg-s3-create")

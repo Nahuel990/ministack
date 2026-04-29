@@ -68,6 +68,7 @@ Data plane:
 """
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
@@ -160,6 +161,69 @@ def _v1_error(code, message, status):
     # ``ClientError.response["Error"]["Code"]``; with plain "type" it falls
     # back to the numeric HTTP status as the code.
     return status, {"Content-Type": "application/json"}, json.dumps({"message": message, "__type": code}, ensure_ascii=False).encode("utf-8")
+
+
+def _qp(query_params, key, default=None):
+    """Read a single query-param value. Callers pass either str or [str]."""
+    v = query_params.get(key, default) if query_params else default
+    if isinstance(v, list):
+        return v[0] if v else default
+    return v
+
+
+def _v1_paginate(items_list, query_params):
+    """Slice a list per AWS API Gateway v1 pagination semantics.
+
+    Returns ``(slice, next_position)``; ``next_position`` is ``None`` when
+    the caller has reached the end. ``position`` is opaque to callers — we
+    encode the next-index into a base64url JSON blob. Raises ``ValueError``
+    if the caller supplies a malformed token.
+
+    Default ``limit`` is 25, max 500 (AWS spec — see service-2.json input
+    shapes for ``GetRestApis`` et al.).
+    """
+    limit_raw = _qp(query_params, "limit", "25")
+    try:
+        limit = int(limit_raw) if limit_raw is not None else 25
+    except (TypeError, ValueError):
+        limit = 25
+    if limit < 1:
+        limit = 1
+    if limit > 500:
+        limit = 500
+
+    pos_raw = _qp(query_params, "position")
+    start = 0
+    if pos_raw:
+        try:
+            padding = "=" * (-len(pos_raw) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(pos_raw + padding).decode("utf-8"))
+            start = int(decoded["i"])
+        except Exception:
+            raise ValueError("Invalid position token")
+        if start < 0:
+            start = 0
+
+    end = start + limit
+    sliced = items_list[start:end]
+    next_pos = None
+    if end < len(items_list):
+        token = json.dumps({"i": end}, separators=(",", ":")).encode("utf-8")
+        next_pos = base64.urlsafe_b64encode(token).decode("ascii").rstrip("=")
+    return sliced, next_pos
+
+
+def _v1_paginated_response(items_list, query_params):
+    """Build a paginated v1 response. Returns the standard 200 tuple, or a
+    400 ``BadRequestException`` if the position token is malformed."""
+    try:
+        sliced, pos = _v1_paginate(items_list, query_params)
+    except ValueError as e:
+        return _v1_error("BadRequestException", str(e), 400)
+    out = {"item": sliced}
+    if pos is not None:
+        out["position"] = pos
+    return _v1_response(out)
 
 
 def _rest_api_arn(api_id):
@@ -561,7 +625,7 @@ async def handle_request(method, path, headers, body, query_params):
         key_id = parts[1] if len(parts) > 1 else None
         if not key_id:
             if method == "GET":
-                return _get_api_keys()
+                return _get_api_keys(query_params)
             if method == "POST":
                 return _create_api_key(data)
         else:
@@ -578,13 +642,13 @@ async def handle_request(method, path, headers, body, query_params):
         sub_id = parts[3] if len(parts) > 3 else None
         if not plan_id:
             if method == "GET":
-                return _get_usage_plans()
+                return _get_usage_plans(query_params)
             if method == "POST":
                 return _create_usage_plan(data)
         elif sub == "keys":
             if not sub_id:
                 if method == "GET":
-                    return _get_usage_plan_keys(plan_id)
+                    return _get_usage_plan_keys(plan_id, query_params)
                 if method == "POST":
                     return _create_usage_plan_key(plan_id, data)
             else:
@@ -604,14 +668,14 @@ async def handle_request(method, path, headers, body, query_params):
         sub_id = parts[3] if len(parts) > 3 else None
         if not domain_name:
             if method == "GET":
-                return _get_domain_names()
+                return _get_domain_names(query_params)
             if method == "POST":
                 return _create_domain_name(data)
         elif sub == "basepathmappings":
             base_path = sub_id
             if not base_path:
                 if method == "GET":
-                    return _get_base_path_mappings(domain_name)
+                    return _get_base_path_mappings(domain_name, query_params)
                 if method == "POST":
                     return _create_base_path_mapping(domain_name, data)
             else:
@@ -631,7 +695,7 @@ async def handle_request(method, path, headers, body, query_params):
             if method == "POST":
                 return _create_rest_api(data)
             if method == "GET":
-                return _get_rest_apis()
+                return _get_rest_apis(query_params)
 
         api_id = parts[1]
 
@@ -657,7 +721,7 @@ async def handle_request(method, path, headers, body, query_params):
             if not resource_id:
                 # GET /restapis/{id}/resources
                 if method == "GET":
-                    return _get_resources(api_id)
+                    return _get_resources(api_id, query_params)
 
             elif method_part is None:
                 # /restapis/{id}/resources/{resourceId}
@@ -730,7 +794,7 @@ async def handle_request(method, path, headers, body, query_params):
                 if method == "POST":
                     return _create_deployment(api_id, data)
                 if method == "GET":
-                    return _get_deployments(api_id)
+                    return _get_deployments(api_id, query_params)
             else:
                 if method == "GET":
                     return _get_deployment(api_id, deployment_id)
@@ -762,7 +826,7 @@ async def handle_request(method, path, headers, body, query_params):
                 if method == "POST":
                     return _create_authorizer(api_id, data)
                 if method == "GET":
-                    return _get_authorizers(api_id)
+                    return _get_authorizers(api_id, query_params)
             else:
                 if method == "GET":
                     return _get_authorizer(api_id, auth_id)
@@ -778,7 +842,7 @@ async def handle_request(method, path, headers, body, query_params):
                 if method == "POST":
                     return _create_model(api_id, data)
                 if method == "GET":
-                    return _get_models(api_id)
+                    return _get_models(api_id, query_params)
             else:
                 if method == "GET":
                     return _get_model(api_id, model_name)
@@ -1053,8 +1117,8 @@ def _get_rest_api(api_id):
     return _v1_response(_rest_api_view(api))
 
 
-def _get_rest_apis():
-    return _v1_response({"item": [_rest_api_view(a) for a in _rest_apis.values()]})
+def _get_rest_apis(query_params):
+    return _v1_paginated_response([_rest_api_view(a) for a in _rest_apis.values()], query_params)
 
 
 def _update_rest_api(api_id, data):
@@ -1081,10 +1145,10 @@ def _delete_rest_api(api_id):
 
 # ---- Control plane: Resources ----
 
-def _get_resources(api_id):
+def _get_resources(api_id, query_params):
     if api_id not in _rest_apis:
         return _v1_error("NotFoundException", "Invalid API identifier specified", 404)
-    return _v1_response({"item": list(_resources.get(api_id, {}).values())})
+    return _v1_paginated_response(list(_resources.get(api_id, {}).values()), query_params)
 
 
 def _get_resource(api_id, resource_id):
@@ -1203,7 +1267,7 @@ def _put_method_response(api_id, resource_id, http_method, status_code, data):
         "responseModels": data.get("responseModels", {}),
     }
     method_obj["methodResponses"][status_code] = method_response
-    return _v1_response(method_response)
+    return _v1_response(method_response, 201)
 
 
 def _get_method_response(api_id, resource_id, http_method, status_code):
@@ -1320,7 +1384,7 @@ def _put_integration_response(api_id, resource_id, http_method, status_code, dat
         "contentHandling": data.get("contentHandling"),
     }
     integration["integrationResponses"][status_code] = int_response
-    return _v1_response(int_response)
+    return _v1_response(int_response, 201)
 
 
 def _get_integration_response(api_id, resource_id, http_method, status_code):
@@ -1408,10 +1472,10 @@ def _create_deployment(api_id, data):
     return _v1_response(deployment, 201)
 
 
-def _get_deployments(api_id):
+def _get_deployments(api_id, query_params):
     if api_id not in _rest_apis:
         return _v1_error("NotFoundException", "Invalid API identifier specified", 404)
-    return _v1_response({"item": list(_deployments_v1.get(api_id, {}).values())})
+    return _v1_paginated_response(list(_deployments_v1.get(api_id, {}).values()), query_params)
 
 
 def _get_deployment(api_id, deployment_id):
@@ -1515,10 +1579,10 @@ def _create_authorizer(api_id, data):
     return _v1_response(authorizer, 201)
 
 
-def _get_authorizers(api_id):
+def _get_authorizers(api_id, query_params):
     if api_id not in _rest_apis:
         return _v1_error("NotFoundException", "Invalid API identifier specified", 404)
-    return _v1_response({"item": list(_authorizers_v1.get(api_id, {}).values())})
+    return _v1_paginated_response(list(_authorizers_v1.get(api_id, {}).values()), query_params)
 
 
 def _get_authorizer(api_id, auth_id):
@@ -1563,10 +1627,10 @@ def _create_model(api_id, data):
     return _v1_response(model, 201)
 
 
-def _get_models(api_id):
+def _get_models(api_id, query_params):
     if api_id not in _rest_apis:
         return _v1_error("NotFoundException", "Invalid API identifier specified", 404)
-    return _v1_response({"item": list(_models.get(api_id, {}).values())})
+    return _v1_paginated_response(list(_models.get(api_id, {}).values()), query_params)
 
 
 def _get_model(api_id, model_name):
@@ -1603,8 +1667,8 @@ def _create_api_key(data):
     return _v1_response(api_key, 201)
 
 
-def _get_api_keys():
-    return _v1_response({"item": list(_api_keys.values())})
+def _get_api_keys(query_params):
+    return _v1_paginated_response(list(_api_keys.values()), query_params)
 
 
 def _get_api_key(key_id):
@@ -1649,8 +1713,8 @@ def _create_usage_plan(data):
     return _v1_response(plan, 201)
 
 
-def _get_usage_plans():
-    return _v1_response({"item": list(_usage_plans.values())})
+def _get_usage_plans(query_params):
+    return _v1_paginated_response(list(_usage_plans.values()), query_params)
 
 
 def _get_usage_plan(plan_id):
@@ -1692,10 +1756,10 @@ def _create_usage_plan_key(plan_id, data):
     return _v1_response(plan_key, 201)
 
 
-def _get_usage_plan_keys(plan_id):
+def _get_usage_plan_keys(plan_id, query_params):
     if plan_id not in _usage_plans:
         return _v1_error("NotFoundException", "Invalid Usage Plan identifier specified", 404)
-    return _v1_response({"item": list(_usage_plan_keys.get(plan_id, {}).values())})
+    return _v1_paginated_response(list(_usage_plan_keys.get(plan_id, {}).values()), query_params)
 
 
 def _delete_usage_plan_key(plan_id, key_id):
@@ -1726,8 +1790,8 @@ def _create_domain_name(data):
     return _v1_response(dn, 201)
 
 
-def _get_domain_names():
-    return _v1_response({"item": list(_domain_names.values())})
+def _get_domain_names(query_params):
+    return _v1_paginated_response(list(_domain_names.values()), query_params)
 
 
 def _get_domain_name(domain_name):
@@ -1758,10 +1822,10 @@ def _create_base_path_mapping(domain_name, data):
     return _v1_response(mapping, 201)
 
 
-def _get_base_path_mappings(domain_name):
+def _get_base_path_mappings(domain_name, query_params):
     if domain_name not in _domain_names:
         return _v1_error("NotFoundException", "Invalid domain name identifier specified", 404)
-    return _v1_response({"item": list(_base_path_mappings.get(domain_name, {}).values())})
+    return _v1_paginated_response(list(_base_path_mappings.get(domain_name, {}).values()), query_params)
 
 
 def _get_base_path_mapping(domain_name, base_path):

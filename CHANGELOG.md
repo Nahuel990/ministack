@@ -7,6 +7,16 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.21] — 2026-04-29
+
+### Fixed
+- **RDS error codes carried a stale `Fault` suffix on two not-found shapes** — `DescribeDBInstances` (and 7 other DBInstance ops) emitted `<Code>DBInstanceNotFoundFault</Code>` while real AWS returns `<Code>DBInstanceNotFound</Code>`; `DescribeDBParameters` (and 9 other DBParameterGroup ops) emitted `<Code>DBParameterGroupNotFoundFault</Code>` while real AWS returns `<Code>DBParameterGroupNotFound</Code>`. Verified against `botocore/data/rds/2014-10-31/service-2.json` (the wire `error.code` differs from the shape name on ~19 RDS not-found errors — these two were the ones ministack emitted with the wrong wire code). Breaks string-matching consumers like the ACK RDS controller's `sdkFind`, which compares `awsErr.ErrorCode() == "DBInstanceNotFound"` to detect the not-found branch and reach the create path; with the `Fault` suffix the branch never matched and the CR sat at `Ready=False`. Also affects `aws-sdk-go-v2` (`smithy.APIError.ErrorCode()`) and any boto3 caller matching on `e.response["Error"]["Code"]`. Reported by @jmickey.
+- **RDS error responses were missing `<Type>Sender</Type>` / `<Type>Receiver</Type>`** — real AWS Query-protocol error envelopes include the fault type alongside `<Code>` and `<Message>`. The `_error` helper now emits `Sender` for 4xx and `Receiver` for 5xx. Cosmetic for SDKs that read `<Code>` only, but completes the documented AWS shape.
+- **API Gateway REST API (v1): pagination missing on 10 list operations** — `GetRestApis`, `GetResources`, `GetDeployments`, `GetAuthorizers`, `GetModels`, `GetApiKeys`, `GetUsagePlans`, `GetUsagePlanKeys`, `GetDomainNames`, and `GetBasePathMappings` ignored the AWS-spec `limit` (default 25, max 500) + `position` query params and always returned the full list with no `position` cursor. Pagination-aware SDKs that round-trip the cursor (boto3 paginators, AWS CLI `--max-items`/`--starting-token`, Java SDK v2) silently received the same first page on every call. The 10 ops now slice per `limit`, return an opaque base64url-encoded `position` token when more pages remain, and reject malformed tokens with `BadRequestException`. `GetStages` is correctly **not** paginated — its AWS shape has no `limit`/`position` fields.
+- **API Gateway REST API (v1) `PutMethodResponse` and `PutIntegrationResponse` returned HTTP 200 instead of 201.** Real AWS returns 201 on resource creation (verified against `botocore/data/apigateway/2015-07-09/service-2.json`); the AWS CLI prints the resource on 201 and is silent on 200, so scripts that branched on stderr would diverge. The remaining v1 Create/Put ops already returned 201.
+
+---
+
 ## [1.3.20] — 2026-04-29
 
 ### Added

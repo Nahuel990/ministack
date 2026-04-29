@@ -2224,3 +2224,37 @@ def test_apigw_lambda_proxy_emits_cloudwatch_logs_nodejs(apigw, lam, logs):
     apigw.delete_integration(ApiId=api_id, IntegrationId=int_id)
     apigw.delete_api(ApiId=api_id)
     lam.delete_function(FunctionName=fname)
+
+
+# ========== from test_misc_medium_low_fixes.py ==========
+# get_state() on both apigateway modules must deep-copy. A live reference
+# in the snapshot would let a concurrent write during shutdown
+# serialisation corrupt the persisted JSON.
+
+import importlib as _importlib_get_state
+
+
+@pytest.mark.parametrize("mod_name", ["apigateway", "apigateway_v1"])
+def test_apigateway_get_state_returns_independent_copy(mod_name):
+    mod = _importlib_get_state.import_module(f"ministack.services.{mod_name}")
+    if hasattr(mod, "reset"):
+        mod.reset()
+
+    snapshot = mod.get_state()
+
+    leaks = []
+    for key, snap_value in snapshot.items():
+        live = getattr(mod, f"_{key}", None)
+        if live is None:
+            continue
+        if snap_value is live:
+            leaks.append(key)
+
+    assert not leaks, (
+        f"{mod_name}.get_state() returned LIVE references for keys: {leaks}. "
+        "A concurrent write to one of these dicts during shutdown serialisation "
+        "would corrupt the persisted JSON. Wrap each value in copy.deepcopy(...)."
+    )
+
+    if hasattr(mod, "reset"):
+        mod.reset()
