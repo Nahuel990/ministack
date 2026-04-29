@@ -31,7 +31,14 @@ import threading
 import time
 from datetime import datetime
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
+from ministack.core.responses import (
+    AccountScopedDict,
+    error_response_json,
+    get_account_id,
+    get_region,
+    json_response,
+    new_uuid,
+)
 
 logger = logging.getLogger("events")
 
@@ -56,7 +63,7 @@ def _coerce_timestamp(value):
     return value
 
 
-from ministack.core.persistence import load_state, PERSIST_STATE
+from ministack.core.persistence import PERSIST_STATE, load_state
 
 # Per-account bus registry. The "default" bus is lazily created per account
 # on first access so every tenant has its own default bus with an ARN whose
@@ -110,6 +117,9 @@ def get_state():
         "replays": copy.deepcopy(_replays),
         "endpoints": copy.deepcopy(_endpoints),
         "partner_event_sources": copy.deepcopy(_partner_event_sources),
+        "event_bus_policies": copy.deepcopy(_event_bus_policies),
+        "connections": copy.deepcopy(_connections),
+        "api_destinations": copy.deepcopy(_api_destinations),
     }
 
 
@@ -122,6 +132,9 @@ def restore_state(data):
         _archives.update(data.get("archives", {}))
         _replays.update(data.get("replays", {}))
         _endpoints.update(data.get("endpoints", {}))
+        _event_bus_policies.update(data.get("event_bus_policies", {}))
+        _connections.update(data.get("connections", {}))
+        _api_destinations.update(data.get("api_destinations", {}))
         pe = data.get("partner_event_sources")
         if pe is not None:
             _partner_event_sources.clear()
@@ -1141,7 +1154,9 @@ def _start_replay(data):
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
-    return json_response({"ReplayArn": arn, "State": "RUNNING"})
+    # Real AWS StartReplay returns the initial state STARTING; the
+    # replay flips to RUNNING in the background dispatch thread above.
+    return json_response({"ReplayArn": arn, "State": "STARTING"})
 
 
 def _describe_replay(data):

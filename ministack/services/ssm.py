@@ -9,20 +9,27 @@ Supports: PutParameter, GetParameter, GetParameters, GetParametersByPath,
 
 import base64
 import copy
-import os
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
+from ministack.core.responses import (
+    AccountScopedDict,
+    error_response_json,
+    get_account_id,
+    get_region,
+    json_response,
+    new_uuid,
+)
 
 logger = logging.getLogger("ssm")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 DEFAULT_PAGE_SIZE = 10
 
-from ministack.core.persistence import load_state, PERSIST_STATE
+from ministack.core.persistence import PERSIST_STATE, load_state
 
 _parameters = AccountScopedDict()
 _parameter_history = AccountScopedDict()
@@ -32,12 +39,18 @@ _tags = AccountScopedDict()
 # ── Persistence ────────────────────────────────────────────
 
 def get_state():
-    return {"parameters": copy.deepcopy(_parameters)}
+    return {
+        "parameters": copy.deepcopy(_parameters),
+        "parameter_history": copy.deepcopy(_parameter_history),
+        "tags": copy.deepcopy(_tags),
+    }
 
 
 def restore_state(data):
     if data:
         _parameters.update(data.get("parameters", {}))
+        _parameter_history.update(data.get("parameter_history", {}))
+        _tags.update(data.get("tags", {}))
 
 
 try:

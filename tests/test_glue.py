@@ -2,11 +2,13 @@ import io
 import json
 import os
 import time
+import uuid as _uuid_mod
 import zipfile
 from urllib.parse import urlparse
+
 import pytest
 from botocore.exceptions import ClientError
-import uuid as _uuid_mod
+
 
 def test_glue_catalog(glue):
     glue.create_database(DatabaseInput={"Name": "test_db", "Description": "Test database"})
@@ -58,6 +60,15 @@ def test_glue_crawler(glue):
     resp = glue.get_crawler(Name="test-crawler")
     assert resp["Crawler"]["Name"] == "test-crawler"
     glue.start_crawler(Name="test-crawler")
+
+def test_glue_database_location_uri(glue):
+    glue.create_database(DatabaseInput={"Name": "db_no_location"})
+    resp = glue.get_database(Name="db_no_location")
+    assert resp["Database"].get("LocationUri") is None
+
+    glue.create_database(DatabaseInput={"Name": "db_with_location", "LocationUri": "s3://my-bucket/warehouse/"})
+    resp = glue.get_database(Name="db_with_location")
+    assert resp["Database"]["LocationUri"] == "s3://my-bucket/warehouse/"
 
 def test_glue_database_v2(glue):
     glue.create_database(DatabaseInput={"Name": "glue_db_v2", "Description": "v2 DB"})

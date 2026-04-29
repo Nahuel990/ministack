@@ -64,6 +64,20 @@ def test_sns_subscribe_email(sns):
     )
     assert "SubscriptionArn" in resp
 
+
+def test_sns_subscribe_pending_arn_is_lowercase_with_space(sns):
+    """For protocols that require confirmation, AWS returns the literal
+    lowercase string 'pending confirmation' (with a space) as the
+    SubscriptionArn until the subscriber confirms — NOT PascalCase
+    'PendingConfirmation'."""
+    arn = sns.create_topic(Name="intg-sns-pending-arn")["TopicArn"]
+    resp = sns.subscribe(
+        TopicArn=arn,
+        Protocol="http",
+        Endpoint="http://example.com/sns-callback",
+    )
+    assert resp["SubscriptionArn"] == "pending confirmation", resp["SubscriptionArn"]
+
 def test_sns_unsubscribe(sns):
     arn = sns.create_topic(Name="intg-sns-unsub")["TopicArn"]
     sub = sns.subscribe(
@@ -211,15 +225,26 @@ def test_sns_sqs_fanout_raw_message_delivery(sns, sqs):
         Endpoint=q_arn,
         Attributes={"RawMessageDelivery": "true"},
     )
-    sns.publish(TopicArn=topic_arn, Message="raw fanout msg")
+    message_attrs = {
+        "type": {"DataType": "String", "StringValue": "user.created"},
+    }
+    sns.publish(
+        TopicArn=topic_arn,
+        Message='{"user_id": "123"}',
+        MessageAttributes=message_attrs,
+    )
 
     msgs = sqs.receive_message(
         QueueUrl=q_url,
         MaxNumberOfMessages=1,
         WaitTimeSeconds=1,
+        MessageAttributeNames=["All"],
     )
     assert len(msgs.get("Messages", [])) == 1
-    assert msgs["Messages"][0]["Body"] == "raw fanout msg"
+    msg = msgs["Messages"][0]
+    assert msg["Body"] == '{"user_id": "123"}'
+    assert msg["MessageAttributes"] == message_attrs
+    assert msg["MessageAttributes"]["type"]["StringValue"] == "user.created"
 
 def test_sns_publish_batch(sns):
     arn = sns.create_topic(Name="intg-sns-batch")["TopicArn"]

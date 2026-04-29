@@ -37,13 +37,50 @@ if _VERSION == "dev":
 _EXECUTE_API_RE = re.compile(
     r"^([a-f0-9]{8})\.execute-api\." + re.escape(_MINISTACK_HOST) + r"(?::\d+)?$"
 )
-# Matches virtual-hosted S3:
-#   "{bucket}.<host>" or "{bucket}.<host>:4566"          (boto3/SDK default)
-#   "{bucket}.s3.<host>" or "{bucket}.s3.<host>:4566"    (Terraform AWS provider v4+)
-# Does NOT match execute-api, alb, or other sub-service hostnames.
-_S3_VHOST_RE = re.compile(
-    r"^([^.]+)(?:\.s3)?\." + re.escape(_MINISTACK_HOST) + r"(?::\d+)?$"
-)
+# Virtual-hosted S3 bucket extraction. AWS-aligned per
+# docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html and
+# bucketnamingrules.html (HTTP vhost — ministack is HTTP). Works for any
+# endpoint hostname (localhost, ministack, custom Docker DNS, real AWS
+# domains) without hardcoding _MINISTACK_HOST.
+_IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_BUCKET_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.\-]{1,61}[a-z0-9])$")
+
+
+def _extract_s3_vhost_bucket(host: str):
+    """Return the bucket if Host is virtual-hosted-style S3, else None.
+
+    AWS virtual-hosted patterns (all must resolve to a bucket):
+      <bucket>.<base-host>                          — SDK default
+      <bucket>.s3.<base-host>                       — explicit S3 endpoint
+      <bucket>.s3.<region>.<base-host>              — region-qualified
+      <bucket>.s3-website.<region>.<base-host>      — static website
+      <bucket>.s3-accelerate.<base-host>            — transfer acceleration
+
+    A bare ``<base-host>`` (no leading bucket label) is path-style → None.
+    """
+    if not host:
+        return None
+    host = host.strip()
+    if not host or host.startswith("["):
+        return None
+    host = host.lower()
+    if ":" in host:
+        host = host.rsplit(":", 1)[0]
+    if not host or _IPV4_RE.match(host) or "." not in host:
+        return None
+    candidate, tail = host.split(".", 1)
+    if not tail or tail.startswith("."):
+        return None
+    if not _BUCKET_LABEL_RE.match(candidate):
+        return None
+    if ".." in candidate or _IPV4_RE.match(candidate):
+        return None
+    if tail == _MINISTACK_HOST or tail.endswith("." + _MINISTACK_HOST):
+        return candidate
+    first_tail_segment = tail.split(".", 1)[0]
+    if first_tail_segment == "s3" or first_tail_segment.startswith(("s3-", "s3express-")):
+        return candidate
+    return None
 _S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache|s3-control)\.")
 _HEALTH_PATHS = ("/_ministack/health", "/_localstack/health", "/health")
 _BODY_METHODS = ("POST", "PUT", "PATCH")
@@ -152,6 +189,7 @@ SERVICE_REGISTRY = {
     "cognito-identity": {"module": "cognito"},
     "cognito-idp": {"module": "cognito"},
     "dynamodb": {"module": "dynamodb"},
+    "dynamodbstreams": {"module": "dynamodb_streams"},
     "ec2": {"module": "ec2"},
     "ecr": {"module": "ecr"},
     "ecs": {"module": "ecs"},
@@ -191,6 +229,33 @@ SERVICE_REGISTRY = {
 SERVICE_HANDLERS = {
     service_name: _lazy_handler(service_config["module"])
     for service_name, service_config in SERVICE_REGISTRY.items()
+}
+
+# Maps the on-disk persistence key to the service module name. `save_all`
+# (lifespan.shutdown) consumes this. Restore happens at module import time
+# in each service via its own `load_state()` call (see e.g. services/sqs.py);
+# a small allow-list is also restored centrally by `_load_persisted_state`
+# below. Symmetry between save and restore is enforced by
+# tests/test_persistence_symmetry.py.
+_state_map = {
+    "apigateway": "apigateway", "apigateway_v1": "apigateway_v1",
+    "sqs": "sqs", "sns": "sns", "ssm": "ssm",
+    "secretsmanager": "secretsmanager", "iam": "iam",
+    "dynamodb": "dynamodb", "kms": "kms", "eventbridge": "eventbridge",
+    "cloudwatch_logs": "cloudwatch_logs", "kinesis": "kinesis",
+    "ec2": "ec2", "route53": "route53", "cognito": "cognito",
+    "ecr": "ecr", "cloudwatch": "cloudwatch", "s3": "s3",
+    "lambda": "lambda_svc", "rds": "rds", "ecs": "ecs",
+    "elasticache": "elasticache", "appsync": "appsync",
+    "stepfunctions": "stepfunctions", "alb": "alb",
+    "glue": "glue", "efs": "efs", "waf": "waf",
+    "athena": "athena", "emr": "emr", "cloudfront": "cloudfront",
+    "codebuild": "codebuild", "acm": "acm", "firehose": "firehose",
+    "ses": "ses", "ses_v2": "ses_v2",
+    "servicediscovery": "servicediscovery", "s3files": "s3files",
+    "appconfig": "appconfig", "transfer": "transfer",
+    "scheduler": "scheduler", "autoscaling": "autoscaling",
+    "eks": "eks", "backup": "backup", "pipes": "pipes",
 }
 
 SERVICE_NAME_ALIASES = {
@@ -363,7 +428,7 @@ def _handle_health_request(path: str, request_id: str):
         "x-amzn-requestid": request_id,
     }, json.dumps({
         "services": {s: "available" for s in SERVICE_HANDLERS},
-        "edition": "light",
+        "edition": os.environ.get("MINISTACK_EDITION", "light"),
         "version": _VERSION,
         "ready_scripts": dict(_ready_scripts_state),
     }).encode()
@@ -882,12 +947,8 @@ async def _handle_alb_request(host: str, path: str, method: str, headers: dict, 
 
 async def _handle_s3_vhost_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
     """Handle virtual-hosted S3 requests before generic routing."""
-    s3_vhost = _S3_VHOST_RE.match(host)
-    if not s3_vhost or _S3_VHOST_EXCLUDE_RE.search(host):
-        return None
-
-    bucket = s3_vhost.group(1)
-    if bucket in _NON_S3_VHOST_NAMES:
+    bucket = _extract_s3_vhost_bucket(host)
+    if not bucket or _S3_VHOST_EXCLUDE_RE.search(host) or bucket in _NON_S3_VHOST_NAMES:
         return None
 
     vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
@@ -1138,26 +1199,6 @@ async def _handle_lifespan(scope, receive, send):
             logger.info("MiniStack shutting down...")
             if PERSIST_STATE:
                 # Only save state for modules that were actually loaded
-                _state_map = {
-                    "apigateway": "apigateway", "apigateway_v1": "apigateway_v1",
-                    "sqs": "sqs", "sns": "sns", "ssm": "ssm",
-                    "secretsmanager": "secretsmanager", "iam": "iam",
-                    "dynamodb": "dynamodb", "kms": "kms", "eventbridge": "eventbridge",
-                    "cloudwatch_logs": "cloudwatch_logs", "kinesis": "kinesis",
-                    "ec2": "ec2", "route53": "route53", "cognito": "cognito",
-                    "ecr": "ecr", "cloudwatch": "cloudwatch", "s3": "s3",
-                    "lambda": "lambda_svc", "rds": "rds", "ecs": "ecs",
-                    "elasticache": "elasticache", "appsync": "appsync",
-                    "stepfunctions": "stepfunctions", "alb": "alb",
-                    "glue": "glue", "efs": "efs", "waf": "waf",
-                    "athena": "athena", "emr": "emr", "cloudfront": "cloudfront",
-                    "codebuild": "codebuild", "acm": "acm", "firehose": "firehose",
-                    "ses": "ses", "ses_v2": "ses_v2",
-                    "servicediscovery": "servicediscovery", "s3files": "s3files",
-                    "appconfig": "appconfig", "transfer": "transfer",
-                    "scheduler": "scheduler", "autoscaling": "autoscaling",
-                    "eks": "eks", "backup": "backup",
-                }
                 save_dict = {}
                 for key, mod_name in _state_map.items():
                     if mod_name in _loaded_modules:
@@ -1201,6 +1242,22 @@ def _load_persisted_state():
         if data:
             _get_module(svc_key).load_persisted_state(data)
             logger.info("Loaded persisted state for %s", svc_key)
+
+    # Eagerly import persisted services whose restore path depends on
+    # a module-level `load_state()` side-effect, but which would not
+    # otherwise be imported during startup. These are NOT covered by
+    # the explicit central-restore loop above (no
+    # `load_persisted_state` method), and the lazy router will not
+    # pull them in early enough — for example, `ses_v2` is reached
+    # via the `/v2/email/*` path-prefix shortcut and `pipes` via
+    # CloudFormation, neither of which fires at lifespan startup.
+    # Importing here triggers the restore (and, for `pipes`, also
+    # restarts the background poller for any RUNNING pipe). Keep this
+    # list narrow — every entry costs a cold-start import. Enforced
+    # by `tests/test_persistence_symmetry.py::test_state_map_
+    # services_without_endpoint_are_eagerly_imported`.
+    for svc_key in ("pipes", "ses_v2"):
+        _get_module(svc_key)
 
 
 async def _wait_for_port(port, timeout=30):
@@ -1369,8 +1426,8 @@ def _pid_file(port: int) -> str:
 
 
 def main():
-    from hypercorn.config import Config as HypercornConfig
     from hypercorn.asyncio import serve as hypercorn_serve
+    from hypercorn.config import Config as HypercornConfig
 
     parser = argparse.ArgumentParser(description="MiniStack — Local AWS Service Emulator")
     parser.add_argument("-d", "--detach", action="store_true", help="Run in the background (detached mode)")
@@ -1378,6 +1435,10 @@ def main():
     args = parser.parse_args()
 
     port = int(_resolve_port())
+    # BIND_HOST controls the bind interface; defaults to 0.0.0.0 (existing
+    # behaviour). Distinct from MINISTACK_HOST, which is the virtual hostname
+    # used for S3 virtual-host / execute-api URL matching.
+    bind_host = os.environ.get("BIND_HOST", "0.0.0.0")
 
     if args.stop:
         pf = _pid_file(port)
@@ -1394,9 +1455,12 @@ def main():
         os.remove(pf)
         return
 
+    # 0.0.0.0 binds every interface so 127.0.0.1 always works as a probe;
+    # for an explicit BIND_HOST, probe that host directly.
+    probe_host = "127.0.0.1" if bind_host == "0.0.0.0" else bind_host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        if s.connect_ex(("127.0.0.1", port)) == 0:
-            print(f"ERROR: Port {port} is already in use. Is MiniStack already running?\n"
+        if s.connect_ex((probe_host, port)) == 0:
+            print(f"ERROR: {probe_host}:{port} is already in use. Is MiniStack already running?\n"
                   f"  Stop it with: ministack --stop\n"
                   f"  Or use a different port: GATEWAY_PORT=4567 ministack")
             raise SystemExit(1)
@@ -1410,7 +1474,7 @@ def main():
         log_fh = open(log_file, "w")
         proc = subprocess.Popen(
             [sys.executable, "-m", "hypercorn", "ministack.app:app",
-             "--bind", f"0.0.0.0:{port}",
+             "--bind", f"{bind_host}:{port}",
              "--log-level", LOG_LEVEL.upper(),
              "--keep-alive", "75"],
             stdout=log_fh,
@@ -1422,7 +1486,7 @@ def main():
             f.write(str(proc.pid))
         print(f"MiniStack started in background (PID {proc.pid}) on port {port}.")
         print(f"  Logs: {log_file}")
-        print(f"  Stop: ministack --stop")
+        print("  Stop: ministack --stop")
         return
 
     # Foreground — write PID file and clean up on exit
@@ -1449,7 +1513,7 @@ def main():
         logging.getLogger("hypercorn.access").addFilter(_HealthLogFilter())
 
         config = HypercornConfig()
-        config.bind = [f"0.0.0.0:{port}"]
+        config.bind = [f"{bind_host}:{port}"]
         config.keep_alive_timeout = 75
         config.loglevel = LOG_LEVEL.upper()
 

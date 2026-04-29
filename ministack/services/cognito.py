@@ -51,6 +51,8 @@ Wire protocol:
 
 import base64
 import copy
+import hashlib
+import html as html_mod
 import json
 import logging
 import os
@@ -60,15 +62,21 @@ import string
 import time
 import zlib
 from datetime import datetime, timezone
-import hashlib
-import html as html_mod
-from urllib.parse import parse_qs, urlencode, quote
-from xml.etree.ElementTree import Element, SubElement, tostring as xml_tostring
+from urllib.parse import parse_qs, quote, urlencode
+from xml.etree.ElementTree import Element, SubElement
+from xml.etree.ElementTree import tostring as xml_tostring
 
 from defusedxml.ElementTree import fromstring as safe_xml_parse
 
-from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
+from ministack.core.persistence import PERSIST_STATE, load_state
+from ministack.core.responses import (
+    AccountScopedDict,
+    error_response_json,
+    get_account_id,
+    get_region,
+    json_response,
+    new_uuid,
+)
 
 logger = logging.getLogger("cognito")
 
@@ -79,11 +87,39 @@ logger = logging.getLogger("cognito")
 _RSA_PRIVATE_KEY = None
 _JWKS_KEY: dict = {}
 
-try:
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives import serialization
+# Real Cognito keeps its signing key stable across restarts and exposes the
+# matching public key on the JWKS endpoint. Without persistence, every Python
+# process (server, tests, helper scripts) would generate a fresh RSA key and
+# tokens minted in one process would fail to verify in another. Persist the
+# key to STATE_DIR so all processes share the same key.
+_STATE_DIR = os.environ.get("STATE_DIR", "/tmp/ministack-state")
+_RSA_KEY_PATH = os.path.join(_STATE_DIR, "cognito-rsa-key.pem")
 
-    _rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    _rsa_key = None
+    if os.path.exists(_RSA_KEY_PATH):
+        try:
+            with open(_RSA_KEY_PATH, "rb") as _f:
+                _rsa_key = serialization.load_pem_private_key(_f.read(), password=None)
+        except Exception:
+            _rsa_key = None
+    if _rsa_key is None:
+        _rsa_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        try:
+            os.makedirs(_STATE_DIR, exist_ok=True)
+            _pem = _rsa_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+            with open(_RSA_KEY_PATH, "wb") as _f:
+                _f.write(_pem)
+        except Exception:
+            # Persistence is best-effort — if it fails, fall back to in-memory key.
+            pass
     _RSA_PRIVATE_KEY = _rsa_key
 
     _pub = _rsa_key.public_key()
@@ -200,8 +236,21 @@ _identity_pools = AccountScopedDict()
 _identity_tags = AccountScopedDict()   # identity_pool_id -> {key: value}
 
 # ---------------------------------------------------------------------------
-# In-memory state — OAuth2 authorization codes (ephemeral, not persisted)
+# In-memory state — OAuth2 authorization codes
 # ---------------------------------------------------------------------------
+# Both `_auth_codes` (SAML / OIDC federation codes minted by
+# `_oauth2_authorize_federation` and `_saml2_idp_response`) and
+# `_authorization_codes` (managed-login PKCE flow) are intentionally
+# plain dicts — NOT AccountScopedDict.
+#
+# The mint paths and the redeem path (`_oauth2_token`) are all public
+# OAuth2 endpoints invoked without SigV4. With no AWS access key on the
+# request, every operation runs under the default account, so
+# AccountScopedDict would scope mint AND lookup to the same default
+# account — functionally equivalent to a plain dict, no isolation
+# gained or lost. Effective tenant isolation is provided by the random
+# unguessable token namespace. See
+# tests/test_cognito_auth_codes_persistence.py for a regression pin.
 
 _auth_codes = {}   # code -> {pool_id, client_id, username, redirect_uri, scopes, state, created_at}
 _AUTH_CODE_TTL = 300  # 5 minutes
@@ -217,6 +266,7 @@ def get_state():
         "identity_tags": copy.deepcopy(_identity_tags),
         "authorization_codes": copy.deepcopy(_authorization_codes),
         "refresh_tokens": copy.deepcopy(_refresh_tokens),
+        "auth_codes": copy.deepcopy(_auth_codes),
     }
 
 
@@ -228,6 +278,7 @@ def restore_state(data):
         _identity_tags.update(data.get("identity_tags", {}))
         _authorization_codes.update(data.get("authorization_codes", {}))
         _refresh_tokens.update(data.get("refresh_tokens", {}))
+        _auth_codes.update(data.get("auth_codes", {}))
 
 
 try:
@@ -325,8 +376,8 @@ def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "acces
     ).rstrip(b"=").decode()
     signing_input = f"{header}.{payload}".encode()
     if _RSA_PRIVATE_KEY is not None:
-        from cryptography.hazmat.primitives.asymmetric import padding
         from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
         sig_bytes = _RSA_PRIVATE_KEY.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
         sig = base64.urlsafe_b64encode(sig_bytes).rstrip(b"=").decode()
     else:

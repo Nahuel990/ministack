@@ -17,6 +17,7 @@ import json
 import logging
 import time
 
+from ministack.core.persistence import load_state
 from ministack.core.responses import AccountScopedDict, get_account_id, get_region, new_uuid
 
 logger = logging.getLogger("backup")
@@ -39,12 +40,16 @@ def reset():
 
 
 def get_state():
-    return copy.deepcopy({
-        "vaults":     dict(_vaults),
-        "plans":      dict(_plans),
-        "selections": dict(_selections),
-        "jobs":       dict(_jobs),
-    })
+    # Preserve AccountScopedDict wrappers; casting to a plain dict drops
+    # the per-account scoping and would persist only the current request's
+    # tenants. AccountScopedDict has a JSON encoder hook that round-trips
+    # the (account, key) tuple correctly.
+    return {
+        "vaults":     copy.deepcopy(_vaults),
+        "plans":      copy.deepcopy(_plans),
+        "selections": copy.deepcopy(_selections),
+        "jobs":       copy.deepcopy(_jobs),
+    }
 
 
 def restore_state(data):
@@ -56,6 +61,14 @@ def restore_state(data):
 
 def load_persisted_state(data):
     restore_state(data)
+
+
+try:
+    _restored = load_state("backup")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    logger.exception("Failed to restore persisted backup state; continuing fresh")
 
 
 # ---------------------------------------------------------------------------

@@ -6,14 +6,16 @@ Supports: CreateTable, DeleteTable, DescribeTable, ListTables, UpdateTable,
           DescribeTimeToLive, UpdateTimeToLive,
           DescribeContinuousBackups, UpdateContinuousBackups, DescribeEndpoints,
           TagResource, UntagResource, ListTagsOfResource,
+          EnableKinesisStreamingDestination, DisableKinesisStreamingDestination,
+          DescribeKinesisStreamingDestination, UpdateKinesisStreamingDestination,
           ExecuteStatement (PartiQL: SELECT, INSERT, UPDATE, DELETE).
 Uses X-Amz-Target header for action routing (JSON API).
 """
 
 import copy
-import os
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -22,31 +24,44 @@ from decimal import Decimal, InvalidOperation
 
 from ministack.core.responses import (
     AccountScopedDict,
-    get_account_id,
     error_response_json,
+    get_account_id,
+    get_region,
     json_response,
     new_uuid,
     now_iso,
-    get_region,
 )
 
 logger = logging.getLogger("dynamodb")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-from ministack.core.persistence import load_state, PERSIST_STATE
+from ministack.core.persistence import PERSIST_STATE, load_state
 
 _tables = AccountScopedDict()
 _tags = AccountScopedDict()
 _ttl_settings = AccountScopedDict()
 _pitr_settings = AccountScopedDict()
+# Kinesis streaming destinations — TableName -> list of
+# {"StreamArn": str, "DestinationStatus": "ACTIVE"|"DISABLED",
+#  "ApproximateCreationDateTimePrecision": "MILLISECOND"|"MICROSECOND"}.
+# ACTIVE entries get each _emit_stream_event record fanned out via
+# kinesis.put_record_internal; DISABLED entries stay on the describe
+# response (matching the ~24 h AWS retention window for readability).
+_kinesis_destinations = AccountScopedDict()
 _lock = threading.Lock()
 
 
 # ── Persistence ────────────────────────────────────────────
 
 def get_state():
-    return {"tables": copy.deepcopy(_tables), "tags": copy.deepcopy(_tags), "ttl_settings": copy.deepcopy(_ttl_settings), "pitr_settings": copy.deepcopy(_pitr_settings)}
+    return {
+        "tables": copy.deepcopy(_tables),
+        "tags": copy.deepcopy(_tags),
+        "ttl_settings": copy.deepcopy(_ttl_settings),
+        "pitr_settings": copy.deepcopy(_pitr_settings),
+        "kinesis_destinations": copy.deepcopy(_kinesis_destinations),
+    }
 
 
 def restore_state(data):
@@ -64,6 +79,7 @@ def restore_state(data):
         _tags.update(data.get("tags", {}))
         _ttl_settings.update(data.get("ttl_settings", {}))
         _pitr_settings.update(data.get("pitr_settings", {}))
+        _kinesis_destinations.update(data.get("kinesis_destinations", {}))
 
 
 try:
@@ -90,16 +106,9 @@ def _next_stream_seq():
         return f"{int(time.time() * 1000):020d}{_stream_seq_counter:010d}"
 
 
-def _emit_stream_event(table_name: str, event_name: str, old_item: dict | None, new_item: dict | None):
-    """Emit a DynamoDB Streams record if the table has StreamSpecification enabled."""
-    table = _tables.get(table_name)
-    if not table:
-        return
-    spec = table.get("StreamSpecification")
-    if not spec or not spec.get("StreamEnabled"):
-        return
-
-    view_type = spec.get("StreamViewType", "NEW_AND_OLD_IMAGES")
+def _build_change_record(table: dict, event_name: str, old_item: dict | None, new_item: dict | None, view_type: str) -> dict:
+    """Build a DynamoDB Streams-shaped change record. ``view_type`` controls
+    whether OldImage / NewImage are populated."""
     record: dict = {
         "eventID": new_uuid(),
         "eventName": event_name,
@@ -129,9 +138,67 @@ def _emit_stream_event(table_name: str, event_name: str, old_item: dict | None, 
     if view_type in ("NEW_AND_OLD_IMAGES", "NEW_IMAGE") and new_item:
         record["dynamodb"]["NewImage"] = new_item
 
-    if table_name not in _stream_records:
-        _stream_records[table_name] = []
-    _stream_records[table_name].append(record)
+    return record
+
+
+def _emit_stream_event(table_name: str, event_name: str, old_item: dict | None, new_item: dict | None):
+    """Emit a change to DynamoDB Streams (if enabled) and to any ACTIVE Kinesis
+    streaming destinations registered for this table.
+
+    AWS treats DynamoDB Streams and Kinesis streaming destination as
+    independent subscriptions — a table can have either, both, or neither.
+    Each path is gated independently here; the function name is kept for
+    backwards compatibility with existing call sites."""
+    table = _tables.get(table_name)
+    if not table:
+        return
+
+    spec = table.get("StreamSpecification") or {}
+    streams_enabled = bool(spec.get("StreamEnabled"))
+    has_kinesis = bool(_kinesis_destinations.get(table_name))
+    if not streams_enabled and not has_kinesis:
+        return
+
+    if streams_enabled:
+        view_type = spec.get("StreamViewType", "NEW_AND_OLD_IMAGES")
+        record = _build_change_record(table, event_name, old_item, new_item, view_type)
+        if table_name not in _stream_records:
+            _stream_records[table_name] = []
+        _stream_records[table_name].append(record)
+
+    if has_kinesis:
+        # AWS's Kinesis streaming destination always carries the equivalent of
+        # NEW_AND_OLD_IMAGES — the StreamViewType setting belongs to Streams,
+        # not to the Kinesis fan-out path. Build a fresh record so its
+        # SequenceNumber and eventID are independent of the Streams record.
+        kinesis_record = _build_change_record(table, event_name, old_item, new_item, "NEW_AND_OLD_IMAGES")
+        _fan_out_to_kinesis(table_name, kinesis_record)
+
+
+def _fan_out_to_kinesis(table_name: str, record: dict) -> None:
+    """Deliver a Streams record to every ACTIVE Kinesis streaming destination
+    registered for this table. Failures are logged and swallowed so DynamoDB
+    writes stay green even if the downstream stream disappeared."""
+    dests = _kinesis_destinations.get(table_name, [])
+    if not dests:
+        return
+    try:
+        from ministack.services.kinesis import put_record_internal
+    except Exception as exc:  # pragma: no cover - kinesis module missing
+        logger.warning("Kinesis streaming destination: import failed: %s", exc)
+        return
+    payload = json.dumps(record, default=str).encode("utf-8")
+    pk = record.get("eventID", new_uuid())
+    for dest in dests:
+        if dest.get("DestinationStatus") != "ACTIVE":
+            continue
+        try:
+            put_record_internal(dest["StreamArn"], pk, payload)
+        except Exception as exc:
+            logger.warning(
+                "Kinesis streaming destination delivery failed for %s -> %s: %s",
+                table_name, dest.get("StreamArn"), exc,
+            )
 
 # ---------------------------------------------------------------------------
 # TTL background reaper
@@ -208,6 +275,10 @@ async def handle_request(method: str, path: str, headers: dict, body: bytes, que
         "TagResource": _tag_resource,
         "UntagResource": _untag_resource,
         "ListTagsOfResource": _list_tags,
+        "EnableKinesisStreamingDestination": _enable_kinesis_streaming_destination,
+        "DisableKinesisStreamingDestination": _disable_kinesis_streaming_destination,
+        "DescribeKinesisStreamingDestination": _describe_kinesis_streaming_destination,
+        "UpdateKinesisStreamingDestination": _update_kinesis_streaming_destination,
         "ExecuteStatement": _execute_statement,
     }
 
@@ -337,6 +408,7 @@ def _delete_table(data):
     _tags.pop(desc.get("TableArn", ""), None)
     _ttl_settings.pop(name, None)
     _pitr_settings.pop(name, None)
+    _kinesis_destinations.pop(name, None)
     return json_response({"TableDescription": desc})
 
 
@@ -1085,7 +1157,7 @@ def _batch_write_item(data):
         if not table:
             return error_response_json(
                 "ResourceNotFoundException",
-                f"Requested resource not found",
+                "Requested resource not found",
                 400,
             )
         for req in requests:
@@ -1293,14 +1365,20 @@ def _describe_continuous_backups(data):
     if name not in _tables:
         return error_response_json("ResourceNotFoundException", f"Table {name} not found", 400)
     pitr_enabled = _pitr_settings.get(name, False)
+    pitr_desc: dict = {
+        "PointInTimeRecoveryStatus": "ENABLED" if pitr_enabled else "DISABLED",
+    }
+    # AWS only meaningfully populates the restorable-date-time fields when PITR
+    # is enabled; emitting `0` (Unix epoch 1970) misleads SDK consumers that
+    # parse them into datetimes. Omit when disabled.
+    if pitr_enabled:
+        now = int(time.time())
+        pitr_desc["EarliestRestorableDateTime"] = now
+        pitr_desc["LatestRestorableDateTime"] = now
     return json_response({
         "ContinuousBackupsDescription": {
             "ContinuousBackupsStatus": "ENABLED",
-            "PointInTimeRecoveryDescription": {
-                "PointInTimeRecoveryStatus": "ENABLED" if pitr_enabled else "DISABLED",
-                "EarliestRestorableDateTime": 0,
-                "LatestRestorableDateTime": 0,
-            }
+            "PointInTimeRecoveryDescription": pitr_desc,
         }
     })
 
@@ -1327,8 +1405,14 @@ def _update_continuous_backups(data):
 # ---------------------------------------------------------------------------
 
 def _describe_endpoints(data):
+    # AWS endpoint discovery: clients call this once and use the returned
+    # Address for follow-up calls. Returning real-AWS hostname would redirect
+    # SDKs AWAY from MiniStack on cache miss. Return MiniStack's own host so
+    # endpoint-discovery-aware SDKs keep talking to us.
+    host = os.environ.get("MINISTACK_HOST", "localhost")
+    port = os.environ.get("GATEWAY_PORT", "4566")
     return json_response({
-        "Endpoints": [{"Address": "dynamodb.us-east-1.amazonaws.com", "CachePeriodInMinutes": 1440}]
+        "Endpoints": [{"Address": f"{host}:{port}", "CachePeriodInMinutes": 1440}]
     })
 
 
@@ -1360,6 +1444,198 @@ def _untag_resource(data):
 def _list_tags(data):
     arn = data.get("ResourceArn", "")
     return json_response({"Tags": _tags.get(arn, [])})
+
+
+# ---------------------------------------------------------------------------
+# Kinesis streaming destination (aws_dynamodb_kinesis_streaming_destination)
+# ---------------------------------------------------------------------------
+#
+# AWS returns DestinationStatus="ENABLING" from Enable and then flips to
+# "ACTIVE" after ~30-60 s. Terraform polls until ACTIVE so there is no
+# behavioural gain from emulating the intermediate state — we return ACTIVE
+# immediately to keep smoke tests fast. DISABLED destinations stay on the
+# describe response (AWS retains them for ~24 h) so callers can observe the
+# full lifecycle.
+
+_VALID_PRECISIONS = {"MILLISECOND", "MICROSECOND"}
+
+
+def _validate_kinesis_destination_request(data: dict) -> tuple[str | None, str | None, dict | None]:
+    table_name = data.get("TableName")
+    stream_arn = data.get("StreamArn")
+    if not table_name:
+        return None, None, error_response_json("ValidationException", "TableName is required", 400)
+    if table_name not in _tables:
+        return None, None, error_response_json(
+            "ResourceNotFoundException", f"Table not found: {table_name}", 400
+        )
+    if not stream_arn:
+        return None, None, error_response_json("ValidationException", "StreamArn is required", 400)
+    return table_name, stream_arn, None
+
+
+def _enable_kinesis_streaming_destination(data):
+    table_name, stream_arn, err = _validate_kinesis_destination_request(data)
+    if err:
+        return err
+    precision = (
+        data.get("EnableKinesisStreamingConfiguration", {}).get(
+            "ApproximateCreationDateTimePrecision", "MILLISECOND"
+        )
+        if isinstance(data.get("EnableKinesisStreamingConfiguration"), dict)
+        else "MILLISECOND"
+    )
+    if precision not in _VALID_PRECISIONS:
+        return error_response_json(
+            "ValidationException",
+            f"ApproximateCreationDateTimePrecision must be one of {sorted(_VALID_PRECISIONS)}",
+            400,
+        )
+
+    # Lock the check-then-act so two concurrent Enables for the same
+    # (table, ARN) cannot both pass the ACTIVE-already check and then both
+    # append, leaving duplicate entries in the destinations list. Same lock
+    # the TTL reaper and reset() use for module state mutation.
+    with _lock:
+        dests = _kinesis_destinations.get(table_name, [])
+        for d in dests:
+            if d.get("StreamArn") == stream_arn and d.get("DestinationStatus") == "ACTIVE":
+                return error_response_json(
+                    "ResourceInUseException",
+                    f"Table {table_name} already has an active Kinesis streaming destination for {stream_arn}",
+                    400,
+                )
+
+        entry = {
+            "StreamArn": stream_arn,
+            "DestinationStatus": "ACTIVE",
+            "DestinationStatusDescription": "",
+            "ApproximateCreationDateTimePrecision": precision,
+        }
+        # Replace any DISABLED entry for the same ARN; otherwise append.
+        replaced = False
+        for i, d in enumerate(dests):
+            if d.get("StreamArn") == stream_arn:
+                dests[i] = entry
+                replaced = True
+                break
+        if not replaced:
+            dests.append(entry)
+        _kinesis_destinations[table_name] = dests
+
+    # AWS returns "ENABLING" from Enable; the destination flips to "ACTIVE"
+    # eventually. We store ACTIVE so subsequent Describe calls show steady-
+    # state, but the immediate response must report the transitional state
+    # to match what real AWS returns to a Terraform / SDK consumer that
+    # polls on the response field.
+    return json_response({
+        "TableName": table_name,
+        "StreamArn": stream_arn,
+        "DestinationStatus": "ENABLING",
+        "EnableKinesisStreamingConfiguration": {
+            "ApproximateCreationDateTimePrecision": precision,
+        },
+    })
+
+
+def _disable_kinesis_streaming_destination(data):
+    table_name, stream_arn, err = _validate_kinesis_destination_request(data)
+    if err:
+        return err
+
+    with _lock:
+        dests = _kinesis_destinations.get(table_name, [])
+        target = next(
+            (d for d in dests if d.get("StreamArn") == stream_arn and d.get("DestinationStatus") == "ACTIVE"),
+            None,
+        )
+        if not target:
+            return error_response_json(
+                "ResourceNotFoundException",
+                f"No active Kinesis streaming destination for {stream_arn} on {table_name}",
+                400,
+            )
+        target["DestinationStatus"] = "DISABLED"
+        _kinesis_destinations[table_name] = dests
+        precision = target.get("ApproximateCreationDateTimePrecision", "MILLISECOND")
+
+    # AWS returns "DISABLING" from Disable; storage is DISABLED so subsequent
+    # Describe shows the steady-state.
+    return json_response({
+        "TableName": table_name,
+        "StreamArn": stream_arn,
+        "DestinationStatus": "DISABLING",
+        "EnableKinesisStreamingConfiguration": {
+            "ApproximateCreationDateTimePrecision": precision,
+        },
+    })
+
+
+def _describe_kinesis_streaming_destination(data):
+    table_name = data.get("TableName")
+    if not table_name:
+        return error_response_json("ValidationException", "TableName is required", 400)
+    if table_name not in _tables:
+        return error_response_json(
+            "ResourceNotFoundException", f"Table not found: {table_name}", 400
+        )
+    dests = _kinesis_destinations.get(table_name, [])
+    return json_response({
+        "TableName": table_name,
+        "KinesisDataStreamDestinations": [
+            {
+                "StreamArn": d["StreamArn"],
+                "DestinationStatus": d["DestinationStatus"],
+                "DestinationStatusDescription": d.get("DestinationStatusDescription", ""),
+                "ApproximateCreationDateTimePrecision": d.get(
+                    "ApproximateCreationDateTimePrecision", "MILLISECOND"
+                ),
+            }
+            for d in dests
+        ],
+    })
+
+
+def _update_kinesis_streaming_destination(data):
+    table_name, stream_arn, err = _validate_kinesis_destination_request(data)
+    if err:
+        return err
+    cfg = data.get("UpdateKinesisStreamingConfiguration") or {}
+    precision = cfg.get("ApproximateCreationDateTimePrecision")
+    if precision and precision not in _VALID_PRECISIONS:
+        return error_response_json(
+            "ValidationException",
+            f"ApproximateCreationDateTimePrecision must be one of {sorted(_VALID_PRECISIONS)}",
+            400,
+        )
+
+    with _lock:
+        dests = _kinesis_destinations.get(table_name, [])
+        target = next(
+            (d for d in dests if d.get("StreamArn") == stream_arn and d.get("DestinationStatus") == "ACTIVE"),
+            None,
+        )
+        if not target:
+            return error_response_json(
+                "ResourceNotFoundException",
+                f"No active Kinesis streaming destination for {stream_arn} on {table_name}",
+                400,
+            )
+        if precision:
+            target["ApproximateCreationDateTimePrecision"] = precision
+        _kinesis_destinations[table_name] = dests
+        applied_precision = target["ApproximateCreationDateTimePrecision"]
+
+    # AWS returns "UPDATING" from Update; storage stays ACTIVE so subsequent
+    # Describe shows the steady-state.
+    return json_response({
+        "TableName": table_name,
+        "StreamArn": stream_arn,
+        "DestinationStatus": "UPDATING",
+        "UpdateKinesisStreamingConfiguration": {
+            "ApproximateCreationDateTimePrecision": applied_precision,
+        },
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -2324,3 +2600,4 @@ def reset():
         _ttl_settings.clear()
         _pitr_settings.clear()
         _stream_records.clear()
+        _kinesis_destinations.clear()

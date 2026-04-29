@@ -16,8 +16,8 @@ import re
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, json_response, new_uuid, now_iso, get_region
-from ministack.services.ses import _build_mime_message, _smtp_relay, _sent_emails_list, _parse_raw_mime
+from ministack.core.responses import AccountScopedDict, get_account_id, get_region, json_response, new_uuid, now_iso
+from ministack.services.ses import _build_mime_message, _parse_raw_mime, _sent_emails_list, _smtp_relay
 
 logger = logging.getLogger("ses-v2")
 
@@ -87,7 +87,7 @@ async def handle_request(method, path, headers, body, query_params):
 
     # GET /v2/email/suppression/addresses
     if sub == "/suppression/addresses" and method == "GET":
-        return json_response({"SuppressedDestinationSummaries": [], "NextToken": None})
+        return json_response({"SuppressedDestinationSummaries": []})
 
     # POST /v2/email/outbound-emails  (SendEmail)
     if sub == "/outbound-emails" and method == "POST":
@@ -177,7 +177,6 @@ async def handle_request(method, path, headers, body, query_params):
                 {"IdentityType": v["IdentityType"], "IdentityName": k, "SendingEnabled": True}
                 for k, v in _identities.items()
             ],
-            "NextToken": None,
         })
 
     # GET /v2/email/identities/{identity}
@@ -203,7 +202,7 @@ async def handle_request(method, path, headers, body, query_params):
 
     # GET /v2/email/configuration-sets  (ListConfigurationSets)
     if sub == "/configuration-sets" and method == "GET":
-        return json_response({"ConfigurationSets": list(_config_sets.keys()), "NextToken": None})
+        return json_response({"ConfigurationSets": list(_config_sets.keys())})
 
     # GET/DELETE /v2/email/configuration-sets/{name}
     m = re.match(r"^/configuration-sets/([^/]+)$", sub)

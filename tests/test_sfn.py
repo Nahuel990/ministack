@@ -2,11 +2,13 @@ import io
 import json
 import os
 import time
+import uuid as _uuid_mod
 import zipfile
 from urllib.parse import urlparse
+
 import pytest
 from botocore.exceptions import ClientError
-import uuid as _uuid_mod
+
 
 def _make_zip(code: str) -> bytes:
     buf = io.BytesIO()
@@ -535,6 +537,99 @@ def test_sfn_aws_sdk_unknown_service_fails(sfn, sfn_sync):
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
+
+def test_sfn_optimized_start_execution_returns_execution_arn(sfn, sfn_sync):
+    """Optimized states:startExecution returns the child ExecutionArn."""
+    suffix = _uuid_mod.uuid4().hex[:8]
+    child = sfn.create_state_machine(
+        name=f"sfn-child-opt-{suffix}",
+        definition=json.dumps({
+            "StartAt": "Done",
+            "States": {"Done": {"Type": "Pass", "End": True}},
+        }),
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    parent = sfn.create_state_machine(
+        name=f"sfn-parent-opt-{suffix}",
+        definition=json.dumps({
+            "StartAt": "Child",
+            "States": {
+                "Child": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::states:startExecution",
+                    "Parameters": {
+                        "StateMachineArn": child["stateMachineArn"],
+                        "Input": "{\"source\":\"optimized\"}",
+                    },
+                    "ResultPath": "$.child",
+                    "End": True,
+                },
+            },
+        }),
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=parent["stateMachineArn"],
+        input="{}",
+    )
+    assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+    output = json.loads(resp["output"])
+    child_arn = output["child"]["ExecutionArn"]
+    assert child_arn.startswith("arn:aws:states:us-east-1:000000000000:execution:sfn-child-opt-")
+    assert "StartDate" in output["child"]
+
+    sfn.describe_execution(executionArn=child_arn)
+    sfn_sync.delete_state_machine(stateMachineArn=parent["stateMachineArn"])
+    sfn_sync.delete_state_machine(stateMachineArn=child["stateMachineArn"])
+
+
+def test_sfn_aws_sdk_sfn_start_execution_accepts_pascal_case(sfn, sfn_sync):
+    """aws-sdk:sfn:startExecution accepts Step Functions PascalCase Parameters."""
+    suffix = _uuid_mod.uuid4().hex[:8]
+    child = sfn.create_state_machine(
+        name=f"sfn-child-sdk-{suffix}",
+        definition=json.dumps({
+            "StartAt": "Done",
+            "States": {"Done": {"Type": "Pass", "End": True}},
+        }),
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+    parent = sfn.create_state_machine(
+        name=f"sfn-parent-sdk-{suffix}",
+        definition=json.dumps({
+            "StartAt": "Child",
+            "States": {
+                "Child": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:sfn:startExecution",
+                    "Parameters": {
+                        "StateMachineArn": child["stateMachineArn"],
+                        "Input": "{\"source\":\"aws-sdk\"}",
+                    },
+                    "ResultPath": "$.child",
+                    "End": True,
+                },
+            },
+        }),
+        roleArn="arn:aws:iam::000000000000:role/R",
+    )
+
+    resp = sfn_sync.start_sync_execution(
+        stateMachineArn=parent["stateMachineArn"],
+        input="{}",
+    )
+    assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+    output = json.loads(resp["output"])
+    child_arn = output["child"]["ExecutionArn"]
+    assert child_arn.startswith("arn:aws:states:us-east-1:000000000000:execution:sfn-child-sdk-")
+    assert "StartDate" in output["child"]
+
+    sfn.describe_execution(executionArn=child_arn)
+    sfn_sync.delete_state_machine(stateMachineArn=parent["stateMachineArn"])
+    sfn_sync.delete_state_machine(stateMachineArn=child["stateMachineArn"])
+
+
 def test_sfn_aws_sdk_rds_create_and_describe_cluster(sfn, sfn_sync):
     """aws-sdk:rds CreateDBCluster + DescribeDBClusters via query-protocol dispatch."""
     import uuid as _uuid
@@ -686,6 +781,76 @@ def test_sfn_aws_sdk_rds_modify_cluster(sfn, sfn_sync, rds):
     assert output["modifyResult"]["DbCluster"]["BackupRetentionPeriod"] == 7
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+def test_sfn_aws_sdk_rds_remove_from_global_cluster(sfn, sfn_sync, rds):
+    """aws-sdk:rds RemoveFromGlobalCluster preserves RDS' DbClusterIdentifier shape."""
+    cluster_id = f"sfn-global-{_uuid_mod.uuid4().hex[:8]}"
+    global_id = f"sfn-global-{_uuid_mod.uuid4().hex[:8]}"
+    sm_name = f"sdk-rds-global-{_uuid_mod.uuid4().hex[:8]}"
+    sm_arn = None
+
+    rds.create_db_cluster(
+        DBClusterIdentifier=cluster_id,
+        Engine="aurora-postgresql",
+        MasterUsername="admin",
+        MasterUserPassword="testpass123",
+    )
+    rds.create_global_cluster(
+        GlobalClusterIdentifier=global_id,
+        SourceDBClusterIdentifier=cluster_id,
+    )
+
+    definition = json.dumps({
+        "StartAt": "RemovePrimary",
+        "States": {
+            "RemovePrimary": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:removeFromGlobalCluster",
+                "Parameters": {
+                    "GlobalClusterIdentifier": global_id,
+                    "DbClusterIdentifier": cluster_id,
+                },
+                "ResultPath": "$.removeResult",
+                "Next": "DeleteGlobal",
+            },
+            "DeleteGlobal": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rds:deleteGlobalCluster",
+                "Parameters": {
+                    "GlobalClusterIdentifier": global_id,
+                },
+                "ResultPath": "$.deleteResult",
+                "End": True,
+            },
+        },
+    })
+
+    try:
+        sm_arn = sfn_sync.create_state_machine(
+            name=sm_name,
+            definition=definition,
+            roleArn="arn:aws:iam::000000000000:role/sfn-role",
+        )["stateMachineArn"]
+
+        resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+        assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+        output = json.loads(resp["output"])
+        assert output["removeResult"]["GlobalCluster"]["GlobalClusterMembers"] == []
+    finally:
+        if sm_arn:
+            sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+        try:
+            rds.remove_from_global_cluster(
+                GlobalClusterIdentifier=global_id,
+                DbClusterIdentifier=cluster_id,
+            )
+        except ClientError:
+            pass
+        try:
+            rds.delete_global_cluster(GlobalClusterIdentifier=global_id)
+        except ClientError:
+            pass
+        rds.delete_db_cluster(DBClusterIdentifier=cluster_id, SkipFinalSnapshot=True)
 
 def test_sfn_xml_list_wrapper_single_element(sfn, sfn_sync):
     """DescribeDBClusters returns a JSON list even when only one cluster exists."""
@@ -2638,7 +2803,7 @@ def test_sfn_wait_scale_zero_does_not_timeout_lambda_tasks(sfn, lam):
         Handler="index.handler",
         Code={"ZipFile": _make_zip(code)},
     )
-    fn_arn = f"arn:aws:lambda:us-east-1:000000000000:function:sfn-timeout-test-fn"
+    fn_arn = "arn:aws:lambda:us-east-1:000000000000:function:sfn-timeout-test-fn"
 
     _set_wait_scale(0)
     try:

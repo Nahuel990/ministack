@@ -14,14 +14,21 @@ Supports: CreateStream, DeleteStream, DescribeStream, DescribeStreamSummary,
 
 import base64
 import copy
-import os
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
+from ministack.core.responses import (
+    AccountScopedDict,
+    error_response_json,
+    get_account_id,
+    get_region,
+    json_response,
+    new_uuid,
+)
 
 logger = logging.getLogger("kinesis")
 
@@ -29,7 +36,7 @@ REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 MAX_HASH_KEY = (2**128) - 1
 ITERATOR_EXPIRY_SECONDS = 300
 
-from ministack.core.persistence import load_state, PERSIST_STATE
+from ministack.core.persistence import PERSIST_STATE, load_state
 
 _streams = AccountScopedDict()
 _shard_iterators = AccountScopedDict()
@@ -41,12 +48,16 @@ _sequence_lock = threading.Lock()
 # ── Persistence ────────────────────────────────────────────
 
 def get_state():
-    return {"streams": copy.deepcopy(_streams)}
+    return {
+        "streams": copy.deepcopy(_streams),
+        "consumers": copy.deepcopy(_consumers),
+    }
 
 
 def restore_state(data):
     if data:
         _streams.update(data.get("streams", {}))
+        _consumers.update(data.get("consumers", {}))
 
 
 try:
@@ -138,6 +149,29 @@ def _resolve_stream(data):
 
 def _max_shard_index(stream):
     return max((int(sid.split("-")[1]) for sid in stream["shards"]), default=-1)
+
+
+def put_record_internal(stream_arn: str, partition_key: str, data: bytes) -> bool:
+    """Append a record to a stream looked up by ARN — used by cross-service
+    emitters such as DynamoDB's Kinesis streaming destination fan-out.
+
+    Returns ``True`` on success, ``False`` silently when the stream is gone
+    or not ACTIVE (matches AWS behaviour where delivery to a disabled
+    destination is dropped without surfacing an error on the writer).
+    """
+    stream = next((s for s in _streams.values() if s.get("StreamARN") == stream_arn), None)
+    if not stream or stream.get("StreamStatus") != "ACTIVE":
+        return False
+    _expire_records(stream)
+    hash_int = _partition_key_to_hash(partition_key)
+    shard_id = _route_to_shard(hash_int, stream)
+    stream["shards"][shard_id]["records"].append({
+        "SequenceNumber": _next_sequence_number(),
+        "ApproximateArrivalTimestamp": int(time.time()),
+        "Data": base64.b64encode(data).decode("ascii"),
+        "PartitionKey": partition_key,
+    })
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +362,32 @@ def _list_streams(data):
     return json_response({"StreamNames": page, "StreamSummaries": summaries, "HasMoreStreams": has_more})
 
 
+_LIST_SHARDS_TOKEN_TTL = 300  # AWS contract: tokens expire after 300 seconds.
+
+
+def _encode_list_shards_token(after_shard_id: str) -> str:
+    """Encode an opaque pagination token for ListShards. AWS uses an opaque
+    string; consumers must round-trip it without inspection. We base64url-
+    encode a small JSON payload so we can also enforce the AWS 300s TTL."""
+    payload = json.dumps({"a": after_shard_id, "t": int(time.time())}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_list_shards_token(token: str) -> tuple[str | None, str | None]:
+    """Return (after_shard_id, error_code). error_code is "ExpiredNextTokenException"
+    if the token is past TTL, "InvalidArgumentException" if malformed, else None."""
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii"))
+        obj = json.loads(raw)
+        if not isinstance(obj, dict) or "a" not in obj or "t" not in obj:
+            return None, "InvalidArgumentException"
+        if int(time.time()) - int(obj["t"]) > _LIST_SHARDS_TOKEN_TTL:
+            return None, "ExpiredNextTokenException"
+        return str(obj["a"]), None
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None, "InvalidArgumentException"
+
+
 def _list_shards(data):
     name, stream = _resolve_stream(data)
     if not stream:
@@ -342,12 +402,23 @@ def _list_shards(data):
     if exclusive_start:
         shard_ids = [s for s in shard_ids if s > exclusive_start]
     if next_token:
-        shard_ids = [s for s in shard_ids if s > next_token]
+        after, err = _decode_list_shards_token(next_token)
+        if err == "ExpiredNextTokenException":
+            return error_response_json(
+                "ExpiredNextTokenException",
+                "NextToken has expired. Tokens expire after 300 seconds.",
+                400,
+            )
+        if err or after is None:
+            return error_response_json(
+                "InvalidArgumentException", "Invalid NextToken", 400
+            )
+        shard_ids = [s for s in shard_ids if s > after]
 
     page = shard_ids[:max_results]
     result = {"Shards": [_shard_out(sid, stream["shards"][sid]) for sid in page]}
     if len(shard_ids) > max_results:
-        result["NextToken"] = page[-1]
+        result["NextToken"] = _encode_list_shards_token(page[-1])
     return json_response(result)
 
 

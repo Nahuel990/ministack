@@ -77,7 +77,8 @@ import time
 import urllib.error
 import urllib.request
 
-from ministack.core.responses import AccountScopedDict, get_account_id, new_uuid, get_region
+from ministack.core.responses import AccountScopedDict, get_account_id, get_region, new_uuid
+from ministack.services.apigateway import _timeout_from_env, _urlopen_async
 
 
 def _now_unix():
@@ -87,6 +88,7 @@ def _now_unix():
     return int(time.time())
 
 logger = logging.getLogger("apigateway_v1")
+_PROXY_TIMEOUT_SECONDS = _timeout_from_env("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", 30.0)
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
@@ -460,21 +462,28 @@ async def _call_lambda(func_name, event, qualifier=None):
 # ---- Persistence hooks ----
 
 def get_state():
-    """Return full module state for persistence."""
+    """Return full module state for persistence.
+
+    Deep-copies each dict so a concurrent write during shutdown
+    serialisation can't corrupt the persisted JSON. Every other
+    persisted service in this codebase already does the same; the
+    apigateway pair was an outlier.
+    """
+    import copy
     return {
-        "rest_apis": _rest_apis,
-        "resources": _resources,
-        "stages_v1": _stages_v1,
-        "deployments_v1": _deployments_v1,
-        "authorizers_v1": _authorizers_v1,
-        "models": _models,
-        "api_keys": _api_keys,
-        "usage_plans": _usage_plans,
-        "usage_plan_keys": _usage_plan_keys,
-        "domain_names": _domain_names,
-        "base_path_mappings": _base_path_mappings,
-        "v1_tags": _v1_tags,
-        "account_settings": _account_settings,
+        "rest_apis": copy.deepcopy(_rest_apis),
+        "resources": copy.deepcopy(_resources),
+        "stages_v1": copy.deepcopy(_stages_v1),
+        "deployments_v1": copy.deepcopy(_deployments_v1),
+        "authorizers_v1": copy.deepcopy(_authorizers_v1),
+        "models": copy.deepcopy(_models),
+        "api_keys": copy.deepcopy(_api_keys),
+        "usage_plans": copy.deepcopy(_usage_plans),
+        "usage_plan_keys": copy.deepcopy(_usage_plan_keys),
+        "domain_names": copy.deepcopy(_domain_names),
+        "base_path_mappings": copy.deepcopy(_base_path_mappings),
+        "v1_tags": copy.deepcopy(_v1_tags),
+        "account_settings": copy.deepcopy(_account_settings),
     }
 
 
@@ -911,10 +920,9 @@ async def _invoke_http_proxy_v1(integration, path, method, headers, body, query_
         if k.lower() not in ("host", "content-length"):
             req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            resp_body = resp.read()
-            resp_headers = {"Content-Type": resp.headers.get("Content-Type", "application/json")}
-            return resp.status, resp_headers, resp_body
+        status, resp_headers_raw, resp_body = await _urlopen_async(req, _PROXY_TIMEOUT_SECONDS)
+        resp_headers = {"Content-Type": resp_headers_raw.get("Content-Type", "application/json")}
+        return status, resp_headers, resp_body
     except urllib.error.HTTPError as e:
         return e.code, {"Content-Type": "application/json"}, e.read()
     except Exception as ex:
@@ -1046,7 +1054,7 @@ def _get_rest_api(api_id):
 
 
 def _get_rest_apis():
-    return _v1_response({"item": [_rest_api_view(a) for a in _rest_apis.values()], "nextToken": None})
+    return _v1_response({"item": [_rest_api_view(a) for a in _rest_apis.values()]})
 
 
 def _update_rest_api(api_id, data):
@@ -1242,10 +1250,16 @@ def _put_integration(api_id, resource_id, http_method, data):
         "timeoutInMillis": data.get("timeoutInMillis", 29000),
         "cacheNamespace": resource_id,
         "cacheKeyParameters": data.get("cacheKeyParameters", []),
+        # contentHandling (CONVERT_TO_TEXT | CONVERT_TO_BINARY) is the v1
+        # equivalent of v2's contentHandlingStrategy (#439). Without
+        # storing it Terraform's aws_api_gateway_integration plans a
+        # perpetual replace on every apply.
+        "contentHandling": data.get("contentHandling"),
         "integrationResponses": {},
     }
     method_obj["methodIntegration"] = integration
-    return _v1_response(integration)
+    # Real AWS returns HTTP 201 Created for PutIntegration.
+    return _v1_response(integration, 201)
 
 
 def _get_integration(api_id, resource_id, http_method):

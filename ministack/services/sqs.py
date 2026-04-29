@@ -34,8 +34,8 @@ import time
 from urllib.parse import parse_qs
 from xml.sax.saxutils import escape as _esc
 
-from ministack.core.persistence import load_state, PERSIST_STATE
-from ministack.core.responses import AccountScopedDict, get_account_id, md5_hash, new_uuid, now_iso, get_region
+from ministack.core.persistence import PERSIST_STATE, load_state
+from ministack.core.responses import AccountScopedDict, get_account_id, get_region, md5_hash, new_uuid, now_iso
 
 logger = logging.getLogger("sqs")
 
@@ -49,7 +49,14 @@ _queues_lock = threading.Lock()
 # ── Persistence ────────────────────────────────────────────
 
 def get_state():
-    return {"queues": copy.deepcopy(_queues), "queue_name_to_url": dict(_queue_name_to_url)}
+    # Both must be deepcopy(asd): dict(asd) iterates only the current
+    # request's tenant via AccountScopedDict.__iter__, so other tenants'
+    # name→url mappings would silently disappear at shutdown
+    # serialisation. Same bug family as #492.
+    return {
+        "queues": copy.deepcopy(_queues),
+        "queue_name_to_url": copy.deepcopy(_queue_name_to_url),
+    }
 
 
 def restore_state(data):

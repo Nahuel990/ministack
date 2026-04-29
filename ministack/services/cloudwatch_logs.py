@@ -19,19 +19,26 @@ Supports: CreateLogGroup, DeleteLogGroup, DescribeLogGroups,
 
 import base64
 import copy
-import os
 import fnmatch
 import json
 import logging
+import os
 import time
 
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
+from ministack.core.responses import (
+    AccountScopedDict,
+    error_response_json,
+    get_account_id,
+    get_region,
+    json_response,
+    new_uuid,
+)
 
 logger = logging.getLogger("logs")
 
 REGION = os.environ.get("MINISTACK_REGION", "us-east-1")
 
-from ministack.core.persistence import load_state, PERSIST_STATE
+from ministack.core.persistence import PERSIST_STATE, load_state
 
 _log_groups = AccountScopedDict()
 # group_name -> {
@@ -70,6 +77,9 @@ _deliveries = AccountScopedDict()
 def get_state():
     return {
         "log_groups": copy.deepcopy(_log_groups),
+        "destinations": copy.deepcopy(_destinations),
+        "metric_filters": copy.deepcopy(_metric_filters),
+        "queries": copy.deepcopy(_queries),
         "delivery_sources": copy.deepcopy(_delivery_sources),
         "delivery_destinations": copy.deepcopy(_delivery_destinations),
         "deliveries": copy.deepcopy(_deliveries),
@@ -79,6 +89,9 @@ def get_state():
 def restore_state(data):
     if data:
         _log_groups.update(data.get("log_groups", {}))
+        _destinations.update(data.get("destinations", {}))
+        _metric_filters.update(data.get("metric_filters", {}))
+        _queries.update(data.get("queries", {}))
         _delivery_sources.update(data.get("delivery_sources", {}))
         _delivery_destinations.update(data.get("delivery_destinations", {}))
         _deliveries.update(data.get("deliveries", {}))

@@ -3,11 +3,12 @@ import json
 import os
 import shutil
 import time
+import uuid as _uuid_mod
 import zipfile
 from urllib.parse import urlparse
+
 import pytest
 from botocore.exceptions import ClientError
-import uuid as _uuid_mod
 
 _endpoint = os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566")
 
@@ -184,6 +185,8 @@ def test_apigwv1_put_integration(apigw_v1):
         uri="arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:000000000000:function:myFunc/invocations",
     )
     assert resp["type"] == "AWS_PROXY"
+    # Real AWS returns HTTP 201 Created for PutIntegration.
+    assert resp["ResponseMetadata"]["HTTPStatusCode"] == 201
     apigw_v1.delete_rest_api(restApiId=api_id)
 
 def test_apigwv1_put_method_response(apigw_v1):
@@ -675,6 +678,65 @@ def test_apigwv1_execute_missing_resource_404(apigw_v1):
         assert e.code == 404
 
     apigw_v1.delete_rest_api(restApiId=api_id)
+
+
+def test_apigwv1_http_proxy_does_not_block_parallel_ddb(monkeypatch):
+    import asyncio
+
+    from ministack.services import apigateway as apigw_mod
+    from ministack.services import apigateway_v1 as apigw_v1_mod
+    from ministack.services import dynamodb as ddb_mod
+
+    def _slow_urlopen(_request_or_url, _timeout_seconds):
+        time.sleep(0.4)
+        return 200, {"Content-Type": "application/json"}, b"{}"
+
+    # _urlopen_async lives on apigateway and is reused by v1; patch the sync
+    # helper there so both v1 and v2 tests target the same offload point.
+    monkeypatch.setattr(apigw_mod, "_urlopen_sync", _slow_urlopen)
+
+    async def _run():
+        slow_call = asyncio.create_task(
+            apigw_v1_mod._invoke_http_proxy_v1(
+                {"uri": "http://example.test"},
+                "/slow",
+                "GET",
+                {},
+                None,
+                {},
+            )
+        )
+        await asyncio.sleep(0.05)
+        started = time.perf_counter()
+        status, _, _ = await ddb_mod.handle_request(
+            "POST",
+            "/",
+            {"x-amz-target": "DynamoDB_20120810.ListTables"},
+            b"{}",
+            {},
+        )
+        elapsed = time.perf_counter() - started
+        await slow_call
+        return status, elapsed
+
+    status, elapsed = asyncio.run(_run())
+    assert status == 200
+    assert elapsed < 0.2, f"Parallel DDB request was delayed for {elapsed:.2f}s"
+
+
+def test_apigwv1_http_proxy_timeout_is_configurable(monkeypatch):
+    """`_timeout_from_env` honours the env var and falls back on bad input.
+    Tested directly instead of via importlib.reload so the suite-wide
+    apigateway_v1 module state is not rebuilt mid-run."""
+    from ministack.services.apigateway import _timeout_from_env
+
+    monkeypatch.setenv("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", "55")
+    assert _timeout_from_env("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", 30.0) == 55.0
+    monkeypatch.setenv("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", "not-a-number")
+    assert _timeout_from_env("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", 30.0) == 30.0
+    monkeypatch.setenv("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", "0")
+    assert _timeout_from_env("MINISTACK_APIGW_PROXY_TIMEOUT_SECONDS", 30.0) == 30.0
+
 
 def test_apigwv1_no_conflict_with_v2(apigw_v1, apigw, lam):
     """v1 and v2 APIs can coexist; execute-api routes them independently."""

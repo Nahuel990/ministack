@@ -3,18 +3,27 @@ STS Service Emulator (AWS-compatible).
 
 Actions:
   GetCallerIdentity, AssumeRole, AssumeRoleWithWebIdentity,
-  GetSessionToken, GetAccessKeyInfo.
+  GetSessionToken, GetAccessKeyInfo, GetWebIdentityToken.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import time
 from urllib.parse import parse_qs
 
 from ministack.core.responses import get_account_id, json_response, new_uuid
+
 # Shared helpers — IAM and STS are a natural pair; STS is stateless
 # and reuses IAM's XML builders and credential generators.
-from ministack.services.iam import _p, _xml, _error, _future, \
-    _gen_session_access_key, _gen_secret, _gen_session_token
+from ministack.services.iam import _error, _future, _gen_secret, _gen_session_access_key, _gen_session_token, _p, _xml
+
+_sessions: dict[str, dict] = {}
+
+
+def reset():
+    _sessions.clear()
 
 
 async def handle_request(method, path, headers, body, query_params):
@@ -41,12 +50,23 @@ async def handle_request(method, path, headers, body, query_params):
     use_json = "amz-json" in content_type
 
     if action == "GetCallerIdentity":
+        auth = headers.get("authorization", "")
+        caller_arn = f"arn:aws:iam::{get_account_id()}:root"
+        caller_user_id = get_account_id()
+        if "Credential=" in auth:
+            try:
+                access_key = auth.split("Credential=")[1].split("/")[0]
+                if access_key in _sessions:
+                    caller_arn = _sessions[access_key]["Arn"]
+                    caller_user_id = _sessions[access_key]["UserId"]
+            except Exception:
+                pass
         if use_json:
-            return json_response({"Account": get_account_id(), "Arn": f"arn:aws:iam::{get_account_id()}:root", "UserId": get_account_id()})
+            return json_response({"Account": get_account_id(), "Arn": caller_arn, "UserId": caller_user_id})
         return _xml(200, "GetCallerIdentityResponse",
                     f"<GetCallerIdentityResult>"
-                    f"<Arn>arn:aws:iam::{get_account_id()}:root</Arn>"
-                    f"<UserId>{get_account_id()}</UserId>"
+                    f"<Arn>{caller_arn}</Arn>"
+                    f"<UserId>{caller_user_id}</UserId>"
                     f"<Account>{get_account_id()}</Account>"
                     f"</GetCallerIdentityResult>",
                     ns="sts")
@@ -60,9 +80,12 @@ async def handle_request(method, path, headers, body, query_params):
         secret_key = _gen_secret()
         session_token = _gen_session_token()
         role_id = "AROA" + new_uuid().replace("-", "")[:17].upper()
-        assumed_arn = role_arn.replace(":role/", ":assumed-role/", 1)
+        # Real AWS returns the assumed-role ARN under the `sts` service,
+        # not `iam` — e.g. arn:aws:sts::123456789012:assumed-role/demo/TestAR.
+        assumed_arn = role_arn.replace(":iam:", ":sts:", 1).replace(":role/", ":assumed-role/", 1)
         if not assumed_arn.endswith(f"/{session_name}"):
             assumed_arn = f"{assumed_arn}/{session_name}"
+        _sessions[access_key] = {"Arn": assumed_arn, "UserId": f"{role_id}:{session_name}"}
         if use_json:
             return json_response({
                 "Credentials": {"AccessKeyId": access_key, "SecretAccessKey": secret_key, "SessionToken": session_token, "Expiration": time.time() + duration},
@@ -92,10 +115,11 @@ async def handle_request(method, path, headers, body, query_params):
         access_key = _gen_session_access_key()
         secret_key = _gen_secret()
         session_token = _gen_session_token()
-        assumed_arn = role_arn.replace(":role/", ":assumed-role/", 1)
+        assumed_arn = role_arn.replace(":iam:", ":sts:", 1).replace(":role/", ":assumed-role/", 1)
         if not assumed_arn.endswith(f"/{session}"):
             assumed_arn = f"{assumed_arn}/{session}"
         role_id = "AROA" + new_uuid().replace("-", "")[:17].upper()
+        _sessions[access_key] = {"Arn": assumed_arn, "UserId": f"{role_id}:{session}"}
         provider = _p(params, "ProviderId") or "sts.amazonaws.com"
         if use_json:
             return json_response({
@@ -151,6 +175,93 @@ async def handle_request(method, path, headers, body, query_params):
                     f"<GetAccessKeyInfoResult>"
                     f"<Account>{get_account_id()}</Account>"
                     f"</GetAccessKeyInfoResult>",
+                    ns="sts")
+
+    if action == "GetWebIdentityToken":
+        # --- AWS-spec validation ---
+        # SigningAlgorithm: REQUIRED, must be RS256 or ES384.
+        signing_alg = _p(params, "SigningAlgorithm")
+        if not signing_alg:
+            return _error(400, "MissingParameter",
+                          "The request must contain the parameter SigningAlgorithm.",
+                          ns="sts")
+        if signing_alg not in ("RS256", "ES384"):
+            return _error(400, "ValidationError",
+                          f"Value '{signing_alg}' at 'signingAlgorithm' failed to satisfy constraint: "
+                          f"Member must satisfy enum value set: [RS256, ES384]",
+                          ns="sts")
+
+        # Audience: REQUIRED, 1-10 items, each 1-1000 chars.
+        audiences = []
+        for k, v in params.items():
+            if k == "Audience" or k.startswith("Audience.member."):
+                vals = v if isinstance(v, list) else [v]
+                audiences.extend(vals)
+        if not audiences:
+            return _error(400, "MissingParameter",
+                          "The request must contain the parameter Audience.",
+                          ns="sts")
+        if len(audiences) > 10:
+            return _error(400, "ValidationError",
+                          "1 validation error detected: Value at 'audience' failed to satisfy constraint: "
+                          "Member must have length less than or equal to 10",
+                          ns="sts")
+        for a in audiences:
+            if not (1 <= len(a) <= 1000):
+                return _error(400, "ValidationError",
+                              "1 validation error detected: Value at 'audience' failed to satisfy constraint: "
+                              "Member must have length between 1 and 1000",
+                              ns="sts")
+
+        # DurationSeconds: optional, 60-3600, default 300.
+        try:
+            duration = int(_p(params, "DurationSeconds") or 300)
+        except (TypeError, ValueError):
+            return _error(400, "ValidationError",
+                          "Value for DurationSeconds must be an integer.",
+                          ns="sts")
+        if not (60 <= duration <= 3600):
+            return _error(400, "ValidationError",
+                          f"1 validation error detected: Value '{duration}' at 'durationSeconds' "
+                          f"failed to satisfy constraint: Member must have value between 60 and 3600",
+                          ns="sts")
+
+        now = int(time.time())
+        exp = now + duration
+        expiration = _future(duration)
+
+        # Emulator stub: real STS signs RS256/ES384 via JWKS-published keys; we
+        # HMAC-sign so the token is self-contained and parseable but not
+        # publicly verifiable. Header reports HS256 to stay honest about the
+        # signature. Workloads that only inspect claims work; workloads that
+        # verify against AWS JWKS are not in scope for the emulator.
+        header = {"alg": "HS256", "typ": "JWT"}
+        payload = {
+            "sub": f"arn:aws:iam::{get_account_id()}:root",
+            "aud": audiences if len(audiences) > 1 else audiences[0],
+            "iss": "https://sts.amazonaws.com",
+            "iat": now,
+            "exp": exp,
+        }
+
+        def _b64url(data: bytes) -> str:
+            return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+        h = _b64url(json.dumps(header, separators=(",", ":")).encode())
+        p = _b64url(json.dumps(payload, separators=(",", ":")).encode())
+        sig = _b64url(hmac.new(b"ministack-fake-key", f"{h}.{p}".encode(), hashlib.sha256).digest())
+        token = f"{h}.{p}.{sig}"
+
+        if use_json:
+            return json_response({
+                "WebIdentityToken": token,
+                "Expiration": exp,
+            })
+        return _xml(200, "GetWebIdentityTokenResponse",
+                    f"<GetWebIdentityTokenResult>"
+                    f"<WebIdentityToken>{token}</WebIdentityToken>"
+                    f"<Expiration>{expiration}</Expiration>"
+                    f"</GetWebIdentityTokenResult>",
                     ns="sts")
 
     return _error(400, "InvalidAction", f"Unknown STS action: {action}", ns="sts")
