@@ -19,7 +19,14 @@ import threading
 import time
 
 from ministack.core.persistence import PERSIST_STATE, load_state
-from ministack.core.responses import AccountScopedDict, get_account_id, error_response_json, json_response, new_uuid, get_region
+from ministack.core.responses import (
+    AccountScopedDict,
+    error_response_json,
+    get_account_id,
+    get_region,
+    json_response,
+    new_uuid,
+)
 
 logger = logging.getLogger("glue")
 
@@ -192,7 +199,7 @@ def _create_database(data):
     _databases[name] = {
         "Name": name,
         "Description": db_input.get("Description", ""),
-        "LocationUri": db_input.get("LocationUri", ""),
+        "LocationUri": db_input.get("LocationUri"),
         "Parameters": db_input.get("Parameters", {}),
         "CreateTime": int(time.time()),
         "CatalogId": get_account_id(),
