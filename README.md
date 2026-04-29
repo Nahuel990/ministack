@@ -646,6 +646,7 @@ ecs.stop_task(cluster="dev", task=task_arn)
 | `RDS_PERSIST` | `0` | Set `1` to use Docker named volumes for RDS containers instead of tmpfs. Storage grows dynamically with no fixed cap |
 | `DOCKER_NETWORK` | _(unset)_ | Docker network for all container-backed services (RDS, EKS, ElastiCache, Lambda). Set to your Docker Compose network name so containers can reach each other. Replaces `LAMBDA_DOCKER_NETWORK` |
 | `ELASTICACHE_BASE_PORT` | `16379` | Starting host port for ElastiCache containers |
+| `ELASTICACHE_CLUSTER_MODE_REAL` | `0` | Set `1` (requires `DOCKER_NETWORK`) to provision real Redis Cluster replication groups: `NumNodeGroups × (1+ReplicasPerNodeGroup)` cluster-enabled nodes wired with `redis-cli --cluster create`, serving real `CLUSTER SLOTS` / `MOVED` redirects for cluster-aware clients |
 | `PERSIST_STATE` | `0` | Set `1` to persist service state across restarts |
 | `STATE_DIR` | `/tmp/ministack-state` | Directory for persisted state files |
 | `LAMBDA_EXECUTOR` | `local` | Lambda execution mode: `local` (subprocess) or `docker` (container). `provided` runtimes and `PackageType: Image` always use Docker |
