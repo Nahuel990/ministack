@@ -37,6 +37,13 @@ REDIS_DEFAULT_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 BASE_PORT = int(os.environ.get("ELASTICACHE_BASE_PORT", "16379"))
 DOCKER_NETWORK = os.environ.get("DOCKER_NETWORK", "")
 
+# Opt-in: when NumNodeGroups>1 and this is set, spawn a real redis cluster
+# (cluster-enabled containers + redis-cli --cluster create bootstrap) instead
+# of falling through to the single-shard fan-out. Requires DOCKER_NETWORK so
+# nodes can reach each other on the cluster bus. Disabled by default to keep
+# CI/dev deterministic; flip to "1" to exercise sharded discovery.
+ELASTICACHE_CLUSTER_MODE_REAL = os.environ.get("ELASTICACHE_CLUSTER_MODE_REAL", "") == "1"
+
 _clusters = AccountScopedDict()
 _replication_groups = AccountScopedDict()
 _subnet_groups = AccountScopedDict()
@@ -67,8 +74,13 @@ _docker = None
 # ── Persistence ────────────────────────────────────────────
 
 def get_state():
+    rgs = {}
+    for name, rg in _replication_groups.items():
+        r = copy.deepcopy(rg)
+        r.pop("_docker_container_ids", None)
+        rgs[name] = r
     state = {
-        "replication_groups": copy.deepcopy(_replication_groups),
+        "replication_groups": rgs,
         "subnet_groups": copy.deepcopy(_subnet_groups),
         "param_groups": copy.deepcopy(_param_groups),
         "param_group_params": copy.deepcopy(_param_group_params),
@@ -90,7 +102,9 @@ def get_state():
 def restore_state(data):
     if not data:
         return
-    _replication_groups.update(data.get("replication_groups", {}))
+    for name, rg in data.get("replication_groups", {}).items():
+        rg.setdefault("_docker_container_ids", [])
+        _replication_groups[name] = rg
     _subnet_groups.update(data.get("subnet_groups", {}))
     _param_groups.update(data.get("param_groups", {}))
     _param_group_params.update(data.get("param_group_params", {}))
@@ -126,6 +140,306 @@ def _get_docker():
         except Exception:
             pass
     return _docker
+
+
+
+
+def _spawn_redis_container(name, engine, engine_version, labels):
+    """Start a redis/memcached container.
+
+    Returns ``(host, port, container_id)``. On any failure (docker unavailable,
+    image pull failed, etc.) returns ``(REDIS_DEFAULT_HOST, default_port, None)``
+    so callers always have a usable endpoint shape — same fallback contract as
+    the original inline spawn block.
+    """
+    default_port = REDIS_DEFAULT_PORT if engine == "redis" else 11211
+    docker_client = _get_docker()
+    if not docker_client:
+        return REDIS_DEFAULT_HOST, default_port, None
+
+    host_port = _port_counter[0]
+    _port_counter[0] += 1
+    endpoint_host = "localhost"
+    endpoint_port = host_port
+
+    if engine == "redis":
+        image = apply_image_prefix(f"redis:{engine_version.split('.')[0]}-alpine")
+        container_port = 6379
+    else:
+        image = apply_image_prefix(f"memcached:{engine_version}-alpine")
+        container_port = 11211
+
+    try:
+        run_kwargs = dict(
+            image=image, detach=True,
+            ports={f"{container_port}/tcp": host_port},
+            name=name,
+            labels=labels,
+            volumes={},
+        )
+        if DOCKER_NETWORK:
+            run_kwargs["network"] = DOCKER_NETWORK
+        container = docker_client.containers.run(**run_kwargs)
+        if DOCKER_NETWORK:
+            container.reload()
+            networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+            container_ip = networks.get(DOCKER_NETWORK, {}).get("IPAddress", "")
+            if container_ip:
+                endpoint_host = container_ip
+                endpoint_port = container_port
+                logger.info("ElastiCache: started %s container %s at %s:%s (network %s)",
+                            engine, name, container_ip, container_port, DOCKER_NETWORK)
+            else:
+                logger.info("ElastiCache: started %s container %s on port %s", engine, name, host_port)
+        else:
+            logger.info("ElastiCache: started %s container %s on port %s", engine, name, host_port)
+        return endpoint_host, endpoint_port, container.id
+    except Exception as e:
+        logger.warning("ElastiCache: Docker failed for %s: %s", name, e)
+        return REDIS_DEFAULT_HOST, default_port, None
+
+
+def _spawn_redis_cluster_node(name, engine_version, labels):
+    """Spawn a redis container with cluster-mode enabled.
+
+    Requires DOCKER_NETWORK to be set so nodes can reach each other on the
+    cluster bus. Returns ``(container_ip, port, container_id)`` on success;
+    ``(None, None, None)`` if docker is unavailable, DOCKER_NETWORK isn't set,
+    or the spawn fails.
+    """
+    if not DOCKER_NETWORK:
+        return None, None, None
+    docker_client = _get_docker()
+    if not docker_client:
+        return None, None, None
+
+    image = apply_image_prefix(f"redis:{engine_version.split('.')[0]}-alpine")
+    port = 6379
+    cmd = [
+        "redis-server",
+        "--cluster-enabled", "yes",
+        "--cluster-config-file", "nodes.conf",
+        "--cluster-node-timeout", "5000",
+        "--port", str(port),
+        "--appendonly", "no",
+        "--protected-mode", "no",
+    ]
+    try:
+        run_kwargs = dict(
+            image=image,
+            command=cmd,
+            detach=True,
+            name=name,
+            labels=labels,
+            network=DOCKER_NETWORK,
+        )
+        container = docker_client.containers.run(**run_kwargs)
+        container.reload()
+        networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+        container_ip = networks.get(DOCKER_NETWORK, {}).get("IPAddress", "")
+        if not container_ip:
+            try:
+                container.stop(timeout=2)
+                container.remove()
+            except Exception:
+                pass
+            logger.warning("ElastiCache: cluster node %s has no IP on network %s", name, DOCKER_NETWORK)
+            return None, None, None
+        logger.info("ElastiCache: started cluster node %s at %s:%s", name, container_ip, port)
+        return container_ip, port, container.id
+    except Exception as e:
+        logger.warning("ElastiCache: cluster node spawn failed for %s: %s", name, e)
+        return None, None, None
+
+
+def _wait_redis_ready(container, timeout=15):
+    """Poll PING via docker exec until the node responds, up to ``timeout`` s."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            result = container.exec_run(["redis-cli", "-p", "6379", "PING"])
+            if result.exit_code == 0 and b"PONG" in result.output:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def _bootstrap_redis_cluster(bootstrap_container, node_addrs, replicas_per_shard):
+    """Run ``redis-cli --cluster create`` inside one of the nodes.
+
+    ``node_addrs`` is a list of ``"ip:port"`` strings with primaries first,
+    then replicas (which is the order ``redis-cli`` expects when
+    ``--cluster-replicas N`` is set).
+    """
+    cmd = (
+        ["redis-cli", "--cluster", "create"]
+        + node_addrs
+        + ["--cluster-replicas", str(replicas_per_shard), "--cluster-yes"]
+    )
+    try:
+        result = bootstrap_container.exec_run(cmd, demux=False)
+        if result.exit_code != 0:
+            logger.warning("ElastiCache: cluster bootstrap failed (exit=%s): %s",
+                           result.exit_code, result.output[:500] if result.output else "")
+            return False
+        return True
+    except Exception as e:
+        logger.warning("ElastiCache: cluster bootstrap exec failed: %s", e)
+        return False
+
+
+def _wait_cluster_ok(container, timeout=15):
+    """Poll ``CLUSTER INFO`` until ``cluster_state:ok`` is reported."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            result = container.exec_run(["redis-cli", "-p", "6379", "CLUSTER", "INFO"])
+            if result.exit_code == 0 and b"cluster_state:ok" in result.output:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def _teardown_containers(docker_client, container_ids):
+    """Best-effort stop+remove for a list of container ids."""
+    if not docker_client:
+        return
+    for cid in container_ids:
+        try:
+            c = docker_client.containers.get(cid)
+            c.stop(timeout=2)
+            c.remove()
+        except Exception as e:
+            logger.warning("ElastiCache: cleanup failed for %s: %s", cid, e)
+
+
+def _build_real_cluster_rg(rg_id, engine_version, num_node_groups, replicas_per_shard):
+    """Spawn cluster-enabled nodes and run ``redis-cli --cluster create``.
+
+    Returns ``(node_groups, container_ids)`` on success, or
+    ``(None, container_ids)`` on failure (caller is responsible for tearing
+    down ``container_ids`` in that case).
+
+    Layout: N primaries first, then N×R replicas. ``redis-cli --cluster create``
+    with ``--cluster-replicas R`` consumes that ordering and assigns shards.
+
+    Caveat: cluster-mode containers are NOT persistent across ministack
+    restarts. ``get_state`` strips ``_docker_container_ids`` from snapshots,
+    and the boot-time reaper removes any pre-existing cluster containers,
+    because the cluster bus state in each container is tied to ephemeral
+    network identities. If persistence + cluster-mode are both required,
+    that's a follow-up: re-spawn + re-bootstrap on restore.
+    """
+    docker_client = _get_docker()
+    account_id = get_account_id()
+    primaries = []        # list of {ng_id, ip, port, cid}
+    replicas = []         # list of {ng_id, replica_idx, ip, port, cid}
+    container_ids = []
+
+    common_labels = {
+        "ministack": "elasticache",
+        "rg_id": rg_id,
+        "account_id": account_id,
+    }
+
+    # Primary nodes first
+    for ng_idx in range(1, num_node_groups + 1):
+        ng_id = f"{ng_idx:04d}"
+        name = f"ministack-elasticache-rg-{account_id}-{rg_id}-{ng_id}-p"
+        ip, port, cid = _spawn_redis_cluster_node(
+            name=name,
+            engine_version=engine_version,
+            labels={**common_labels, "node_group": ng_id, "role": "primary"},
+        )
+        if not cid:
+            return None, container_ids
+        container_ids.append(cid)
+        primaries.append({"ng_id": ng_id, "ip": ip, "port": port, "cid": cid})
+
+    # Replicas
+    for ng_idx in range(1, num_node_groups + 1):
+        ng_id = f"{ng_idx:04d}"
+        for r in range(1, replicas_per_shard + 1):
+            name = f"ministack-elasticache-rg-{account_id}-{rg_id}-{ng_id}-r{r}"
+            ip, port, cid = _spawn_redis_cluster_node(
+                name=name,
+                engine_version=engine_version,
+                labels={
+                    **common_labels,
+                    "node_group": ng_id,
+                    "role": "replica",
+                    "replica_idx": str(r),
+                },
+            )
+            if not cid:
+                return None, container_ids
+            container_ids.append(cid)
+            replicas.append({"ng_id": ng_id, "replica_idx": r, "ip": ip, "port": port, "cid": cid})
+
+    # Wait for every node to accept connections before bootstrapping.
+    for node in primaries + replicas:
+        try:
+            container = docker_client.containers.get(node["cid"])
+            if not _wait_redis_ready(container):
+                logger.warning("ElastiCache: cluster node %s never reported PONG", node["cid"])
+                return None, container_ids
+        except Exception as e:
+            logger.warning("ElastiCache: cluster node %s readiness check failed: %s", node["cid"], e)
+            return None, container_ids
+
+    # redis-cli --cluster create primary1:port primary2:port ... replica1:port ...
+    addrs = [f"{n['ip']}:{n['port']}" for n in primaries] + [f"{n['ip']}:{n['port']}" for n in replicas]
+    try:
+        bootstrap = docker_client.containers.get(primaries[0]["cid"])
+    except Exception as e:
+        logger.warning("ElastiCache: bootstrap container lookup failed: %s", e)
+        return None, container_ids
+
+    if not _bootstrap_redis_cluster(bootstrap, addrs, replicas_per_shard):
+        return None, container_ids
+
+    if not _wait_cluster_ok(bootstrap):
+        logger.warning("ElastiCache: cluster %s did not reach state:ok", rg_id)
+        return None, container_ids
+
+    # Build NodeGroups response shape.
+    node_groups = []
+    for primary in primaries:
+        ng_id = primary["ng_id"]
+        members = [{
+            "CacheClusterId": f"{rg_id}-{ng_id}-001",
+            "CacheNodeId": "0001",
+            "CurrentRole": "primary",
+            "PreferredAvailabilityZone": f"{get_region()}a",
+            "ReadEndpoint": {"Address": primary["ip"], "Port": primary["port"]},
+        }]
+        shard_replicas = [r for r in replicas if r["ng_id"] == ng_id]
+        for r in shard_replicas:
+            members.append({
+                "CacheClusterId": f"{rg_id}-{ng_id}-{r['replica_idx'] + 1:03d}",
+                "CacheNodeId": "0001",
+                "CurrentRole": "replica",
+                "PreferredAvailabilityZone": f"{get_region()}{'abcdef'[r['replica_idx'] % 6]}",
+                "ReadEndpoint": {"Address": r["ip"], "Port": r["port"]},
+            })
+        # ReaderEndpoint conventionally points at one of the replicas; pick first
+        # if present, else the primary.
+        reader = shard_replicas[0] if shard_replicas else primary
+        node_groups.append({
+            "NodeGroupId": ng_id,
+            "Status": "available",
+            "PrimaryEndpoint": {"Address": primary["ip"], "Port": primary["port"]},
+            "ReaderEndpoint": {"Address": reader["ip"], "Port": reader["port"]},
+            "NodeGroupMembers": members,
+        })
+
+    logger.info("ElastiCache: real cluster bootstrap succeeded for %s (%d shards, %d replicas/shard)",
+                rg_id, num_node_groups, replicas_per_shard)
+    return node_groups, container_ids
 
 
 def _arn_cluster(cluster_id):
@@ -228,53 +542,12 @@ def _create_cache_cluster(p):
         return _error("CacheClusterAlreadyExists", f"Cluster {cluster_id} already exists", 400)
 
     arn = _arn_cluster(cluster_id)
-    endpoint_host = REDIS_DEFAULT_HOST
-    endpoint_port = REDIS_DEFAULT_PORT if engine == "redis" else 11211
-    docker_container_id = None
-
-    docker_client = _get_docker()
-    if docker_client:
-        host_port = _port_counter[0]
-        _port_counter[0] += 1
-        endpoint_host = "localhost"
-        endpoint_port = host_port
-
-        if engine == "redis":
-            image = apply_image_prefix(f"redis:{engine_version.split('.')[0]}-alpine")
-            container_port = 6379
-        else:
-            image = apply_image_prefix(f"memcached:{engine_version}-alpine")
-            container_port = 11211
-
-        try:
-            run_kwargs = dict(
-                image=image, detach=True,
-                ports={f"{container_port}/tcp": host_port},
-                name=f"ministack-elasticache-{cluster_id}",
-                labels={"ministack": "elasticache", "cluster_id": cluster_id},
-                volumes={},
-            )
-            if DOCKER_NETWORK:
-                run_kwargs["network"] = DOCKER_NETWORK
-            container = docker_client.containers.run(**run_kwargs)
-            docker_container_id = container.id
-            if DOCKER_NETWORK:
-                container.reload()
-                networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
-                container_ip = networks.get(DOCKER_NETWORK, {}).get("IPAddress", "")
-                if container_ip:
-                    endpoint_host = container_ip
-                    endpoint_port = container_port
-                    logger.info("ElastiCache: started %s container for %s at %s:%s (network %s)",
-                                engine, cluster_id, container_ip, container_port, DOCKER_NETWORK)
-                else:
-                    logger.info("ElastiCache: started %s container for %s on port %s", engine, cluster_id, host_port)
-            else:
-                logger.info("ElastiCache: started %s container for %s on port %s", engine, cluster_id, host_port)
-        except Exception as e:
-            logger.warning("ElastiCache: Docker failed for %s: %s", cluster_id, e)
-            endpoint_host = REDIS_DEFAULT_HOST
-            endpoint_port = REDIS_DEFAULT_PORT
+    endpoint_host, endpoint_port, docker_container_id = _spawn_redis_container(
+        name=f"ministack-elasticache-{cluster_id}",
+        engine=engine,
+        engine_version=engine_version,
+        labels={"ministack": "elasticache", "cluster_id": cluster_id},
+    )
 
     subnet_group = _p(p, "CacheSubnetGroupName") or "default"
     param_group_name = _p(p, "CacheParameterGroupName") or f"default.{engine}{engine_version[:3]}"
@@ -414,36 +687,108 @@ def _create_replication_group(p):
     rg_id = _p(p, "ReplicationGroupId")
     desc = _p(p, "ReplicationGroupDescription") or ""
     node_type = _p(p, "CacheNodeType") or "cache.t3.micro"
+    engine = _p(p, "Engine") or "redis"
+    engine_version = _p(p, "EngineVersion") or "7.0.12"
     num_node_groups = int(_p(p, "NumNodeGroups") or "1")
     replicas_per_node_group = int(_p(p, "ReplicasPerNodeGroup") or "1")
     arn = _arn_replication_group(rg_id)
-    endpoint_host = REDIS_DEFAULT_HOST
-    endpoint_port = REDIS_DEFAULT_PORT
 
     if rg_id in _replication_groups:
         return _error("ReplicationGroupAlreadyExistsFault",
                        f"Replication group {rg_id} already exists", 400)
 
+    # AWS rejects NumNodeGroups=2: cluster-mode-enabled requires the redis-
+    # cluster minimum of 3 masters; cluster-mode-disabled requires 1.
+    if num_node_groups == 2:
+        return _error(
+            "InvalidParameterValue",
+            "NumNodeGroups must be either 1 (cluster-mode disabled) or "
+            "at least 3 (cluster-mode enabled).",
+            400,
+        )
+
+    # Three paths for the spawn step:
+    #   (a) Real cluster-mode bootstrap — only when ALL of: num_node_groups>1,
+    #       engine=redis, ELASTICACHE_CLUSTER_MODE_REAL=1, DOCKER_NETWORK set,
+    #       docker reachable. Spawns N×(1+R) cluster-enabled nodes and runs
+    #       ``redis-cli --cluster create`` so CLUSTER SLOTS is real.
+    #   (b) Per-shard fan-out — num_node_groups>=1 but cluster-mode prerequisites
+    #       not met. One container per shard, members within a shard share the
+    #       endpoint. Replication is faked, but PrimaryEndpoint is live.
+    #   (c) Fallback — docker unavailable; endpoints point at the shared sidecar.
+    container_ids = []
     node_groups = []
-    for ng_idx in range(1, num_node_groups + 1):
-        ng_id = f"{ng_idx:04d}"
-        members = []
-        for r in range(replicas_per_node_group + 1):
-            role = "primary" if r == 0 else "replica"
-            members.append({
-                "CacheClusterId": f"{rg_id}-{ng_id}-{r + 1:03d}",
-                "CacheNodeId": "0001",
-                "CurrentRole": role,
-                "PreferredAvailabilityZone": f"{get_region()}{'abcdef'[r % 6]}",
-                "ReadEndpoint": {"Address": endpoint_host, "Port": endpoint_port},
+
+    use_real_cluster = (
+        num_node_groups > 1
+        and engine == "redis"
+        and ELASTICACHE_CLUSTER_MODE_REAL
+        and DOCKER_NETWORK
+        and _get_docker() is not None
+    )
+
+    if num_node_groups > 1 and not use_real_cluster:
+        logger.warning(
+            "ElastiCache: NumNodeGroups=%d on RG %s — running per-shard fan-out "
+            "(cluster-mode discovery not enabled). Set ELASTICACHE_CLUSTER_MODE_REAL=1 "
+            "and DOCKER_NETWORK to enable real CLUSTER SLOTS routing.",
+            num_node_groups, rg_id,
+        )
+
+    if use_real_cluster:
+        node_groups, container_ids = _build_real_cluster_rg(
+            rg_id, engine_version, num_node_groups, replicas_per_node_group,
+        )
+        if node_groups is None:
+            # Bootstrap failed — clean up partial state and fall back.
+            _teardown_containers(_get_docker(), container_ids)
+            container_ids = []
+            node_groups = []
+            logger.warning("ElastiCache: real cluster bootstrap failed for %s — "
+                           "falling back to per-shard fan-out.", rg_id)
+
+    if not node_groups:
+        # Path (b) or (c): per-shard fan-out / fallback.
+        account_id = get_account_id()
+        for ng_idx in range(1, num_node_groups + 1):
+            ng_id = f"{ng_idx:04d}"
+            shard_host, shard_port, cid = _spawn_redis_container(
+                name=f"ministack-elasticache-rg-{account_id}-{rg_id}-{ng_id}",
+                engine=engine,
+                engine_version=engine_version,
+                labels={
+                    "ministack": "elasticache",
+                    "rg_id": rg_id,
+                    "node_group": ng_id,
+                    "account_id": account_id,
+                },
+            )
+            if cid:
+                container_ids.append(cid)
+            members = []
+            for r in range(replicas_per_node_group + 1):
+                role = "primary" if r == 0 else "replica"
+                members.append({
+                    "CacheClusterId": f"{rg_id}-{ng_id}-{r + 1:03d}",
+                    "CacheNodeId": "0001",
+                    "CurrentRole": role,
+                    "PreferredAvailabilityZone": f"{get_region()}{'abcdef'[r % 6]}",
+                    "ReadEndpoint": {"Address": shard_host, "Port": shard_port},
+                })
+            node_groups.append({
+                "NodeGroupId": ng_id,
+                "Status": "available",
+                "PrimaryEndpoint": {"Address": shard_host, "Port": shard_port},
+                "ReaderEndpoint": {"Address": shard_host, "Port": shard_port},
+                "NodeGroupMembers": members,
             })
-        node_groups.append({
-            "NodeGroupId": ng_id,
-            "Status": "available",
-            "PrimaryEndpoint": {"Address": endpoint_host, "Port": endpoint_port},
-            "ReaderEndpoint": {"Address": endpoint_host, "Port": endpoint_port},
-            "NodeGroupMembers": members,
-        })
+
+    # Configuration endpoint (cluster-mode-enabled): point at the first shard's
+    # primary. With real cluster bootstrap, clients use this to discover full
+    # topology via CLUSTER SLOTS; without it, this is a single-target endpoint.
+    config_ep = None
+    if num_node_groups > 1 and node_groups:
+        config_ep = node_groups[0]["PrimaryEndpoint"]
 
     _replication_groups[rg_id] = {
         "ReplicationGroupId": rg_id,
@@ -461,10 +806,11 @@ def _create_replication_group(p):
         "AtRestEncryptionEnabled": _p(p, "AtRestEncryptionEnabled", "false").lower() == "true",
         "AutomaticFailover": "enabled" if _p(p, "AutomaticFailoverEnabled", "false").lower() == "true" else "disabled",
         "MultiAZ": "enabled" if _p(p, "MultiAZEnabled", "false").lower() == "true" else "disabled",
-        "ConfigurationEndpoint": {"Address": endpoint_host, "Port": endpoint_port} if num_node_groups > 1 else None,
+        "ConfigurationEndpoint": config_ep,
         "ARN": arn,
         "_num_node_groups": num_node_groups,
         "_replicas_per_node_group": replicas_per_node_group,
+        "_docker_container_ids": container_ids,
     }
 
     tags = _extract_tags(p)
@@ -481,6 +827,17 @@ def _delete_replication_group(p):
     rg = _replication_groups.pop(rg_id, None)
     if not rg:
         return _error("ReplicationGroupNotFoundFault", f"Replication group {rg_id} not found", 404)
+
+    docker_client = _get_docker()
+    if docker_client:
+        for cid in rg.get("_docker_container_ids") or []:
+            try:
+                container = docker_client.containers.get(cid)
+                container.stop(timeout=5)
+                container.remove()
+            except Exception as e:
+                logger.warning("ElastiCache: failed to remove RG container %s for %s: %s", cid, rg_id, e)
+
     _tags.pop(rg.get("ARN", ""), None)
     _record_event(rg_id, "replication-group", "Replication group deleted")
     return _xml(200, "DeleteReplicationGroupResponse",
@@ -496,7 +853,9 @@ def _describe_replication_groups(p):
         groups = [rg]
     else:
         groups = list(_replication_groups.values())
-    members = "".join(f"<member>{_rg_xml(g)}</member>" for g in groups)
+    # AWS shape: ReplicationGroupList.member.locationName = "ReplicationGroup".
+    # Strict SDKs (aws-sdk-go-v2, Java/Rust v2) parse a <member>-wrapped list as empty.
+    members = "".join(f"<ReplicationGroup>{_rg_xml(g)}</ReplicationGroup>" for g in groups)
     return _xml(200, "DescribeReplicationGroupsResponse",
         f"<DescribeReplicationGroupsResult><ReplicationGroups>{members}</ReplicationGroups></DescribeReplicationGroupsResult>")
 
@@ -626,17 +985,19 @@ def _describe_subnet_groups(p):
     groups = [_subnet_groups[name]] if name and name in _subnet_groups else list(_subnet_groups.values())
     members = ""
     for g in groups:
+        # SubnetList.member.locationName = "Subnet"
         subnets_xml = "".join(
-            f"<member><SubnetIdentifier>{s['SubnetIdentifier']}</SubnetIdentifier>"
-            f"<SubnetAvailabilityZone><Name>{s['SubnetAvailabilityZone']['Name']}</Name></SubnetAvailabilityZone></member>"
+            f"<Subnet><SubnetIdentifier>{s['SubnetIdentifier']}</SubnetIdentifier>"
+            f"<SubnetAvailabilityZone><Name>{s['SubnetAvailabilityZone']['Name']}</Name></SubnetAvailabilityZone></Subnet>"
             for s in g.get("Subnets", [])
         )
+        # CacheSubnetGroups.member.locationName = "CacheSubnetGroup"
         members += (
-            f"<member><CacheSubnetGroupName>{g['CacheSubnetGroupName']}</CacheSubnetGroupName>"
+            f"<CacheSubnetGroup><CacheSubnetGroupName>{g['CacheSubnetGroupName']}</CacheSubnetGroupName>"
             f"<CacheSubnetGroupDescription>{g.get('CacheSubnetGroupDescription', '')}</CacheSubnetGroupDescription>"
             f"<VpcId>{g.get('VpcId', '')}</VpcId>"
             f"<Subnets>{subnets_xml}</Subnets>"
-            f"<ARN>{g.get('ARN', '')}</ARN></member>"
+            f"<ARN>{g.get('ARN', '')}</ARN></CacheSubnetGroup>"
         )
     return _xml(200, "DescribeCacheSubnetGroupsResponse",
         f"<DescribeCacheSubnetGroupsResult><CacheSubnetGroups>{members}</CacheSubnetGroups></DescribeCacheSubnetGroupsResult>")
@@ -710,11 +1071,12 @@ def _describe_param_groups(p):
     if name and name not in _param_groups:
         return _error("CacheParameterGroupNotFound", f"Cache parameter group {name} not found.", 404)
     groups = [_param_groups[name]] if name and name in _param_groups else list(_param_groups.values())
+    # CacheParameterGroupList.member.locationName = "CacheParameterGroup"
     members = "".join(
-        f"<member><CacheParameterGroupName>{g['CacheParameterGroupName']}</CacheParameterGroupName>"
+        f"<CacheParameterGroup><CacheParameterGroupName>{g['CacheParameterGroupName']}</CacheParameterGroupName>"
         f"<CacheParameterGroupFamily>{g.get('CacheParameterGroupFamily', '')}</CacheParameterGroupFamily>"
         f"<Description>{g.get('Description', '')}</Description>"
-        f"<ARN>{g.get('ARN', '')}</ARN></member>"
+        f"<ARN>{g.get('ARN', '')}</ARN></CacheParameterGroup>"
         for g in groups
     )
     return _xml(200, "DescribeCacheParameterGroupsResponse",
@@ -739,9 +1101,10 @@ def _describe_cache_parameters(p):
                        f"Parameter group {name} not found", 404)
     params = _param_group_params.get(name, {})
     members = ""
+    # ParametersList.member.locationName = "Parameter"
     for pname, pval in params.items():
         members += (
-            f"<member>"
+            f"<Parameter>"
             f"<ParameterName>{pname}</ParameterName>"
             f"<ParameterValue>{pval.get('Value', '')}</ParameterValue>"
             f"<Description>{pval.get('Description', '')}</Description>"
@@ -750,7 +1113,7 @@ def _describe_cache_parameters(p):
             f"<AllowedValues>{pval.get('AllowedValues', '')}</AllowedValues>"
             f"<IsModifiable>{str(pval.get('IsModifiable', True)).lower()}</IsModifiable>"
             f"<MinimumEngineVersion>{pval.get('MinimumEngineVersion', '5.0.0')}</MinimumEngineVersion>"
-            f"</member>"
+            f"</Parameter>"
         )
     return _xml(200, "DescribeCacheParametersResponse",
         f"<DescribeCacheParametersResult><Parameters>{members}</Parameters></DescribeCacheParametersResult>")
@@ -840,9 +1203,10 @@ def _default_params_for_family(family):
 def _describe_engine_versions(p):
     engine = _p(p, "Engine") or "redis"
     versions = {"redis": ["7.1.0", "7.0.12", "6.2.14", "5.0.6"], "memcached": ["1.6.22", "1.6.17", "1.6.12"]}
+    # CacheEngineVersionList.member.locationName = "CacheEngineVersion"
     members = "".join(
-        f"<member><Engine>{engine}</Engine><EngineVersion>{v}</EngineVersion>"
-        f"<CacheParameterGroupFamily>{engine}{v[:3]}</CacheParameterGroupFamily></member>"
+        f"<CacheEngineVersion><Engine>{engine}</Engine><EngineVersion>{v}</EngineVersion>"
+        f"<CacheParameterGroupFamily>{engine}{v[:3]}</CacheParameterGroupFamily></CacheEngineVersion>"
         for v in versions.get(engine, ["7.0.12"])
     )
     return _xml(200, "DescribeCacheEngineVersionsResponse",
@@ -870,7 +1234,8 @@ def _extract_tags(p):
 def _list_tags(p):
     arn = _p(p, "ResourceName")
     tags = _tags.get(arn, [])
-    tag_xml = "".join(f"<member><Key>{t['Key']}</Key><Value>{t['Value']}</Value></member>" for t in tags)
+    # TagList.member.locationName = "Tag"
+    tag_xml = "".join(f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>" for t in tags)
     return _xml(200, "ListTagsForResourceResponse",
         f"<ListTagsForResourceResult><TagList>{tag_xml}</TagList></ListTagsForResourceResult>")
 
@@ -890,7 +1255,7 @@ def _add_tags(p):
             existing.append(t)
             existing_keys.add(t["Key"])
 
-    tag_xml = "".join(f"<member><Key>{t['Key']}</Key><Value>{t['Value']}</Value></member>" for t in existing)
+    tag_xml = "".join(f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>" for t in existing)
     return _xml(200, "AddTagsToResourceResponse",
         f"<AddTagsToResourceResult><TagList>{tag_xml}</TagList></AddTagsToResourceResult>")
 
@@ -906,7 +1271,7 @@ def _remove_tags(p):
         _tags[arn] = [t for t in _tags[arn] if t["Key"] not in keys_to_remove]
 
     tags = _tags.get(arn, [])
-    tag_xml = "".join(f"<member><Key>{t['Key']}</Key><Value>{t['Value']}</Value></member>" for t in tags)
+    tag_xml = "".join(f"<Tag><Key>{t['Key']}</Key><Value>{t['Value']}</Value></Tag>" for t in tags)
     return _xml(200, "RemoveTagsFromResourceResponse",
         f"<RemoveTagsFromResourceResult><TagList>{tag_xml}</TagList></RemoveTagsFromResourceResult>")
 
@@ -979,7 +1344,8 @@ def _describe_snapshots(p):
     if rg_id:
         snaps = [s for s in snaps if s.get("ReplicationGroupId") == rg_id]
 
-    members = "".join(f"<member>{_snapshot_xml(s)}</member>" for s in snaps)
+    # SnapshotList.member.locationName = "Snapshot"
+    members = "".join(f"<Snapshot>{_snapshot_xml(s)}</Snapshot>" for s in snaps)
     return _xml(200, "DescribeSnapshotsResponse",
         f"<DescribeSnapshotsResult><Snapshots>{members}</Snapshots></DescribeSnapshotsResult>")
 
@@ -998,13 +1364,14 @@ def _describe_events(p):
         filtered = [e for e in filtered if e["SourceType"] == source_type]
 
     filtered = filtered[-max_records:]
+    # EventList.member.locationName = "Event"
     members = "".join(
-        f"<member>"
+        f"<Event>"
         f"<SourceIdentifier>{e['SourceIdentifier']}</SourceIdentifier>"
         f"<SourceType>{e['SourceType']}</SourceType>"
         f"<Message>{e['Message']}</Message>"
         f"<Date>{e['Date']}</Date>"
-        f"</member>"
+        f"</Event>"
         for e in filtered
     )
     return _xml(200, "DescribeEventsResponse",
@@ -1230,15 +1597,16 @@ def _cluster_xml_inner(c):
     """Render cluster fields — no wrapping element."""
     ep = c.get("_endpoint", {})
     nodes_xml = ""
+    # CacheNodeList.member.locationName = "CacheNode"
     for node in c.get("CacheNodes", []):
         nep = node.get("Endpoint", {})
         nodes_xml += (
-            f"<member>"
+            f"<CacheNode>"
             f"<CacheNodeId>{node['CacheNodeId']}</CacheNodeId>"
             f"<CacheNodeStatus>{node['CacheNodeStatus']}</CacheNodeStatus>"
             f"<Endpoint><Address>{nep.get('Address', 'localhost')}</Address>"
             f"<Port>{nep.get('Port', 6379)}</Port></Endpoint>"
-            f"</member>"
+            f"</CacheNode>"
         )
     return (
         f"<CacheClusterId>{c['CacheClusterId']}</CacheClusterId>"
@@ -1259,30 +1627,35 @@ def _cluster_xml_inner(c):
 
 
 def _cluster_xml(c):
-    """For list contexts (DescribeCacheClusters), wrap in <member>."""
-    return f"<member>{_cluster_xml_inner(c)}</member>"
+    """For list contexts (DescribeCacheClusters), wrap each item in
+    <CacheCluster> — that's the AWS-spec locationName for
+    `CacheClusterList.member`. Strict SDKs (aws-sdk-go-v2 / Java v2 /
+    Rust v2) parse a <member>-wrapped list as empty (issue #530)."""
+    return f"<CacheCluster>{_cluster_xml_inner(c)}</CacheCluster>"
 
 
 def _rg_xml(rg):
     node_groups_xml = ""
+    # NodeGroupList.member.locationName = "NodeGroup",
+    # NodeGroupMemberList.member.locationName = "NodeGroupMember".
     for ng in rg.get("NodeGroups", []):
         members_xml = ""
         for m in ng.get("NodeGroupMembers", []):
             rep = m.get("ReadEndpoint", {})
             members_xml += (
-                f"<member>"
+                f"<NodeGroupMember>"
                 f"<CacheClusterId>{m.get('CacheClusterId', '')}</CacheClusterId>"
                 f"<CacheNodeId>{m.get('CacheNodeId', '0001')}</CacheNodeId>"
                 f"<CurrentRole>{m.get('CurrentRole', 'primary')}</CurrentRole>"
                 f"<PreferredAvailabilityZone>{m.get('PreferredAvailabilityZone', '')}</PreferredAvailabilityZone>"
                 f"<ReadEndpoint><Address>{rep.get('Address', 'localhost')}</Address>"
                 f"<Port>{rep.get('Port', 6379)}</Port></ReadEndpoint>"
-                f"</member>"
+                f"</NodeGroupMember>"
             )
         pep = ng.get("PrimaryEndpoint", {})
         rdr = ng.get("ReaderEndpoint", {})
         node_groups_xml += (
-            f"<member>"
+            f"<NodeGroup>"
             f"<NodeGroupId>{ng['NodeGroupId']}</NodeGroupId>"
             f"<Status>{ng['Status']}</Status>"
             f"<PrimaryEndpoint><Address>{pep.get('Address', 'localhost')}</Address>"
@@ -1290,7 +1663,7 @@ def _rg_xml(rg):
             f"<ReaderEndpoint><Address>{rdr.get('Address', 'localhost')}</Address>"
             f"<Port>{rdr.get('Port', 6379)}</Port></ReaderEndpoint>"
             f"<NodeGroupMembers>{members_xml}</NodeGroupMembers>"
-            f"</member>"
+            f"</NodeGroup>"
         )
 
     config_ep_xml = ""
@@ -1322,13 +1695,14 @@ def _rg_xml(rg):
 
 def _snapshot_xml(snap):
     nodes_xml = ""
+    # NodeSnapshotList.member.locationName = "NodeSnapshot"
     for ns in snap.get("NodeSnapshots", []):
         nodes_xml += (
-            f"<member>"
+            f"<NodeSnapshot>"
             f"<CacheNodeId>{ns.get('CacheNodeId', '0001')}</CacheNodeId>"
             f"<SnapshotCreateTime>{ns.get('SnapshotCreateTime', 0)}</SnapshotCreateTime>"
             f"<CacheSize>{ns.get('CacheSize', '0 MB')}</CacheSize>"
-            f"</member>"
+            f"</NodeSnapshot>"
         )
     return (
         f"<SnapshotName>{snap['SnapshotName']}</SnapshotName>"
@@ -1383,6 +1757,14 @@ def reset():
                     c.remove(v=True)
                 except Exception as e:
                     logger.warning("reset: failed to stop/remove container %s: %s", cid, e)
+        for rg in _replication_groups.values():
+            for cid in rg.get("_docker_container_ids") or []:
+                try:
+                    c = docker_client.containers.get(cid)
+                    c.stop(timeout=2)
+                    c.remove(v=True)
+                except Exception as e:
+                    logger.warning("reset: failed to stop/remove RG container %s: %s", cid, e)
     _clusters.clear()
     _replication_groups.clear()
     _subnet_groups.clear()
