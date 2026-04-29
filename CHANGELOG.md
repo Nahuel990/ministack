@@ -5,9 +5,18 @@ All notable changes to MiniStack will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+
 ---
 
-## [Unreleased]
+## [1.3.19] — 2026-04-29
+
+### Added
+- **S3 virtual-hosted and path-style integration tests** — `TestS3VhostGetPutObject` exercises both addressing styles end-to-end (simple and max-length dotted bucket names), `TestExtractS3VhostBucket` unit-tests the vhost extraction function, and `patch_endpoint_dns` lets virtual-hosted requests resolve against localhost in CI. `make_client` now accepts `additional_config_kwargs` for per-test SDK config overrides. Contributed by @mgius-ae.
+
+### Fixed
+- **S3 requests via custom `MINISTACK_HOST` hostname returned `NoSuchBucket`** — `_extract_s3_vhost_bucket` (introduced in 1.3.17) treated any dotted hostname as a virtual-hosted S3 URL, extracting the first label as a bucket name. Requests to `http://aws.private:4566` were misrouted as a vhost request for a bucket named `aws`. The function now checks the tail against `MINISTACK_HOST` and recognises all 18 documented AWS S3 virtual-hosted patterns (`s3`, `s3-accelerate`, `s3-fips`, `s3-accesspoint`, `s3-accesspoint-fips`, `s3-website`, `s3express-*`, and their dualstack/regional variants). Bare hostnames, IPv4 addresses, and `localhost` are correctly treated as path-style. Reported by @dsrosario.
+- **Glue `GetDatabase` returned `LocationUri: ""` when not set** — AWS specifies a minimum length of 1 for `LocationUri`, so the empty-string default violated the spec. Now returns `null` when the field is omitted from `CreateDatabase`. Contributed by @dcrn.
+- **Ruff linter not running on pull requests** — CI workflow trigger was missing the PR event.
 
 ---
 
