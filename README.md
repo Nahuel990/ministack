@@ -352,6 +352,7 @@ subnet = ec2.create_subnet(
 | **Lambda** | CreateFunction, DeleteFunction, GetFunction, GetFunctionConfiguration, ListFunctions, Invoke, UpdateFunctionCode, UpdateFunctionConfiguration, AddPermission, RemovePermission, GetPolicy, ListVersionsByFunction, PublishVersion, CreateAlias, GetAlias, UpdateAlias, DeleteAlias, ListAliases, TagResource, UntagResource, ListTags, CreateEventSourceMapping, DeleteEventSourceMapping, GetEventSourceMapping, ListEventSourceMappings, UpdateEventSourceMapping, CreateFunctionUrlConfig, GetFunctionUrlConfig, UpdateFunctionUrlConfig, DeleteFunctionUrlConfig, ListFunctionUrlConfigs, PutFunctionConcurrency, GetFunctionConcurrency, DeleteFunctionConcurrency, PutFunctionEventInvokeConfig, GetFunctionEventInvokeConfig, DeleteFunctionEventInvokeConfig, PublishLayerVersion, GetLayerVersion, GetLayerVersionByArn, ListLayerVersions, DeleteLayerVersion, ListLayers, AddLayerVersionPermission, RemoveLayerVersionPermission, GetLayerVersionPolicy | Python and Node.js runtimes execute with warm worker pool; `provided.al2023`/`provided.al2` runtimes execute via Docker RIE (Go, Rust, C++ support); `Publish=True` creates immutable numbered versions; Code via `ZipFile`, `S3Bucket`/`S3Key` (with optional `S3ObjectVersion`), or `ImageUri` (Docker image); `PackageType: Image` pulls and invokes user-provided Docker images via Lambda RIE; SQS, Kinesis, and DynamoDB Streams event source mappings; Function URL CRUD; Lambda Layers CRUD; Aliases; Concurrency; EventInvokeConfig |
 | **IAM** | CreateUser, GetUser, ListUsers, DeleteUser, CreateRole, GetRole, ListRoles, DeleteRole, CreatePolicy, GetPolicy, DeletePolicy, AttachRolePolicy, DetachRolePolicy, PutRolePolicy, GetRolePolicy, DeleteRolePolicy, ListRolePolicies, ListAttachedRolePolicies, CreateAccessKey, ListAccessKeys, DeleteAccessKey, CreateInstanceProfile, GetInstanceProfile, DeleteInstanceProfile, AddRoleToInstanceProfile, RemoveRoleFromInstanceProfile, ListInstanceProfiles, CreateGroup, GetGroup, AddUserToGroup, RemoveUserFromGroup, CreateServiceLinkedRole, DeleteServiceLinkedRole, GetServiceLinkedRoleDeletionStatus, CreateOpenIDConnectProvider, TagRole, UntagRole, TagUser, UntagUser, TagPolicy, UntagPolicy | |
 | **STS** | GetCallerIdentity, AssumeRole, GetSessionToken, AssumeRoleWithWebIdentity | |
+| **IMDS** (EC2 Instance Metadata) | `PUT /latest/api/token`, `GET /latest/meta-data/instance-id`, `GET /latest/meta-data/iam/security-credentials/`, `GET /latest/meta-data/iam/security-credentials/<role>`, `GET /latest/meta-data/iam/info`, `GET /latest/meta-data/placement/{region,availability-zone,...}`, `GET /latest/dynamic/instance-identity/document` | IMDSv1 + IMDSv2; default credential chain falls through to a `ministack-instance-role` document with `ASIA*` session creds. Point SDKs at ministack via `AWS_EC2_METADATA_SERVICE_ENDPOINT=http://localhost:4566` (or `ec2_metadata_service_endpoint` in `~/.aws/config`); set `MINISTACK_IMDS_V2_REQUIRED=1` to require the token PUT |
 | **SecretsManager** | CreateSecret, GetSecretValue, ListSecrets, DeleteSecret, UpdateSecret, DescribeSecret, PutSecretValue, UpdateSecretVersionStage, RestoreSecret, RotateSecret, GetRandomPassword, ListSecretVersionIds, ReplicateSecretToRegions, TagResource, UntagResource, PutResourcePolicy, GetResourcePolicy, DeleteResourcePolicy, ValidateResourcePolicy | |
 | **CloudWatch Logs** | CreateLogGroup, DeleteLogGroup, DescribeLogGroups, CreateLogStream, DeleteLogStream, DescribeLogStreams, PutLogEvents, GetLogEvents, FilterLogEvents, PutRetentionPolicy, DeleteRetentionPolicy, PutSubscriptionFilter, DeleteSubscriptionFilter, DescribeSubscriptionFilters, PutMetricFilter, DeleteMetricFilter, DescribeMetricFilters, TagLogGroup, UntagLogGroup, ListTagsLogGroup, TagResource, UntagResource, ListTagsForResource, StartQuery, GetQueryResults, StopQuery, PutDestination, DeleteDestination, DescribeDestinations, PutDestinationPolicy | `FilterLogEvents` supports `*`/`?` globs, multi-term AND, `-term` exclusion |
 
@@ -664,6 +665,7 @@ ecs.stop_task(cluster="dev", task=task_arn)
 | `USE_SSL` | `0` | Enable HTTPS on the gateway listener. Accepts `1`, `true`, `yes`. LocalStack-compatible flag name |
 | `MINISTACK_SSL_CERT` | _(unset)_ | Optional PEM-encoded server certificate path; required together with `MINISTACK_SSL_KEY`. When unset, MiniStack auto-generates a self-signed cert under `${TMPDIR}/ministack-tls/` (cached across restarts) |
 | `MINISTACK_SSL_KEY` | _(unset)_ | Optional PEM-encoded private key path; required together with `MINISTACK_SSL_CERT` |
+| `MINISTACK_IMDS_V2_REQUIRED` | `0` | Reject token-less GETs on `/latest/meta-data/...`. When set, callers must first `PUT /latest/api/token` and pass the token as `X-aws-ec2-metadata-token`, matching real-AWS hop-limit-1 IMDSv2-only instances |
 
 ### API Gateway HTTP proxy execution model
 
@@ -683,9 +685,21 @@ If the same filename exists in both paths, the MiniStack-native path takes prior
 
 Init scripts automatically receive `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, and `AWS_ENDPOINT_URL` — no manual configuration needed. The `aws` CLI is bundled in the image.
 
+Each script also gets:
+
+| Variable | Set per | Value |
+|----------|---------|-------|
+| `MINISTACK_INIT_SCRIPT_DIR` | script | Absolute path of the directory the running script lives in |
+| `MINISTACK_INIT_SCRIPT_PATH` | script | Absolute path of the running script |
+| `MINISTACK_INIT_BOOT_DIR` | phase | Boot-phase directory (`/docker-entrypoint-initaws.d` or `/etc/localstack/init/boot.d`) when present |
+| `MINISTACK_INIT_READY_DIR` | phase | Ready-phase directory (`/docker-entrypoint-initaws.d/ready.d` or `/etc/localstack/init/ready.d`) when present |
+
+This lets a script reference sibling files without hardcoding the mount path:
+
 ```bash
 # ready.d/01-create-resources.sh
 aws s3 mb s3://my-bucket
+aws s3 cp "${MINISTACK_INIT_SCRIPT_DIR}/seed-data.json" s3://my-bucket/
 aws sqs create-queue --queue-name my-queue
 ```
 

@@ -327,8 +327,14 @@ def _identity_id(pool_id: str) -> str:
 
 def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "access",
                  username: str = "", user_attrs: dict | None = None,
-                 groups: list[str] | None = None) -> str:
-    """Return a JWT signed with the RSA key when cryptography is available."""
+                 groups: list[str] | None = None,
+                 trigger_source: str = "TokenGeneration_Authentication") -> str:
+    """Return a JWT signed with the RSA key when cryptography is available.
+
+    For ``access`` and ``id`` tokens, runs the user pool's PreTokenGeneration
+    Lambda trigger (V2_0 — both tokens; V1_0 — id token only) before signing.
+    Refresh tokens are opaque in AWS and skip the trigger.
+    """
     header = base64.urlsafe_b64encode(
         json.dumps({"alg": "RS256", "kid": "ministack-key-1"}).encode()
     ).rstrip(b"=").decode()
@@ -371,6 +377,19 @@ def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "acces
     else:
         # RefreshToken — opaque in real AWS, but we use a JWT stub for simplicity
         claims["client_id"] = client_id
+
+    if token_type in ("access", "id"):
+        claims = _apply_pretoken_trigger(
+            pool_id=pool_id,
+            claims=claims,
+            token_type=token_type,
+            trigger_source=trigger_source,
+            client_id=client_id,
+            username=username,
+            user_attrs=user_attrs or {},
+            groups=groups or [],
+        )
+
     payload = base64.urlsafe_b64encode(
         json.dumps(claims).encode()
     ).rstrip(b"=").decode()
@@ -383,6 +402,177 @@ def _fake_token(sub: str, pool_id: str, client_id: str, token_type: str = "acces
     else:
         sig = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
     return f"{header}.{payload}.{sig}"
+
+
+def _apply_pretoken_trigger(pool_id: str, claims: dict, token_type: str,
+                             trigger_source: str, client_id: str,
+                             username: str, user_attrs: dict,
+                             groups: list[str]) -> dict:
+    """Invoke the user pool's PreTokenGeneration Lambda and apply its overrides.
+
+    Honours both V1_0 (``LambdaConfig.PreTokenGeneration`` — id token only,
+    legacy ``claimsOverrideDetails`` shape) and V2_0
+    (``LambdaConfig.PreTokenGenerationConfig`` — id + access tokens,
+    ``claimsAndScopeOverrideDetails`` shape).
+
+    By default a Lambda failure is logged and ignored — the unmodified token
+    is still issued. Set ``MINISTACK_COGNITO_PRETOKEN_STRICT=1`` to fail-closed
+    (raise to the caller) the way real AWS does.
+    """
+    pool = _user_pools.get(pool_id)
+    if not pool:
+        return claims
+    cfg = pool.get("LambdaConfig") or {}
+
+    v2_cfg = cfg.get("PreTokenGenerationConfig") or {}
+    v2_arn = v2_cfg.get("LambdaArn") or v2_cfg.get("LambdaArn".lower())
+    v2_version = (v2_cfg.get("LambdaVersion") or "V2_0").upper()
+    v1_arn = cfg.get("PreTokenGeneration")
+
+    use_v2 = bool(v2_arn)
+    arn = v2_arn or v1_arn
+    if not arn:
+        return claims
+    # V1_0 only fires for id tokens.
+    if not use_v2 and token_type != "id":
+        return claims
+
+    event = _build_pretoken_event(
+        pool_id=pool_id,
+        client_id=client_id,
+        username=username,
+        user_attrs=user_attrs,
+        groups=groups,
+        trigger_source=trigger_source,
+        version=v2_version if use_v2 else "V1_0",
+    )
+
+    strict = os.environ.get("MINISTACK_COGNITO_PRETOKEN_STRICT", "").lower() in ("1", "true", "yes")
+    try:
+        # Lazy import to avoid a circular dependency between cognito and lambda_svc.
+        from ministack.services import lambda_svc
+        name, qualifier = lambda_svc._resolve_name_and_qualifier(arn)
+        record, alias = lambda_svc._get_func_record_for_qualifier(name, qualifier)
+        if record is None:
+            raise RuntimeError(f"PreTokenGeneration Lambda not found: {arn}")
+        result = lambda_svc._execute_function(record, event)
+    except Exception as e:
+        logger.warning("PreTokenGeneration Lambda invocation failed for pool %s: %s",
+                       pool_id, e)
+        if strict:
+            raise
+        return claims
+
+    if isinstance(result, dict) and result.get("error"):
+        logger.warning("PreTokenGeneration Lambda returned an error for pool %s: %s",
+                       pool_id, result.get("body"))
+        if strict:
+            raise RuntimeError(f"PreTokenGeneration error: {result.get('body')}")
+        return claims
+    payload = result.get("body") if isinstance(result, dict) else result
+    response = _extract_pretoken_response(payload)
+    if not response:
+        return claims
+
+    if use_v2:
+        section_name = "accessTokenGeneration" if token_type == "access" else "idTokenGeneration"
+        scope_overrides = (response.get("claimsAndScopeOverrideDetails") or {}).get(section_name) or {}
+    else:
+        scope_overrides = response.get("claimsOverrideDetails") or {}
+
+    add = scope_overrides.get("claimsToAddOrOverride") or {}
+    if isinstance(add, dict):
+        for k, v in add.items():
+            claims[k] = v
+
+    suppress = scope_overrides.get("claimsToSuppress") or []
+    if isinstance(suppress, list):
+        for k in suppress:
+            claims.pop(k, None)
+
+    if use_v2 and token_type == "access":
+        scopes_add = scope_overrides.get("scopesToAdd") or []
+        scopes_suppress = scope_overrides.get("scopesToSuppress") or []
+        if scopes_add or scopes_suppress:
+            current = (claims.get("scope") or "").split()
+            current = [s for s in current if s not in scopes_suppress]
+            for s in scopes_add:
+                if s not in current:
+                    current.append(s)
+            claims["scope"] = " ".join(current)
+
+    group_override = scope_overrides.get("groupOverrideDetails") or {}
+    groups_to_override = group_override.get("groupsToOverride")
+    if isinstance(groups_to_override, list):
+        claims["cognito:groups"] = groups_to_override
+
+    return claims
+
+
+def _build_pretoken_event(pool_id: str, client_id: str, username: str,
+                           user_attrs: dict, groups: list[str],
+                           trigger_source: str, version: str) -> dict:
+    """Construct the event payload AWS sends to a PreTokenGeneration Lambda.
+
+    Shape from the Cognito Developer Guide
+    (https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-lambda-pre-token-generation.html).
+    """
+    request_block: dict = {
+        "userAttributes": {k: v for k, v in (user_attrs or {}).items()
+                           if isinstance(v, (str, int, float, bool))},
+        "groupConfiguration": {
+            "groupsToOverride": list(groups or []),
+            "iamRolesToOverride": [],
+            "preferredRole": None,
+        },
+    }
+    if version.startswith("V2") or version.startswith("V3"):
+        request_block["scopes"] = ["aws.cognito.signin.user.admin"]
+
+    response_block = (
+        {"claimsAndScopeOverrideDetails": None}
+        if version.startswith("V2") or version.startswith("V3")
+        else {"claimsOverrideDetails": None}
+    )
+
+    return {
+        "version": "1",
+        "triggerSource": trigger_source,
+        "region": get_region(),
+        "userPoolId": pool_id,
+        "userName": username or "",
+        "callerContext": {
+            "awsSdkVersion": "ministack",
+            "clientId": client_id or "",
+        },
+        "request": request_block,
+        "response": response_block,
+    }
+
+
+def _extract_pretoken_response(payload) -> dict | None:
+    """Pull the ``response`` block from a Lambda invocation result.
+
+    Lambdas return the full event echoed back with their overrides written
+    into ``response.claimsAndScopeOverrideDetails`` (V2/V3) or
+    ``response.claimsOverrideDetails`` (V1). Accept already-parsed dicts,
+    JSON strings, and bytes.
+    """
+    if payload is None:
+        return None
+    if isinstance(payload, (bytes, bytearray)):
+        try:
+            payload = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("response") if isinstance(payload.get("response"), dict) else payload
 
 
 def _user_from_token(token: str, pool: dict):
@@ -771,6 +961,7 @@ def _create_user_pool(data):
         }),
         "AccountRecoverySetting": data.get("AccountRecoverySetting", {}),
         "DeletionProtection": data.get("DeletionProtection", "INACTIVE"),
+        "LambdaConfig": data.get("LambdaConfig", {}),
         "Domain": None,
         "_clients": {},
         "_users": {},
@@ -838,7 +1029,7 @@ def _update_user_pool(data):
         "SmsAuthenticationMessage", "MfaConfiguration", "DeviceConfiguration",
         "EmailConfiguration", "SmsConfiguration", "UserPoolTags",
         "AdminCreateUserConfig", "UserPoolAddOns", "VerificationMessageTemplate",
-        "AccountRecoverySetting",
+        "AccountRecoverySetting", "LambdaConfig",
     }
     for k in updatable:
         if k in data:
@@ -1305,7 +1496,8 @@ def _build_auth_result(pool_id: str, client_id: str, user: dict) -> dict:
     username = user.get("Username", "")
     groups = user.get("_groups", [])
     return {
-        "AccessToken": _fake_token(sub, pool_id, client_id, "access", username=username, groups=groups),
+        "AccessToken": _fake_token(sub, pool_id, client_id, "access", username=username,
+                                    user_attrs=attrs, groups=groups),
         "IdToken": _fake_token(sub, pool_id, client_id, "id", username=username,
                                user_attrs=attrs, groups=groups),
         "RefreshToken": _fake_token(sub, pool_id, client_id, "refresh"),

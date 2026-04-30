@@ -164,6 +164,27 @@ _PRESERVED_HEADERS = (
     "expires",
 )
 
+# Per botocore/data/s3/2006-03-01/service-2.json (StorageClass enum).
+_VALID_STORAGE_CLASSES = frozenset({
+    "STANDARD", "REDUCED_REDUNDANCY", "STANDARD_IA", "ONEZONE_IA",
+    "INTELLIGENT_TIERING", "GLACIER", "DEEP_ARCHIVE", "OUTPOSTS",
+    "GLACIER_IR", "SNOW", "EXPRESS_ONEZONE", "FSX_OPENZFS",
+})
+
+
+def _resolve_storage_class(headers: dict, default: str = "STANDARD"):
+    """Read x-amz-storage-class. Returns (value, error_response_or_None)."""
+    sc = headers.get("x-amz-storage-class", "")
+    if not sc:
+        return default, None
+    if sc not in _VALID_STORAGE_CLASSES:
+        return None, _error(
+            "InvalidStorageClass",
+            "The storage class you specified is not valid",
+            400,
+        )
+    return sc, None
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -343,6 +364,7 @@ def _build_object_record(body: bytes, headers: dict, etag: str = None) -> dict:
         "size": len(body),
         "metadata": _extract_user_metadata(headers),
         "preserved_headers": preserved,
+        "storage_class": headers.get("x-amz-storage-class") or "STANDARD",
     }
 
 
@@ -361,6 +383,10 @@ def _object_response_headers(obj: dict, bucket_name: str = "", key: str = "") ->
     h.update(obj.get("metadata", {}))
     if obj.get("version_id"):
         h["x-amz-version-id"] = obj["version_id"]
+    sc = obj.get("storage_class") or "STANDARD"
+    if sc != "STANDARD":
+        # AWS omits the header for STANDARD; SDKs default to STANDARD when absent.
+        h["x-amz-storage-class"] = sc
     if bucket_name and key:
         retention = _object_retention.get((bucket_name, key))
         if retention:
@@ -569,6 +595,8 @@ def _dispatch(
     if method == "POST":
         if "delete" in query_params:
             return _delete_objects(bucket, body, headers)
+        if headers.get("content-type", "").startswith("multipart/form-data"):
+            return _post_object(bucket, body, headers)
         return _error(
             "MethodNotAllowed",
             "The specified method is not allowed against this resource.",
@@ -1265,7 +1293,11 @@ def _list_object_versions(bucket_name: str, query_params: dict):
                     SubElement(ver, "LastModified").text = v["last_modified"]
                     SubElement(ver, "ETag").text = v["etag"]
                     SubElement(ver, "Size").text = str(v["size"])
-                    SubElement(ver, "StorageClass").text = "STANDARD"
+                    SubElement(ver, "StorageClass").text = (
+                        v.get("storage_class")
+                        or bucket["objects"].get(k, {}).get("storage_class")
+                        or "STANDARD"
+                    )
                     owner = SubElement(ver, "Owner")
                     SubElement(owner, "ID").text = "owner-id"
                     SubElement(owner, "DisplayName").text = "ministack"
@@ -1282,7 +1314,7 @@ def _list_object_versions(bucket_name: str, query_params: dict):
             SubElement(ver, "LastModified").text = obj["last_modified"]
             SubElement(ver, "ETag").text = obj["etag"]
             SubElement(ver, "Size").text = str(obj["size"])
-            SubElement(ver, "StorageClass").text = "STANDARD"
+            SubElement(ver, "StorageClass").text = obj.get("storage_class") or "STANDARD"
             owner = SubElement(ver, "Owner")
             SubElement(owner, "ID").text = "owner-id"
             SubElement(owner, "DisplayName").text = "ministack"
@@ -1629,6 +1661,10 @@ def _put_object(bucket_name: str, key: str, body: bytes, headers: dict):
     if md5_err:
         return md5_err
 
+    _, sc_err = _resolve_storage_class(headers)
+    if sc_err:
+        return sc_err
+
     etag = f'"{md5_hash(body)}"'
     obj = _build_object_record(body, headers, etag=etag)
     bucket["objects"][key] = obj
@@ -1666,11 +1702,227 @@ def _put_object(bucket_name: str, key: str, body: bytes, headers: dict):
             "size": obj["size"],
             "is_latest": True,
             "data": body,
+            "storage_class": obj.get("storage_class") or "STANDARD",
         })
         # Mark all previous versions as not latest
         for v in _object_versions[vkey][:-1]:
             v["is_latest"] = False
     return 200, resp_headers, b""
+
+
+def _parse_multipart_form(content_type: str, body: bytes) -> list[tuple]:
+    """Return [(name, filename, headers, value_bytes), ...] in form order.
+
+    Returns [] if the body is malformed or the boundary cannot be found.
+    """
+    import re as _re
+    m = _re.search(r'boundary=("?)([^";\s]+)\1', content_type, _re.IGNORECASE)
+    if not m:
+        return []
+    boundary = b"--" + m.group(2).encode()
+    chunks = body.split(boundary)
+    out = []
+    # First chunk is preamble (often empty); last is "--\r\n" terminator.
+    for chunk in chunks[1:-1]:
+        if chunk.startswith(b"\r\n"):
+            chunk = chunk[2:]
+        if chunk.endswith(b"\r\n"):
+            chunk = chunk[:-2]
+        head_blob, sep, value = chunk.partition(b"\r\n\r\n")
+        if not sep:
+            continue
+        part_headers: dict = {}
+        for line in head_blob.split(b"\r\n"):
+            if b":" in line:
+                k, _, v = line.partition(b":")
+                part_headers[k.strip().decode("latin-1").lower()] = v.strip().decode("latin-1")
+        cd = part_headers.get("content-disposition", "")
+        name_m = _re.search(r'name="([^"]*)"', cd)
+        fn_m = _re.search(r'filename="([^"]*)"', cd)
+        out.append((
+            name_m.group(1) if name_m else "",
+            fn_m.group(1) if fn_m else None,
+            part_headers,
+            value,
+        ))
+    return out
+
+
+def _enforce_post_policy_size(policy_b64: str, size: int):
+    """Apply the `content-length-range` condition from a POST policy.
+
+    Returns an error response when size is outside [min, max], else None.
+    Other policy conditions (key, starts-with, signature) are not enforced —
+    same lenient stance as ministack's presigned-URL handling.
+    """
+    if not policy_b64:
+        return None
+    try:
+        decoded = base64.b64decode(policy_b64 + "==").decode("utf-8")
+        policy = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    for cond in policy.get("conditions", []):
+        if (isinstance(cond, list) and len(cond) == 3
+                and isinstance(cond[0], str)
+                and cond[0].lower() == "content-length-range"):
+            try:
+                lo = int(cond[1])
+                hi = int(cond[2])
+            except (TypeError, ValueError):
+                continue
+            if size < lo:
+                return _error(
+                    "EntityTooSmall",
+                    "Your proposed upload is smaller than the minimum allowed object size.",
+                    400,
+                )
+            if size > hi:
+                return _error(
+                    "EntityTooLarge",
+                    "Your proposed upload exceeds the maximum allowed size.",
+                    400,
+                )
+    return None
+
+
+def _post_object(bucket_name: str, body: bytes, headers: dict):
+    """Browser-based form upload (RFC 1867 / S3 PostObject).
+
+    Per https://docs.aws.amazon.com/AmazonS3/latest/API/RTPM-mpuoverview.html,
+    callers POST a multipart/form-data body to the bucket root. We honour
+    `key` (with `${filename}` substitution), `Content-Type`, `x-amz-meta-*`,
+    `x-amz-storage-class`, `x-amz-tagging`, `success_action_status`, and
+    `success_action_redirect`. Policy and signature fields are accepted and
+    ignored — same lenient stance as ministack's presigned-URL handling.
+    """
+    bucket = _ensure_bucket(bucket_name)
+    if bucket is None:
+        return _no_such_bucket(bucket_name)
+
+    parts = _parse_multipart_form(headers.get("content-type", ""), body)
+    if not parts:
+        return _error("MalformedPOSTRequest",
+                      "The body of your POST request is not well-formed multipart/form-data.",
+                      400)
+
+    fields: dict[str, str] = {}
+    file_value: bytes | None = None
+    file_filename: str | None = None
+    file_headers: dict = {}
+    for name, filename, ph, value in parts:
+        if name == "file" or filename is not None:
+            file_value = value
+            file_filename = filename or ""
+            file_headers = ph
+        else:
+            try:
+                fields[name.lower()] = value.decode("utf-8")
+            except UnicodeDecodeError:
+                fields[name.lower()] = value.decode("latin-1")
+
+    if file_value is None:
+        return _error("InvalidArgument",
+                      "POST requires a file field.", 400)
+
+    err = _enforce_post_policy_size(fields.get("policy", ""), len(file_value))
+    if err:
+        return err
+
+    key_template = fields.get("key", "")
+    if not key_template:
+        return _error("InvalidArgument",
+                      "Bucket POST must contain a field named 'key'.", 400)
+    key = key_template.replace("${filename}", file_filename or "")
+
+    # Build a synthetic header dict so _build_object_record reuses the PUT path.
+    synth = {}
+    if "content-type" in fields:
+        synth["content-type"] = fields["content-type"]
+    elif file_headers.get("content-type"):
+        synth["content-type"] = file_headers["content-type"]
+    for fname, fval in fields.items():
+        if fname.startswith("x-amz-meta-"):
+            synth[fname] = fval
+    for h in ("cache-control", "content-disposition", "content-encoding",
+              "content-language", "expires", "x-amz-storage-class",
+              "x-amz-tagging", "x-amz-acl",
+              "x-amz-object-lock-mode", "x-amz-object-lock-retain-until-date",
+              "x-amz-object-lock-legal-hold"):
+        if h in fields:
+            synth[h] = fields[h]
+
+    _, sc_err = _resolve_storage_class(synth)
+    if sc_err:
+        return sc_err
+
+    etag = f'"{md5_hash(file_value)}"'
+    obj = _build_object_record(file_value, synth, etag=etag)
+    bucket["objects"][key] = obj
+    _apply_object_lock_from_headers(bucket_name, key, synth)
+
+    tagging_header = synth.get("x-amz-tagging", "")
+    if tagging_header:
+        tags = {k: v[0] for k, v in _parse_qs(tagging_header).items()}
+        if len(tags) <= 10:
+            _object_tags[(bucket_name, key)] = tags
+
+    if S3_PERSIST:
+        _persist_object(bucket_name, key, obj)
+
+    _fire_s3_event_async(
+        bucket_name, key, "s3:ObjectCreated:Post", size=obj["size"], etag=etag
+    )
+
+    version_id = None
+    if _bucket_versioning.get(bucket_name) in ("Enabled", "Suspended"):
+        version_id = new_uuid()
+        obj["version_id"] = version_id
+        vkey = (bucket_name, key)
+        if vkey not in _object_versions:
+            _object_versions[vkey] = []
+        _object_versions[vkey].append({
+            "version_id": version_id,
+            "last_modified": obj["last_modified"],
+            "etag": etag,
+            "size": obj["size"],
+            "is_latest": True,
+            "data": file_value,
+            "storage_class": obj.get("storage_class") or "STANDARD",
+        })
+        for v in _object_versions[vkey][:-1]:
+            v["is_latest"] = False
+
+    location = f"http://{bucket_name}.s3.amazonaws.com/{url_quote(key, safe='/')}"
+    base_resp = {"ETag": etag, "Location": location}
+    if version_id:
+        base_resp["x-amz-version-id"] = version_id
+
+    redirect = fields.get("success_action_redirect") or fields.get("redirect")
+    if redirect:
+        sep = "&" if "?" in redirect else "?"
+        target = (f"{redirect}{sep}bucket={bucket_name}"
+                  f"&key={url_quote(key, safe='/')}"
+                  f"&etag={url_quote(etag, safe='')}")
+        return 303, {**base_resp, "Location": target}, b""
+
+    status_str = fields.get("success_action_status", "204")
+    try:
+        status = int(status_str)
+    except (TypeError, ValueError):
+        status = 204
+    if status not in (200, 201, 204):
+        status = 204
+
+    if status == 201:
+        root = Element("PostResponse")
+        SubElement(root, "Location").text = location
+        SubElement(root, "Bucket").text = bucket_name
+        SubElement(root, "Key").text = key
+        SubElement(root, "ETag").text = etag
+        return 201, {**base_resp, "Content-Type": "application/xml"}, _xml_body(root)
+
+    return status, base_resp, b""
 
 
 def _apply_object_lock_from_headers(bucket_name: str, key: str, headers: dict):
@@ -1928,6 +2180,12 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
         content_encoding = src_obj.get("content_encoding")
         preserved = dict(src_obj.get("preserved_headers", {}))
 
+    dest_sc, sc_err = _resolve_storage_class(
+        headers, default=src_obj.get("storage_class") or "STANDARD"
+    )
+    if sc_err:
+        return sc_err
+
     new_etag = src_obj["etag"]
     last_modified = now_iso()
     src_body = _read_body(src_bucket_name, src_key, src_obj)
@@ -1940,6 +2198,7 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
         "size": src_obj["size"],
         "metadata": metadata,
         "preserved_headers": preserved,
+        "storage_class": dest_sc,
     }
     dest_bucket["objects"][dest_key] = dest_obj
 
@@ -1985,6 +2244,8 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
     )
 
     resp_headers = {"Content-Type": "application/xml"}
+    if dest_sc != "STANDARD":
+        resp_headers["x-amz-storage-class"] = dest_sc
     if _bucket_versioning.get(bucket_name) in ("Enabled", "Suspended"):
         version_id = new_uuid()
         dest_obj["version_id"] = version_id
@@ -1999,6 +2260,7 @@ def _copy_object(bucket_name: str, dest_key: str, headers: dict):
             "size": dest_obj["size"],
             "is_latest": True,
             "data": src_body,
+            "storage_class": dest_obj.get("storage_class") or "STANDARD",
         })
         for v in _object_versions[vkey][:-1]:
             v["is_latest"] = False
@@ -2549,7 +2811,7 @@ def _list_objects_v1(bucket_name: str, query_params: dict):
         SubElement(c, "LastModified").text = obj["last_modified"]
         SubElement(c, "ETag").text = obj["etag"]
         SubElement(c, "Size").text = str(obj["size"])
-        SubElement(c, "StorageClass").text = "STANDARD"
+        SubElement(c, "StorageClass").text = obj.get("storage_class") or "STANDARD"
         owner = SubElement(c, "Owner")
         SubElement(owner, "ID").text = "owner-id"
         SubElement(owner, "DisplayName").text = "ministack"
@@ -2624,7 +2886,7 @@ def _list_objects_v2(bucket_name: str, query_params: dict):
         SubElement(c, "LastModified").text = obj["last_modified"]
         SubElement(c, "ETag").text = obj["etag"]
         SubElement(c, "Size").text = str(obj["size"])
-        SubElement(c, "StorageClass").text = "STANDARD"
+        SubElement(c, "StorageClass").text = obj.get("storage_class") or "STANDARD"
         if fetch_owner:
             owner = SubElement(c, "Owner")
             SubElement(owner, "ID").text = "owner-id"
@@ -2707,6 +2969,10 @@ def _create_multipart_upload(bucket_name: str, key: str, headers: dict):
     if bucket is None:
         return _no_such_bucket(bucket_name)
 
+    storage_class, sc_err = _resolve_storage_class(headers)
+    if sc_err:
+        return sc_err
+
     upload_id = new_uuid()
     content_type = headers.get("content-type", "application/octet-stream")
     content_encoding = headers.get("content-encoding")
@@ -2725,6 +2991,7 @@ def _create_multipart_upload(bucket_name: str, key: str, headers: dict):
         "content_type": content_type,
         "content_encoding": content_encoding,
         "preserved_headers": preserved,
+        "storage_class": storage_class,
         "created": now_iso(),
     }
 
@@ -2911,6 +3178,7 @@ def _complete_multipart_upload(
         "size": len(combined),
         "metadata": upload["metadata"],
         "preserved_headers": upload.get("preserved_headers", {}),
+        "storage_class": upload.get("storage_class") or "STANDARD",
     }
     bucket["objects"][key] = obj
 
@@ -3035,7 +3303,7 @@ def _list_multipart_uploads(bucket_name: str, query_params: dict):
         owner = SubElement(u, "Owner")
         SubElement(owner, "ID").text = "owner-id"
         SubElement(owner, "DisplayName").text = "ministack"
-        SubElement(u, "StorageClass").text = "STANDARD"
+        SubElement(u, "StorageClass").text = upload.get("storage_class") or "STANDARD"
         SubElement(u, "Initiated").text = upload["created"]
 
     if is_truncated and uploads:
@@ -3083,7 +3351,7 @@ def _list_parts(bucket_name: str, key: str, query_params: dict):
     owner = SubElement(root, "Owner")
     SubElement(owner, "ID").text = "owner-id"
     SubElement(owner, "DisplayName").text = "ministack"
-    SubElement(root, "StorageClass").text = "STANDARD"
+    SubElement(root, "StorageClass").text = upload.get("storage_class") or "STANDARD"
     SubElement(root, "PartNumberMarker").text = str(part_marker)
     SubElement(root, "MaxParts").text = str(max_parts)
 
@@ -3165,6 +3433,7 @@ def _persist_object(bucket: str, key: str, obj):
                 "size": obj.get("size", 0),
                 "metadata": obj.get("metadata", {}),
                 "preserved_headers": obj.get("preserved_headers", {}),
+                "storage_class": obj.get("storage_class", "STANDARD"),
             }
             _atomic_write(fpath + ".meta.json", json.dumps(meta), text=True)
         # Drop body from in-memory record to save RAM
@@ -3289,6 +3558,7 @@ def _load_persisted_bucket(account_id, bucket_name, bucket_path):
                 "size": size,
                 "metadata": meta.get("metadata", {}),
                 "preserved_headers": meta.get("preserved_headers", {}),
+                "storage_class": meta.get("storage_class", "STANDARD"),
             }
 
 

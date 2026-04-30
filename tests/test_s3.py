@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from urllib.parse import urlparse
 
@@ -1321,6 +1322,204 @@ def test_s3_put_object_content_type_preserved(s3):
     )
     resp = s3.get_object(Bucket="qa-s3-ct", Key="page.html")
     assert "text/html" in resp["ContentType"]
+
+def test_s3_put_object_storage_class_roundtrip(s3):
+    """PutObject with StorageClass is returned by GetObject and HeadObject (#534)."""
+    s3.create_bucket(Bucket="qa-s3-sc")
+    s3.put_object(
+        Bucket="qa-s3-sc",
+        Key="cold.bin",
+        Body=b"x",
+        StorageClass="INTELLIGENT_TIERING",
+    )
+    g = s3.get_object(Bucket="qa-s3-sc", Key="cold.bin")
+    assert g["StorageClass"] == "INTELLIGENT_TIERING"
+    h = s3.head_object(Bucket="qa-s3-sc", Key="cold.bin")
+    assert h["StorageClass"] == "INTELLIGENT_TIERING"
+
+
+def test_s3_put_object_default_storage_class_is_standard(s3):
+    """When PutObject does not set StorageClass, GetObject omits the field
+    (botocore reports STANDARD via absence — no header on the wire)."""
+    s3.create_bucket(Bucket="qa-s3-sc-default")
+    s3.put_object(Bucket="qa-s3-sc-default", Key="f", Body=b"x")
+    g = s3.get_object(Bucket="qa-s3-sc-default", Key="f")
+    # AWS does not send the header for STANDARD; boto3 surfaces it as missing.
+    assert g.get("StorageClass") in (None, "STANDARD")
+
+
+def test_s3_invalid_storage_class_rejected(s3):
+    """Unknown StorageClass values return InvalidStorageClass (#534)."""
+    from botocore.exceptions import ClientError
+    s3.create_bucket(Bucket="qa-s3-sc-bad")
+    with pytest.raises(ClientError) as ei:
+        s3.put_object(
+            Bucket="qa-s3-sc-bad",
+            Key="f",
+            Body=b"x",
+            StorageClass="NOT_A_CLASS",
+        )
+    assert ei.value.response["Error"]["Code"] == "InvalidStorageClass"
+
+
+def test_s3_list_objects_reports_storage_class(s3):
+    """ListObjectsV2 returns the per-object storage class, not a hardcoded STANDARD (#534)."""
+    s3.create_bucket(Bucket="qa-s3-sc-list")
+    s3.put_object(Bucket="qa-s3-sc-list", Key="hot", Body=b"x")
+    s3.put_object(
+        Bucket="qa-s3-sc-list", Key="cold", Body=b"x",
+        StorageClass="GLACIER",
+    )
+    listing = {o["Key"]: o["StorageClass"]
+               for o in s3.list_objects_v2(Bucket="qa-s3-sc-list")["Contents"]}
+    assert listing["hot"] == "STANDARD"
+    assert listing["cold"] == "GLACIER"
+
+
+def test_s3_post_object_presigned(s3):
+    """Browser POST upload via generate_presigned_post round-trips (#535)."""
+    import requests
+    s3.create_bucket(Bucket="qa-s3-post")
+    post = s3.generate_presigned_post(Bucket="qa-s3-post", Key="hello.txt")
+    r = requests.post(
+        post["url"], data=post["fields"],
+        files={"file": ("hello.txt", b"hello world")},
+    )
+    assert r.status_code == 204
+    assert r.headers["ETag"]
+    assert "qa-s3-post" in r.headers["Location"] and "hello.txt" in r.headers["Location"]
+    assert s3.get_object(Bucket="qa-s3-post", Key="hello.txt")["Body"].read() == b"hello world"
+
+
+def test_s3_post_object_filename_substitution(s3):
+    """`${filename}` in the key is replaced with the uploaded file's filename (#535)."""
+    import requests
+    s3.create_bucket(Bucket="qa-s3-post-fn")
+    post = s3.generate_presigned_post(
+        Bucket="qa-s3-post-fn", Key="uploads/${filename}",
+    )
+    r = requests.post(
+        post["url"], data=post["fields"],
+        files={"file": ("photo.png", b"PNG-bytes")},
+    )
+    assert r.status_code == 204
+    assert s3.get_object(Bucket="qa-s3-post-fn", Key="uploads/photo.png")["Body"].read() == b"PNG-bytes"
+
+
+def test_s3_post_object_success_action_status_201(s3):
+    """success_action_status=201 returns XML PostResponse (#535)."""
+    import requests
+    s3.create_bucket(Bucket="qa-s3-post-201")
+    post = s3.generate_presigned_post(
+        Bucket="qa-s3-post-201", Key="k",
+        Fields={"success_action_status": "201"},
+        Conditions=[{"success_action_status": "201"}],
+    )
+    r = requests.post(post["url"], data=post["fields"], files={"file": ("x", b"x")})
+    assert r.status_code == 201
+    assert "<PostResponse>" in r.text and "<Bucket>qa-s3-post-201</Bucket>" in r.text
+    assert "<Key>k</Key>" in r.text
+
+
+def test_s3_post_object_content_type_passthrough(s3):
+    """A `Content-Type` form field is stored on the object (#535)."""
+    import requests
+    s3.create_bucket(Bucket="qa-s3-post-ct")
+    post = s3.generate_presigned_post(
+        Bucket="qa-s3-post-ct", Key="page.html",
+        Fields={"Content-Type": "text/html; charset=utf-8"},
+        Conditions=[["starts-with", "$Content-Type", "text/"]],
+    )
+    r = requests.post(post["url"], data=post["fields"], files={"file": ("p", b"<html/>")})
+    assert r.status_code == 204
+    assert "text/html" in s3.get_object(Bucket="qa-s3-post-ct", Key="page.html")["ContentType"]
+
+
+def test_s3_post_object_storage_class(s3):
+    """`x-amz-storage-class` form field is honored (#534 + #535)."""
+    import requests
+    s3.create_bucket(Bucket="qa-s3-post-sc")
+    post = s3.generate_presigned_post(
+        Bucket="qa-s3-post-sc", Key="cold",
+        Fields={"x-amz-storage-class": "GLACIER"},
+        Conditions=[{"x-amz-storage-class": "GLACIER"}],
+    )
+    r = requests.post(post["url"], data=post["fields"], files={"file": ("x", b"x")})
+    assert r.status_code == 204
+    assert s3.get_object(Bucket="qa-s3-post-sc", Key="cold")["StorageClass"] == "GLACIER"
+
+
+def test_s3_post_object_content_length_range_enforced(s3):
+    """`content-length-range` condition rejects oversize uploads with EntityTooLarge."""
+    import requests
+    s3.create_bucket(Bucket="qa-s3-post-clr")
+    post = s3.generate_presigned_post(
+        Bucket="qa-s3-post-clr", Key="k",
+        Conditions=[["content-length-range", 0, 5]],
+    )
+    # Within the limit -> 204
+    ok = requests.post(post["url"], data=post["fields"], files={"file": ("f", b"abcde")})
+    assert ok.status_code == 204
+
+    # Over the limit -> 400 EntityTooLarge
+    too_big = requests.post(post["url"], data=post["fields"], files={"file": ("f", b"abcdef")})
+    assert too_big.status_code == 400
+    assert "EntityTooLarge" in too_big.text
+
+
+def test_s3_post_object_content_length_range_minimum(s3):
+    """A minimum bound on `content-length-range` rejects undersize uploads."""
+    import requests
+    s3.create_bucket(Bucket="qa-s3-post-clr-min")
+    post = s3.generate_presigned_post(
+        Bucket="qa-s3-post-clr-min", Key="k",
+        Conditions=[["content-length-range", 5, 1024]],
+    )
+    too_small = requests.post(post["url"], data=post["fields"], files={"file": ("f", b"abc")})
+    assert too_small.status_code == 400
+    assert "EntityTooSmall" in too_small.text
+
+
+def test_s3_storage_class_persisted_to_disk(tmp_path, monkeypatch):
+    """storage_class survives _persist_object → _load_persisted_bucket round-trip (#534)."""
+    from ministack.services import s3 as s3mod
+    monkeypatch.setattr(s3mod, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(s3mod, "S3_PERSIST", True)
+
+    obj = {
+        "body": b"hello",
+        "content_type": "application/octet-stream",
+        "content_encoding": None,
+        "etag": '"abc"',
+        "last_modified": s3mod.now_iso(),
+        "size": 5,
+        "metadata": {},
+        "preserved_headers": {},
+        "storage_class": "GLACIER",
+    }
+
+    monkeypatch.setattr(s3mod, "get_account_id", lambda: "000000000000")
+    s3mod._persist_object("qa-bucket", "k", obj)
+
+    s3mod._buckets._data.pop(("000000000000", "qa-bucket"), None)
+    s3mod._load_persisted_bucket("000000000000", "qa-bucket",
+                                 os.path.join(str(tmp_path), "000000000000", "qa-bucket"))
+    restored = s3mod._buckets._data[("000000000000", "qa-bucket")]["objects"]["k"]
+    assert restored["storage_class"] == "GLACIER"
+
+
+def test_s3_copy_object_propagates_storage_class(s3):
+    """CopyObject with explicit StorageClass overrides the source's class (#534)."""
+    s3.create_bucket(Bucket="qa-s3-sc-copy")
+    s3.put_object(Bucket="qa-s3-sc-copy", Key="src", Body=b"x")
+    s3.copy_object(
+        Bucket="qa-s3-sc-copy",
+        Key="dst",
+        CopySource={"Bucket": "qa-s3-sc-copy", "Key": "src"},
+        StorageClass="STANDARD_IA",
+    )
+    assert s3.get_object(Bucket="qa-s3-sc-copy", Key="dst")["StorageClass"] == "STANDARD_IA"
+
 
 def test_s3_head_object_returns_content_length(s3):
     """HeadObject must return correct ContentLength."""

@@ -2211,6 +2211,185 @@ def _cognito_module():
     return importlib.import_module("ministack.services.cognito")
 
 
+def _decode_jwt_claims(jwt: str) -> dict:
+    p = jwt.split(".")[1]
+    p += "=" * (-len(p) % 4)
+    return json.loads(base64.urlsafe_b64decode(p))
+
+
+def _make_pretoken_lambda_zip(handler_body: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("index.py", handler_body)
+    return buf.getvalue()
+
+
+def test_cognito_user_pool_lambda_config_round_trip(cognito_idp):
+    """LambdaConfig.PreTokenGenerationConfig persists on Create/Update (#533)."""
+    pid = cognito_idp.create_user_pool(
+        PoolName="lc-rt",
+        LambdaConfig={
+            "PreTokenGenerationConfig": {
+                "LambdaArn": "arn:aws:lambda:us-east-1:000000000000:function:none",
+                "LambdaVersion": "V2_0",
+            }
+        },
+    )["UserPool"]["Id"]
+    desc = cognito_idp.describe_user_pool(UserPoolId=pid)["UserPool"]
+    cfg = desc["LambdaConfig"]["PreTokenGenerationConfig"]
+    assert cfg["LambdaArn"].endswith(":function:none")
+    assert cfg["LambdaVersion"] == "V2_0"
+
+    cognito_idp.update_user_pool(
+        UserPoolId=pid,
+        LambdaConfig={"PreTokenGenerationConfig": {
+            "LambdaArn": "arn:aws:lambda:us-east-1:000000000000:function:other",
+            "LambdaVersion": "V2_0",
+        }},
+    )
+    desc2 = cognito_idp.describe_user_pool(UserPoolId=pid)["UserPool"]
+    assert desc2["LambdaConfig"]["PreTokenGenerationConfig"]["LambdaArn"].endswith(":function:other")
+
+
+def test_cognito_pretoken_v2_adds_custom_claim_to_access_token(cognito_idp, lam):
+    """V2_0 PreTokenGeneration trigger injects custom claims into the access token (#533)."""
+    handler = (
+        "import json\n"
+        "def handler(event, ctx):\n"
+        "    attrs = event['request']['userAttributes']\n"
+        "    event['response']['claimsAndScopeOverrideDetails'] = {\n"
+        "        'accessTokenGeneration': {\n"
+        "            'claimsToAddOrOverride': {\n"
+        "                'userIDs': attrs.get('custom:userIDs', ''),\n"
+        "                'tier': 'platinum',\n"
+        "            },\n"
+        "            'claimsToSuppress': ['origin_jti'],\n"
+        "        }\n"
+        "    }\n"
+        "    return event\n"
+    )
+    fn_name = "ministack-pretoken-v2"
+    lam.create_function(
+        FunctionName=fn_name, Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/test-role",
+        Handler="index.handler",
+        Code={"ZipFile": _make_pretoken_lambda_zip(handler)},
+    )
+    fn_arn = lam.get_function(FunctionName=fn_name)["Configuration"]["FunctionArn"]
+
+    pid = cognito_idp.create_user_pool(
+        PoolName="pretoken-v2",
+        LambdaConfig={"PreTokenGenerationConfig": {
+            "LambdaArn": fn_arn, "LambdaVersion": "V2_0",
+        }},
+    )["UserPool"]["Id"]
+    cid = cognito_idp.create_user_pool_client(
+        UserPoolId=pid, ClientName="app",
+        ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH"],
+    )["UserPoolClient"]["ClientId"]
+    cognito_idp.admin_create_user(
+        UserPoolId=pid, Username="u",
+        UserAttributes=[{"Name": "custom:userIDs", "Value": "abc,def"}],
+        TemporaryPassword="Temp1234!", MessageAction="SUPPRESS",
+    )
+    cognito_idp.admin_set_user_password(
+        UserPoolId=pid, Username="u", Password="Pwd1234!", Permanent=True,
+    )
+    tok = cognito_idp.initiate_auth(
+        ClientId=cid, AuthFlow="USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "u", "PASSWORD": "Pwd1234!"},
+    )["AuthenticationResult"]
+    access = _decode_jwt_claims(tok["AccessToken"])
+    assert access.get("userIDs") == "abc,def"
+    assert access.get("tier") == "platinum"
+    assert "origin_jti" not in access
+
+
+def test_cognito_pretoken_v2_id_token_section(cognito_idp, lam):
+    """V2_0 idTokenGeneration / accessTokenGeneration sections target their own token (#533)."""
+    handler = (
+        "def handler(event, ctx):\n"
+        "    event['response']['claimsAndScopeOverrideDetails'] = {\n"
+        "        'idTokenGeneration': {'claimsToAddOrOverride': {'id_only_marker': 'yes'}},\n"
+        "        'accessTokenGeneration': {'claimsToAddOrOverride': {'access_only_marker': 'yes'}},\n"
+        "    }\n"
+        "    return event\n"
+    )
+    fn_name = "ministack-pretoken-v2-split"
+    lam.create_function(
+        FunctionName=fn_name, Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/test-role",
+        Handler="index.handler",
+        Code={"ZipFile": _make_pretoken_lambda_zip(handler)},
+    )
+    fn_arn = lam.get_function(FunctionName=fn_name)["Configuration"]["FunctionArn"]
+
+    pid = cognito_idp.create_user_pool(
+        PoolName="pretoken-split",
+        LambdaConfig={"PreTokenGenerationConfig": {
+            "LambdaArn": fn_arn, "LambdaVersion": "V2_0",
+        }},
+    )["UserPool"]["Id"]
+    cid = cognito_idp.create_user_pool_client(
+        UserPoolId=pid, ClientName="app",
+        ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH"],
+    )["UserPoolClient"]["ClientId"]
+    cognito_idp.admin_create_user(
+        UserPoolId=pid, Username="u",
+        TemporaryPassword="Temp1234!", MessageAction="SUPPRESS",
+    )
+    cognito_idp.admin_set_user_password(
+        UserPoolId=pid, Username="u", Password="Pwd1234!", Permanent=True,
+    )
+    tok = cognito_idp.initiate_auth(
+        ClientId=cid, AuthFlow="USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "u", "PASSWORD": "Pwd1234!"},
+    )["AuthenticationResult"]
+    access = _decode_jwt_claims(tok["AccessToken"])
+    id_tok = _decode_jwt_claims(tok["IdToken"])
+    assert access.get("access_only_marker") == "yes"
+    assert "id_only_marker" not in access
+    assert id_tok.get("id_only_marker") == "yes"
+    assert "access_only_marker" not in id_tok
+
+
+def test_cognito_pretoken_lambda_failure_fail_open(cognito_idp, lam):
+    """A broken PreTokenGeneration Lambda fails open: token issued without overrides (#533)."""
+    handler = "def handler(event, ctx):\n    raise RuntimeError('boom')\n"
+    fn_name = "ministack-pretoken-broken"
+    lam.create_function(
+        FunctionName=fn_name, Runtime="python3.12",
+        Role="arn:aws:iam::000000000000:role/test-role",
+        Handler="index.handler",
+        Code={"ZipFile": _make_pretoken_lambda_zip(handler)},
+    )
+    fn_arn = lam.get_function(FunctionName=fn_name)["Configuration"]["FunctionArn"]
+
+    pid = cognito_idp.create_user_pool(
+        PoolName="pretoken-broken",
+        LambdaConfig={"PreTokenGenerationConfig": {
+            "LambdaArn": fn_arn, "LambdaVersion": "V2_0",
+        }},
+    )["UserPool"]["Id"]
+    cid = cognito_idp.create_user_pool_client(
+        UserPoolId=pid, ClientName="app",
+        ExplicitAuthFlows=["ALLOW_USER_PASSWORD_AUTH"],
+    )["UserPoolClient"]["ClientId"]
+    cognito_idp.admin_create_user(
+        UserPoolId=pid, Username="u",
+        TemporaryPassword="Temp1234!", MessageAction="SUPPRESS",
+    )
+    cognito_idp.admin_set_user_password(
+        UserPoolId=pid, Username="u", Password="Pwd1234!", Permanent=True,
+    )
+    tok = cognito_idp.initiate_auth(
+        ClientId=cid, AuthFlow="USER_PASSWORD_AUTH",
+        AuthParameters={"USERNAME": "u", "PASSWORD": "Pwd1234!"},
+    )["AuthenticationResult"]
+    access = _decode_jwt_claims(tok["AccessToken"])
+    assert access["client_id"] == cid  # token still issued
+
+
 @pytest.fixture
 def _enable_persistence(monkeypatch, tmp_path):
     """Force PERSIST_STATE on and point STATE_DIR at a tmp dir so

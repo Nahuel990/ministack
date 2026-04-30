@@ -202,6 +202,7 @@ SERVICE_REGISTRY = {
     "firehose": {"module": "firehose", "aliases": ("kinesis-firehose",)},
     "glue": {"module": "glue"},
     "iam": {"module": "iam"},
+    "imds": {"module": "imds"},
     "kinesis": {"module": "kinesis"},
     "kms": {"module": "kms"},
     "lambda": {"module": "lambda_svc"},
@@ -1300,16 +1301,23 @@ async def _run_ready_scripts():
         script_env.setdefault("AWS_SECRET_ACCESS_KEY", "test")
     script_env.setdefault("AWS_DEFAULT_REGION", os.environ.get("MINISTACK_REGION", "us-east-1"))
     script_env.setdefault("AWS_ENDPOINT_URL", f"http://{_MINISTACK_HOST}:{port}")
+    for ready_dir in ('/docker-entrypoint-initaws.d/ready.d', '/etc/localstack/init/ready.d'):
+        if os.path.isdir(ready_dir):
+            script_env.setdefault("MINISTACK_INIT_READY_DIR", ready_dir)
+            break
     for script_path in scripts:
         logger.info('Running ready script: %s', script_path)
         script_failed = False
         try:
             cmd = [sys.executable, script_path] if script_path.endswith('.py') else ['sh', script_path]
+            per_script_env = {**script_env,
+                              "MINISTACK_INIT_SCRIPT_DIR": os.path.dirname(script_path),
+                              "MINISTACK_INIT_SCRIPT_PATH": script_path}
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=script_env,
+                env=per_script_env,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
             if stdout:
@@ -1351,12 +1359,20 @@ def _run_init_scripts():
     if not scripts:
         return
     logger.info("Found %d init script(s)", len(scripts))
+    base_env = {**os.environ}
+    for boot_dir in ('/docker-entrypoint-initaws.d', '/etc/localstack/init/boot.d'):
+        if os.path.isdir(boot_dir):
+            base_env.setdefault("MINISTACK_INIT_BOOT_DIR", boot_dir)
+            break
     for script_path in scripts:
         logger.info("Running init script: %s", script_path)
         try:
             cmd = [sys.executable, script_path] if script_path.endswith('.py') else ["sh", script_path]
+            per_script_env = {**base_env,
+                              "MINISTACK_INIT_SCRIPT_DIR": os.path.dirname(script_path),
+                              "MINISTACK_INIT_SCRIPT_PATH": script_path}
             result = subprocess.run(
-                cmd, env=os.environ,
+                cmd, env=per_script_env,
                 capture_output=True, text=True, timeout=300,
             )
             if result.stdout:
