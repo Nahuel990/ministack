@@ -936,7 +936,7 @@ pip install boto3 pytest duckdb docker cbor2
 # Start MiniStack
 docker compose up -d
 
-# Run the full test suite (1,800+ tests across all services)
+# Run the full test suite (2,100+ tests across all services)
 pytest tests/ -v
 ```
 
@@ -947,7 +947,7 @@ tests/test_s3.py::test_s3_create_bucket PASSED
 ...
 tests/test_lambda.py::test_lambda_invoke PASSED
 
-1800+ passed in ~120s
+2100+ passed in ~120s
 ```
 
 ---
