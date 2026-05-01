@@ -39,6 +39,7 @@ import os
 import re
 import time
 
+from ministack.core.persistence import load_state
 from ministack.core.responses import (
     AccountScopedDict,
     error_response_json,
@@ -99,6 +100,14 @@ def restore_state(data):
 
 # Same contract as apigateway.py (used by app.py persistence loader)
 load_persisted_state = restore_state
+
+
+try:
+    _restored = load_state("appsync_events")
+    if _restored:
+        restore_state(_restored)
+except Exception:
+    logger.exception("Failed to restore AppSync Events state")
 
 
 def reset():

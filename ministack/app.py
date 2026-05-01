@@ -1254,7 +1254,7 @@ def _stop_docker_containers():
 
 def _load_persisted_state():
     """Load persisted state for services that support it."""
-    for svc_key in ("apigateway", "apigateway_v1", "servicediscovery", "appsync_events"):
+    for svc_key in ("apigateway", "apigateway_v1", "servicediscovery"):
         data = load_state(svc_key)
         if data:
             _get_module(svc_key).load_persisted_state(data)
