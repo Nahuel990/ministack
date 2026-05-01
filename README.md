@@ -501,6 +501,11 @@ Unsupported resource types fail with `CREATE_FAILED` (or `ROLLBACK_COMPLETE` if 
 | **Transfer Family** | CreateServer, DescribeServer, DeleteServer, ListServers, StartServer, StopServer, CreateUser, DescribeUser, DeleteUser, ListUsers, ImportSshPublicKey, DeleteSshPublicKey | 12 operations; **real SFTP listener** on `:2222` (override with `SFTP_PORT`) backed by S3 — `ls`, `put`, `get`, `mkdir`, `rename` work end-to-end against the local S3 emulator; `SFTP_PORT_PER_SERVER=1` allocates one port per `CreateServer` from `SFTP_BASE_PORT` (default 2300); SSH key auth scans every user across every server and account; `LOGICAL` and `PATH` home-directory mappings; host key persists across restarts when `PERSIST_STATE=1` |
 | **EventBridge Scheduler** | CreateSchedule, GetSchedule, UpdateSchedule, DeleteSchedule, ListSchedules, CreateScheduleGroup, GetScheduleGroup, DeleteScheduleGroup, ListScheduleGroups, TagResource, UntagResource, ListTagsForResource | 12 actions; schedule groups with cascading deletes; `rate()`, `cron()`, `at()` expressions; group/prefix/state filters on list; default group auto-created; CFN `AWS::Scheduler::Schedule` and `AWS::Scheduler::ScheduleGroup` supported |
 | **EKS** | CreateCluster, DescribeCluster, ListClusters, DeleteCluster, CreateNodegroup, DescribeNodegroup, ListNodegroups, DeleteNodegroup, TagResource, UntagResource, ListTagsForResource | 11 operations; `CreateCluster` spawns a real **k3s** container (75 MB) with a full Kubernetes API server; `kubectl`, Helm, and any K8s tooling work out of the box; cascading delete removes nodegroups and k3s container; CFN `AWS::EKS::Cluster` and `AWS::EKS::Nodegroup` supported |
+| **OpenSearch Service** | CreateDomain, DescribeDomain, DescribeDomains, DeleteDomain, ListDomainNames, UpdateDomainConfig, DescribeDomainConfig, DescribeDomainChangeProgress, ListVersions, GetCompatibleVersions, AddTags, ListTags, RemoveTags | Management plane on `/2021-01-01/*` (`boto3.client("opensearch")`, SigV4 scope `es`). Default data plane is a stub endpoint (`<domain>.ministack.local:9200`) — set `OPENSEARCH_DATAPLANE=1` to spawn one real `opensearchproject/opensearch` container per `CreateDomain` (same pattern as ElastiCache/RDS); `DescribeDomain.Endpoint` then points at that container and `_cluster/health`/`/_search` work end-to-end. Add `OPENSEARCH_DASHBOARDS=1` (with dataplane on) to also spawn a per-domain `opensearch-dashboards` sidecar; `DescribeDomain.DashboardEndpoint` is populated. ARNs follow `arn:aws:es:<region>:<account>:domain/<name>`; Terraform `aws_opensearch_domain` resource compatible. |
+| **Organizations** | DescribeOrganization, ListRoots, ListAccounts, ListAccountsForParent, DescribeAccount, CreateOrganizationalUnit, DescribeOrganizationalUnit, DeleteOrganizationalUnit, ListOrganizationalUnitsForParent | Single-master-account org auto-initialised on first call; nested OUs with `Path` field (additive 2026-03 AWS change); `FeatureSet=ALL` |
+| **Account** | GetAccountInformation, GetContactInformation, ListRegions, GetRegionOptStatus | rest-json `/getAccountInformation`, etc.; returns `AccountState=ACTIVE` (additive 2026-04 AWS change); 31-region opt-in matrix |
+| **WAF (Classic + Regional)** | List* (17 ops), Get*, GetChangeToken, GetChangeTokenStatus, GetPermissionPolicy, Create*/Update*/Delete* (stubbed) | Minimal v1 stub — empty lists for all `List*`, valid ChangeToken on Create/Update/Delete; for full features use **wafv2** (also supported) |
+| **Batch** | CreateComputeEnvironment, DescribeComputeEnvironments, CreateJobQueue, DescribeJobQueues, RegisterJobDefinition, DescribeJobDefinitions, SubmitJob, DescribeJobs, ListJobs | Control-plane stub — submitted jobs immediately transition to `SUCCEEDED`; multi-revision job definitions; `jobQueue` lookup by name or ARN; account-scoped state |
 
 ---
 
@@ -648,6 +653,13 @@ ecs.stop_task(cluster="dev", task=task_arn)
 | `DOCKER_NETWORK` | _(unset)_ | Docker network for all container-backed services (RDS, EKS, ElastiCache, Lambda). Set to your Docker Compose network name so containers can reach each other. Replaces `LAMBDA_DOCKER_NETWORK` |
 | `ELASTICACHE_BASE_PORT` | `16379` | Starting host port for ElastiCache containers |
 | `ELASTICACHE_CLUSTER_MODE_REAL` | `0` | Set `1` (requires `DOCKER_NETWORK`) to provision real Redis Cluster replication groups: `NumNodeGroups × (1+ReplicasPerNodeGroup)` cluster-enabled nodes wired with `redis-cli --cluster create`, serving real `CLUSTER SLOTS` / `MOVED` redirects for cluster-aware clients |
+| `OPENSEARCH_DATAPLANE` | `0` | Set `1` to spawn a real `opensearchproject/opensearch` container per `CreateDomain`. Default `0` returns a stub endpoint (`<domain>.ministack.local:9200`) — management plane only |
+| `OPENSEARCH_BASE_PORT` | `14571` | Starting host port for per-domain OpenSearch containers when `OPENSEARCH_DATAPLANE=1` |
+| `OPENSEARCH_IMAGE` | `opensearchproject/opensearch:2.15.0` | Image used when spawning per-domain OpenSearch containers |
+| `OPENSEARCH_DASHBOARDS` | `0` | Set `1` (together with `OPENSEARCH_DATAPLANE=1`) to also spawn a per-domain `opensearchproject/opensearch-dashboards` sidecar; `DescribeDomain.DashboardEndpoint` is populated |
+| `OPENSEARCH_DASHBOARDS_BASE_PORT` | `15601` | Starting host port for per-domain Dashboards containers |
+| `OPENSEARCH_DASHBOARDS_IMAGE` | `opensearchproject/opensearch-dashboards:2.15.0` | Image used when spawning per-domain Dashboards containers |
+| `MINISTACK_OPENSEARCH_ENDPOINT` | _(unset)_ | If set (e.g. `localhost:9200`), every domain returns this endpoint instead of spawning a per-domain container — useful when you bring your own cluster |
 | `PERSIST_STATE` | `0` | Set `1` to persist service state across restarts |
 | `STATE_DIR` | `/tmp/ministack-state` | Directory for persisted state files |
 | `LAMBDA_EXECUTOR` | `local` | Lambda execution mode: `local` (subprocess) or `docker` (container). `provided` runtimes and `PackageType: Image` always use Docker |
@@ -924,7 +936,7 @@ pip install boto3 pytest duckdb docker cbor2
 # Start MiniStack
 docker compose up -d
 
-# Run the full test suite (1,800+ tests across all services)
+# Run the full test suite (2,100+ tests across all services)
 pytest tests/ -v
 ```
 
@@ -935,7 +947,7 @@ tests/test_s3.py::test_s3_create_bucket PASSED
 ...
 tests/test_lambda.py::test_lambda_invoke PASSED
 
-1800+ passed in ~120s
+2100+ passed in ~120s
 ```
 
 ---

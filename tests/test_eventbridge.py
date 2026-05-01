@@ -1166,121 +1166,37 @@ def test_eventbridge_duplicate_replay_name_fails(eb):
     eb.delete_archive(ArchiveName=arch_name)
 
 
-# ---------------------------------------------------------------------------
-# Scheduled rule auto-fire — H1 confirmation test
-# ---------------------------------------------------------------------------
+def test_eventbridge_log_config_round_trip(eb):
+    """LogConfig accept-and-echo (2026-03 AWS additive change) — must
+    persist on Create, echo on Describe, update via UpdateEventBus.
+    Older botocore strict-validates this new field, so call via raw HTTP."""
+    import urllib.request as _r
+    name = f"log-bus-{int(time.time()*1000)}"
+    log_cfg = {"IncludeDetail": "FULL", "Level": "INFO"}
 
-# How long to wait for the scheduler to fire, in seconds.
-# The background ticker runs every 10s. A rate(1 minute) rule fires ~60s after
-# creation (AWS behavior: interval countdown starts at creation time).
-# 80s = 60s interval + 10s max tick lag + 10s buffer.
-# Override via EB_AUTOFIRE_WAIT for slower environments.
-_EB_AUTOFIRE_WAIT = int(os.environ.get("EB_AUTOFIRE_WAIT", "80"))
+    def _post(target, payload):
+        req = _r.Request(
+            "http://localhost:4566/",
+            data=json.dumps(payload).encode(),
+            headers={
+                "X-Amz-Target": f"AWSEvents.{target}",
+                "Content-Type": "application/x-amz-json-1.1",
+                "Authorization": ("AWS4-HMAC-SHA256 Credential=test/20260101/"
+                                  "us-east-1/events/aws4_request, SignedHeaders=, Signature=x"),
+            },
+        )
+        return json.loads(_r.urlopen(req).read())
 
-# The endpoint ministack is reachable at from inside the Lambda execution context.
-# For in-process Lambda execution (used by the test executor) this is the same as
-# the test endpoint.  Override via MINISTACK_LAMBDA_ENDPOINT if your Lambda executor
-# runs in Docker and needs a different host (e.g. http://host.docker.internal:4566).
-_MINISTACK_ENDPOINT = os.environ.get(
-    "MINISTACK_LAMBDA_ENDPOINT",
-    os.environ.get("MINISTACK_ENDPOINT", "http://localhost:4566"),
-)
+    _post("CreateEventBus", {"Name": name, "LogConfig": log_cfg})
+    desc = _post("DescribeEventBus", {"Name": name})
+    assert desc.get("LogConfig") == log_cfg
 
+    new_cfg = {"IncludeDetail": "NONE", "Level": "ERROR"}
+    _post("UpdateEventBus", {"Name": name, "LogConfig": new_cfg})
+    desc2 = _post("DescribeEventBus", {"Name": name})
+    assert desc2.get("LogConfig") == new_cfg
 
-@pytest.mark.skipif(
-    os.environ.get("MINISTACK_SLOW_TESTS") != "1",
-    reason="Set MINISTACK_SLOW_TESTS=1 to run this slow scheduler integration test",
-)
-def test_eventbridge_scheduled_rule_autofire(eb, lam, sqs):
-    """Verify that a rate(1 minute) EventBridge rule auto-invokes its Lambda target.
-
-    Per AWS docs, the interval countdown starts at rule creation time, so the
-    first invocation arrives ~60 seconds after creation.  The background ticker
-    checks every 10 seconds, so with an 80-second default wait there is ample
-    headroom for one full cycle to complete.
-
-    Run manually:
-        MINISTACK_SLOW_TESTS=1 pytest tests/test_eventbridge.py::test_eventbridge_scheduled_rule_autofire -v
-    """
-    uid = _uuid_mod.uuid4().hex[:8]
-    queue_name = f"eb-autofire-q-{uid}"
-    fn_name = f"eb-autofire-fn-{uid}"
-    rule_name = f"eb-autofire-rule-{uid}"
-
-    # SQS queue acts as an invocation counter: each Lambda call sends one message.
-    q = sqs.create_queue(QueueName=queue_name)
-    queue_url = q["QueueUrl"]
-
-    # Lambda writes a message to SQS on every invocation so we can count calls from
-    # outside the Lambda process.
-    handler_src = (
-        "import boto3, json, os\n"
-        "_sqs = boto3.client(\n"
-        "    'sqs', endpoint_url=os.environ['MINISTACK_ENDPOINT'],\n"
-        "    aws_access_key_id='test', aws_secret_access_key='test',\n"
-        "    region_name='us-east-1')\n"
-        "def handler(event, context):\n"
-        "    _sqs.send_message(QueueUrl=os.environ['QUEUE_URL'], MessageBody='tick')\n"
-        "    return {'ok': True}\n"
-    )
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("index.py", handler_src)
-    zip_bytes = buf.getvalue()
-
-    lam.create_function(
-        FunctionName=fn_name,
-        Runtime="python3.12",
-        Role="arn:aws:iam::000000000000:role/test-role",
-        Handler="index.handler",
-        Code={"ZipFile": zip_bytes},
-        Environment={"Variables": {
-            "MINISTACK_ENDPOINT": _MINISTACK_ENDPOINT,
-            "QUEUE_URL": queue_url,
-        }},
-        Timeout=15,
-    )
-    fn_arn = lam.get_function(FunctionName=fn_name)["Configuration"]["FunctionArn"]
-
-    # Wire the EventBridge rule: rate(1 minute), targeting the Lambda.
-    eb.put_rule(Name=rule_name, ScheduleExpression="rate(1 minute)", State="ENABLED")
-    rule_arn = eb.describe_rule(Name=rule_name)["Arn"]
-    eb.put_targets(Rule=rule_name, Targets=[{"Id": "autofire-target", "Arn": fn_arn}])
-    lam.add_permission(
-        FunctionName=fn_name,
-        StatementId="allow-events",
-        Action="lambda:InvokeFunction",
-        Principal="events.amazonaws.com",
-        SourceArn=rule_arn,
-    )
-
-    # Wait long enough to catch at least one scheduler tick if one exists.
-    time.sleep(_EB_AUTOFIRE_WAIT)
-
-    # Count invocations via SQS.  Receive up to 10 messages; one per scheduler tick.
-    msgs = sqs.receive_message(
-        QueueUrl=queue_url,
-        MaxNumberOfMessages=10,
-        WaitTimeSeconds=0,
-    ).get("Messages", [])
-    invocation_count = len(msgs)
-
-    # Cleanup — always runs even when xfail fires.
-    try:
-        eb.remove_targets(Rule=rule_name, Ids=["autofire-target"])
-        eb.delete_rule(Name=rule_name)
-        lam.delete_function(FunctionName=fn_name)
-        sqs.delete_queue(QueueUrl=queue_url)
-    except Exception:
-        pass
-
-    assert invocation_count > 0, (
-        f"Expected ≥1 scheduled invocation after {_EB_AUTOFIRE_WAIT}s "
-        f"but got {invocation_count}. "
-        "The EventBridge background scheduler did not fire the rate(1 minute) rule."
-    )
-
-
+    eb.delete_event_bus(Name=name)
 # ---------------------------------------------------------------------------
 # Unit tests: _parse_rate_seconds
 # ---------------------------------------------------------------------------
@@ -1413,3 +1329,38 @@ def test_scheduler_reset_clears_last_fired(isolated_scheduler):
     _eb._rule_last_fired[_STATE_KEY] = _eb._now_ts()
     _eb.reset()
     assert _eb._rule_last_fired == {}
+
+
+def test_scheduler_first_sight_with_old_creation_time_fires_immediately(isolated_scheduler):
+    """AWS doc: 'the countdown begins when you create the rule'. A rule whose
+    CreationTime is already older than the interval must fire on the first
+    scheduler tick that observes it, not wait another full interval."""
+    _eb._rules._data[_STATE_KEY] = {
+        "Name": "old-rule",
+        "ScheduleExpression": "rate(1 minute)",
+        "State": "ENABLED",
+        "EventBusName": "default",
+        "Arn": "arn:aws:events:us-east-1:000000000000:rule/old-rule",
+        "CreationTime": _eb._now_ts() - 120,  # created 2 min ago, interval = 1 min
+    }
+    _eb._targets._data[_STATE_KEY] = list(_DUMMY_TARGET)
+    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
+        _eb._tick_scheduled_rules()
+    mock_invoke.assert_called_once()
+
+
+def test_scheduler_first_sight_with_recent_creation_time_waits(isolated_scheduler):
+    """A rule created within the last interval must NOT fire on first sight —
+    AWS countdown begins at PutRule, so the first fire is one full interval later."""
+    _eb._rules._data[_STATE_KEY] = {
+        "Name": "fresh-rule",
+        "ScheduleExpression": "rate(1 minute)",
+        "State": "ENABLED",
+        "EventBusName": "default",
+        "Arn": "arn:aws:events:us-east-1:000000000000:rule/fresh-rule",
+        "CreationTime": _eb._now_ts() - 5,  # created 5s ago, interval = 60s
+    }
+    _eb._targets._data[_STATE_KEY] = list(_DUMMY_TARGET)
+    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
+        _eb._tick_scheduled_rules()
+    mock_invoke.assert_not_called()

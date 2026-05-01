@@ -270,17 +270,26 @@ def _create_event_bus(data):
         return error_response_json("ResourceAlreadyExistsException", f"Event bus {name} already exists", 400)
     arn = f"arn:aws:events:{get_region()}:{get_account_id()}:event-bus/{name}"
     description = data.get("Description", "")
-    _event_buses[name] = {
+    bus_record = {
         "Name": name,
         "Arn": arn,
         "Description": description,
         "CreationTime": _now_ts(),
         "LastModifiedTime": _now_ts(),
     }
+    # Optional 2026-03 additive fields — accept-and-echo so SDK callers
+    # configuring rule-match logging round-trip cleanly.
+    for k in ("LogConfig", "DeadLetterConfig", "KmsKeyIdentifier"):
+        if k in data:
+            bus_record[k] = data[k]
+    _event_buses[name] = bus_record
     tags = data.get("Tags", [])
     if tags:
         _tags[arn] = {t["Key"]: t["Value"] for t in tags}
-    return json_response({"EventBusArn": arn})
+    out = {"EventBusArn": arn}
+    if "LogConfig" in bus_record:
+        out["LogConfig"] = bus_record["LogConfig"]
+    return json_response(out)
 
 
 def _delete_event_bus(data):
@@ -320,14 +329,18 @@ def _describe_event_bus(data):
     if not bus:
         return error_response_json("ResourceNotFoundException", f"Event bus {name} not found", 400)
     policy = _event_bus_policies.get(name)
-    return json_response({
+    out = {
         "Name": bus["Name"],
         "Arn": bus["Arn"],
         "Description": bus.get("Description", ""),
         "CreationTime": bus["CreationTime"],
         "LastModifiedTime": bus.get("LastModifiedTime", bus.get("CreationTime")),
         "Policy": json.dumps(policy) if policy else "",
-    })
+    }
+    for k in ("LogConfig", "DeadLetterConfig", "KmsKeyIdentifier"):
+        if k in bus:
+            out[k] = bus[k]
+    return json_response(out)
 
 
 def _update_event_bus(data):
@@ -346,6 +359,9 @@ def _update_event_bus(data):
         bus["EventSourceName"] = data.get("EventSourceName")
     if "Description" in data:
         bus["Description"] = data.get("Description")
+    for k in ("LogConfig", "DeadLetterConfig", "KmsKeyIdentifier"):
+        if k in data:
+            bus[k] = data[k]
 
     # Update tags if provided
     tags = data.get("Tags")
@@ -1711,6 +1727,9 @@ def _parse_rate_seconds(expr: str) -> int | None:
     return n * 86400
 
 
+_cron_skip_warned: set = set()
+
+
 def _tick_scheduled_rules():
     """Fire any enabled scheduled rule whose interval has elapsed."""
     now = _now_ts()
@@ -1719,16 +1738,34 @@ def _tick_scheduled_rules():
     for (account_id, rule_key), rule in list(_rules._data.items()):
         if rule.get("State") != "ENABLED":
             continue
-        interval = _parse_rate_seconds(rule.get("ScheduleExpression", ""))
+        expr = rule.get("ScheduleExpression", "")
+        interval = _parse_rate_seconds(expr)
         if interval is None:
-            continue  # cron() expressions not yet supported by the scheduler
+            # cron() and unsupported expressions are stored but not fired.
+            # Surface it once per (account, rule) so users can debug a rule
+            # they expected to see invoke. Real AWS fires cron() schedules;
+            # this is a tracked parity gap.
+            if expr.startswith("cron(") and (account_id, rule_key) not in _cron_skip_warned:
+                logger.info(
+                    "EventBridge: cron() schedule on rule '%s' (account %s) is "
+                    "stored but not auto-fired — ministack only auto-fires rate() "
+                    "rules at present.",
+                    rule.get("Name", rule_key), account_id,
+                )
+                _cron_skip_warned.add((account_id, rule_key))
+            continue
         state_key = (account_id, rule_key)
         if state_key not in _rule_last_fired:
-            # First time the scheduler sees this rule: start the countdown but
-            # don't fire yet.  AWS fires rate() rules ~interval seconds after
-            # creation, not immediately.
-            _rule_last_fired[state_key] = now
-            continue
+            # AWS doc: "the countdown begins when you create the rule" — anchor
+            # to the rule's CreationTime so the first fire lands one full
+            # interval after PutRule, not one full interval after the first
+            # scheduler tick (which can lag up to _SCHEDULER_TICK_INTERVAL).
+            _rule_last_fired[state_key] = rule.get("CreationTime", now)
+            # Fall through so a rule whose CreationTime is already > interval
+            # ago (e.g. restored from persistence) fires on this same tick
+            # rather than waiting another full interval.
+            if now - _rule_last_fired[state_key] < interval:
+                continue
         if now - _rule_last_fired[state_key] < interval:
             continue
         _rule_last_fired[state_key] = now
@@ -1788,5 +1825,6 @@ def reset():
     _partner_event_sources.clear()
     _event_buses.clear()
     _rule_last_fired.clear()
+    _cron_skip_warned.clear()
     # The "default" bus is lazily recreated per-account on next access via
     # _ensure_default_bus(), so nothing to re-seed here.
