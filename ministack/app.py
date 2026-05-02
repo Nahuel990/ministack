@@ -29,14 +29,13 @@ _VERSION = os.environ.get("MINISTACK_VERSION") or "dev"
 if _VERSION == "dev":
     try:
         from importlib.metadata import version as _pkg_version
+
         _VERSION = _pkg_version("ministack")
     except Exception:
         pass
 
 # Matches host headers like "{apiId}.execute-api.<host>" or "{apiId}.execute-api.<host>:4566"
-_EXECUTE_API_RE = re.compile(
-    r"^([a-f0-9]{8})\.execute-api\." + re.escape(_MINISTACK_HOST) + r"(?::\d+)?$"
-)
+_EXECUTE_API_RE = re.compile(r"^([a-f0-9]{8})\.execute-api\." + re.escape(_MINISTACK_HOST) + r"(?::\d+)?$")
 # Virtual-hosted S3 bucket extraction. AWS-aligned per
 # docs.aws.amazon.com/AmazonS3/latest/userguide/VirtualHosting.html and
 # bucketnamingrules.html (HTTP vhost — ministack is HTTP). Works for any
@@ -81,6 +80,8 @@ def _extract_s3_vhost_bucket(host: str):
     if first_tail_segment == "s3" or first_tail_segment.startswith(("s3-", "s3express-")):
         return candidate
     return None
+
+
 _S3_VHOST_EXCLUDE_RE = re.compile(r"\.(execute-api|alb|emr|efs|elasticache|s3-control)\.")
 _HEALTH_PATHS = ("/_ministack/health", "/_localstack/health", "/health")
 _BODY_METHODS = ("POST", "PUT", "PATCH")
@@ -89,12 +90,37 @@ _RDS_DATA_PATHS = ("/Execute", "/BeginTransaction", "/CommitTransaction", "/Roll
 _S3_CONTROL_PREFIX = "/v20180820/"
 _SES_V2_PREFIX = "/v2/email"
 _ALB_PATH_PREFIX = "/_alb/"
-_NON_S3_VHOST_NAMES = frozenset({
-    "s3", "s3-control", "sqs", "sns", "dynamodb", "lambda", "iam", "sts",
-    "secretsmanager", "logs", "ssm", "events", "kinesis", "monitoring", "ses",
-    "states", "ecs", "rds", "rds-data", "elasticache", "glue", "athena",
-    "apigateway", "cloudformation", "autoscaling", "codebuild", "transfer",
-})
+_NON_S3_VHOST_NAMES = frozenset(
+    {
+        "s3",
+        "s3-control",
+        "sqs",
+        "sns",
+        "dynamodb",
+        "lambda",
+        "iam",
+        "sts",
+        "secretsmanager",
+        "logs",
+        "ssm",
+        "events",
+        "kinesis",
+        "monitoring",
+        "ses",
+        "states",
+        "ecs",
+        "rds",
+        "rds-data",
+        "elasticache",
+        "glue",
+        "athena",
+        "apigateway",
+        "cloudformation",
+        "autoscaling",
+        "codebuild",
+        "transfer",
+    }
+)
 
 from ministack.core.hypercorn_compat import install as _install_hypercorn_compat
 from ministack.core.persistence import PERSIST_STATE, load_state, save_all
@@ -123,14 +149,22 @@ _ready_scripts_state: dict = {
 
 class _ErrorModule:
     """Stub returned when a service module fails to import."""
+
     def __init__(self, name: str, error: str):
         self._name = name
         self._error = error
 
     async def handle_request(self, method, path, headers, body, query_params):
-        return 500, {"Content-Type": "application/json"}, \
-            json.dumps({"__type": "ServiceUnavailable",
-                        "message": f"Service module '{self._name}' failed to load: {self._error}"}).encode()
+        return (
+            500,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {
+                    "__type": "ServiceUnavailable",
+                    "message": f"Service module '{self._name}' failed to load: {self._error}",
+                }
+            ).encode(),
+        )
 
     def get_state(self):
         return {}
@@ -160,10 +194,13 @@ def _get_module(name: str):
 
 def _lazy_handler(module_name: str):
     """Return a callable that lazily imports module_name and delegates to handle_request."""
+
     async def _handler(method, path, headers, body, query_params):
         mod = _get_module(module_name)
         return await mod.handle_request(method, path, headers, body, query_params)
+
     return _handler
+
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -187,6 +224,7 @@ SERVICE_REGISTRY = {
     "autoscaling": {"module": "autoscaling"},
     "cloudformation": {"module": "cloudformation"},
     "cloudfront": {"module": "cloudfront"},
+    "cloudfront-keyvaluestore": {"module": "cloudfront_keyvaluestore"},
     "codebuild": {"module": "codebuild"},
     "cognito-identity": {"module": "cognito"},
     "cognito-idp": {"module": "cognito"},
@@ -234,8 +272,7 @@ SERVICE_REGISTRY = {
 }
 
 SERVICE_HANDLERS = {
-    service_name: _lazy_handler(service_config["module"])
-    for service_name, service_config in SERVICE_REGISTRY.items()
+    service_name: _lazy_handler(service_config["module"]) for service_name, service_config in SERVICE_REGISTRY.items()
 }
 
 # Maps the on-disk persistence key to the service module name. `save_all`
@@ -245,24 +282,52 @@ SERVICE_HANDLERS = {
 # below. Symmetry between save and restore is enforced by
 # tests/test_persistence_symmetry.py.
 _state_map = {
-    "apigateway": "apigateway", "apigateway_v1": "apigateway_v1",
-    "sqs": "sqs", "sns": "sns", "ssm": "ssm",
-    "secretsmanager": "secretsmanager", "iam": "iam",
-    "dynamodb": "dynamodb", "kms": "kms", "eventbridge": "eventbridge",
-    "cloudwatch_logs": "cloudwatch_logs", "kinesis": "kinesis",
-    "ec2": "ec2", "route53": "route53", "cognito": "cognito",
-    "ecr": "ecr", "cloudwatch": "cloudwatch", "s3": "s3",
-    "lambda": "lambda_svc", "rds": "rds", "ecs": "ecs",
-    "elasticache": "elasticache", "appsync": "appsync",
-    "stepfunctions": "stepfunctions", "alb": "alb",
-    "glue": "glue", "efs": "efs", "waf": "waf",
-    "athena": "athena", "emr": "emr", "cloudfront": "cloudfront",
-    "codebuild": "codebuild", "acm": "acm", "firehose": "firehose",
-    "ses": "ses", "ses_v2": "ses_v2",
-    "servicediscovery": "servicediscovery", "s3files": "s3files",
-    "appconfig": "appconfig", "transfer": "transfer",
-    "scheduler": "scheduler", "autoscaling": "autoscaling",
-    "eks": "eks", "backup": "backup", "pipes": "pipes",
+    "apigateway": "apigateway",
+    "apigateway_v1": "apigateway_v1",
+    "sqs": "sqs",
+    "sns": "sns",
+    "ssm": "ssm",
+    "secretsmanager": "secretsmanager",
+    "iam": "iam",
+    "dynamodb": "dynamodb",
+    "kms": "kms",
+    "eventbridge": "eventbridge",
+    "cloudwatch_logs": "cloudwatch_logs",
+    "kinesis": "kinesis",
+    "ec2": "ec2",
+    "route53": "route53",
+    "cognito": "cognito",
+    "ecr": "ecr",
+    "cloudwatch": "cloudwatch",
+    "s3": "s3",
+    "lambda": "lambda_svc",
+    "rds": "rds",
+    "ecs": "ecs",
+    "elasticache": "elasticache",
+    "appsync": "appsync",
+    "stepfunctions": "stepfunctions",
+    "alb": "alb",
+    "glue": "glue",
+    "efs": "efs",
+    "waf": "waf",
+    "athena": "athena",
+    "emr": "emr",
+    "cloudfront": "cloudfront",
+    "cloudfront_keyvaluestore": "cloudfront_keyvaluestore",
+    "codebuild": "codebuild",
+    "acm": "acm",
+    "firehose": "firehose",
+    "ses": "ses",
+    "ses_v2": "ses_v2",
+    "servicediscovery": "servicediscovery",
+    "s3files": "s3files",
+    "appconfig": "appconfig",
+    "transfer": "transfer",
+    "scheduler": "scheduler",
+    "autoscaling": "autoscaling",
+    "eks": "eks",
+    "backup": "backup",
+    "pipes": "pipes",
 }
 
 SERVICE_NAME_ALIASES = {
@@ -324,6 +389,7 @@ def _get_reset_lock() -> asyncio.Lock:
 # Request I/O helpers
 # ---------------------------------------------------------------------------
 
+
 def _decode_aws_chunked_body(body: bytes, headers: dict) -> bytes:
     """Decode AWS chunked request bodies and normalize content-encoding headers."""
     sha256_header = headers.get("x-amz-content-sha256", "")
@@ -350,8 +416,8 @@ def _decode_aws_chunked_body(body: bytes, headers: dict) -> bytes:
         if chunk_size == 0:
             break
         data_start = crlf + 2
-        decoded += remaining[data_start:data_start + chunk_size]
-        remaining = remaining[data_start + chunk_size + 2:]  # skip trailing \r\n
+        decoded += remaining[data_start : data_start + chunk_size]
+        remaining = remaining[data_start + chunk_size + 2 :]  # skip trailing \r\n
 
     body = decoded
     if "aws-chunked" in content_encoding:
@@ -377,6 +443,7 @@ async def _read_request_body(receive, method: str, headers: dict) -> bytes:
 
 async def _send_response(send, status, headers, body):
     """Send ASGI HTTP response."""
+
     def _encode_header_value(v: str) -> bytes:
         try:
             return v.encode("latin-1")
@@ -387,16 +454,20 @@ async def _send_response(send, status, headers, body):
     if "content-length" not in {k.lower() for k in headers}:
         headers["Content-Length"] = str(len(body_bytes))
     header_list = [(k.encode("latin-1"), _encode_header_value(str(v))) for k, v in headers.items()]
-    await send({
-        "type": "http.response.start",
-        "status": status,
-        "headers": header_list,
-    })
-    await send({
-        "type": "http.response.body",
-        "body": body_bytes,
-        "more_body": False,
-    })
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": header_list,
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": body_bytes,
+            "more_body": False,
+        }
+    )
 
 
 async def _send_if_handled(send, response) -> bool:
@@ -411,34 +482,45 @@ async def _send_if_handled(send, response) -> bool:
 # Tier 1 — Pre-body handlers (no request body needed)
 # ---------------------------------------------------------------------------
 
+
 def _handle_options_request(method: str, request_id: str):
     """Return the standard CORS preflight response when applicable."""
     if method != "OPTIONS":
         return None
-    return 200, {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
-        "Access-Control-Allow-Headers": "*",
-        "Access-Control-Expose-Headers": "*",
-        "Access-Control-Max-Age": "86400",
-        "Content-Length": "0",
-        "x-amzn-requestid": request_id,
-    }, b""
+    return (
+        200,
+        {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Expose-Headers": "*",
+            "Access-Control-Max-Age": "86400",
+            "Content-Length": "0",
+            "x-amzn-requestid": request_id,
+        },
+        b"",
+    )
 
 
 def _handle_health_request(path: str, request_id: str):
     """Return health responses for MiniStack and LocalStack-compatible endpoints."""
     if path not in _HEALTH_PATHS:
         return None
-    return 200, {
-        "Content-Type": "application/json",
-        "x-amzn-requestid": request_id,
-    }, json.dumps({
-        "services": {s: "available" for s in SERVICE_HANDLERS},
-        "edition": os.environ.get("MINISTACK_EDITION", "light"),
-        "version": _VERSION,
-        "ready_scripts": dict(_ready_scripts_state),
-    }).encode()
+    return (
+        200,
+        {
+            "Content-Type": "application/json",
+            "x-amzn-requestid": request_id,
+        },
+        json.dumps(
+            {
+                "services": {s: "available" for s in SERVICE_HANDLERS},
+                "edition": os.environ.get("MINISTACK_EDITION", "light"),
+                "version": _VERSION,
+                "ready_scripts": dict(_ready_scripts_state),
+            }
+        ).encode(),
+    )
 
 
 def _handle_ready_request(path: str, request_id: str):
@@ -447,10 +529,14 @@ def _handle_ready_request(path: str, request_id: str):
         return None
     ready = _ready_scripts_state["status"] == "completed"
     status = 200 if ready else 503
-    return status, {
-        "Content-Type": "application/json",
-        "x-amzn-requestid": request_id,
-    }, json.dumps(dict(_ready_scripts_state)).encode()
+    return (
+        status,
+        {
+            "Content-Type": "application/json",
+            "x-amzn-requestid": request_id,
+        },
+        json.dumps(dict(_ready_scripts_state)).encode(),
+    )
 
 
 def _handle_unknown_localstack_request(path: str, request_id: str):
@@ -462,16 +548,22 @@ def _handle_unknown_localstack_request(path: str, request_id: str):
     """
     if not path.startswith("/_localstack/"):
         return None
-    return 404, {
-        "Content-Type": "application/json",
-        "x-amzn-requestid": request_id,
-    }, json.dumps({
-        "error": (
-            f"Unknown LocalStack endpoint: {path}. "
-            "Ministack exposes /_ministack/health, /_ministack/ready, and /_ministack/reset. "
-            "See https://github.com/ministackorg/ministack for the full API."
-        )
-    }).encode()
+    return (
+        404,
+        {
+            "Content-Type": "application/json",
+            "x-amzn-requestid": request_id,
+        },
+        json.dumps(
+            {
+                "error": (
+                    f"Unknown LocalStack endpoint: {path}. "
+                    "Ministack exposes /_ministack/health, /_ministack/ready, and /_ministack/reset. "
+                    "See https://github.com/ministackorg/ministack for the full API."
+                )
+            }
+        ).encode(),
+    )
 
 
 def _handle_lambda_download_request(path: str, method: str):
@@ -541,10 +633,16 @@ async def _handle_ses_messages_request(method: str, path: str, headers: dict, qu
         raw_account = query_params["account"]
         account_id = raw_account[0] if isinstance(raw_account, (list, tuple)) else raw_account
         if not _12_DIGIT_RE.match(account_id):
-            return 400, {"Content-Type": "application/json"}, json.dumps({
-                "__type": "InvalidAccountID",
-                "message": f"Account ID must be 12 digits, got: {account_id}",
-            }).encode()
+            return (
+                400,
+                {"Content-Type": "application/json"},
+                json.dumps(
+                    {
+                        "__type": "InvalidAccountID",
+                        "message": f"Account ID must be 12 digits, got: {account_id}",
+                    }
+                ).encode(),
+            )
 
     try:
         mod = _get_module("ses")
@@ -606,7 +704,7 @@ async def _handle_pre_body_request(method: str, path: str, headers: dict, query_
     response = await _handle_cognito_get_request(method, path, headers, query_params)
     if response is not None:
         return response
-    
+
     response = await _handle_ses_messages_request(method, path, headers, query_params)
     if response is not None:
         return response
@@ -631,6 +729,7 @@ def _handle_transfer_sftp_ports_request(method: str, path: str):
         return None
     try:
         from ministack.services import transfer
+
         body = {
             "enabled": transfer._sftp_enabled(),
             "port_per_server": transfer._port_per_server(),
@@ -645,6 +744,7 @@ def _handle_transfer_sftp_ports_request(method: str, path: str):
 # ---------------------------------------------------------------------------
 # Tier 2 — Post-body shortcuts (body required, before generic routing)
 # ---------------------------------------------------------------------------
+
 
 async def _handle_cognito_body_request(method: str, path: str, headers: dict, body: bytes, query_params: dict):
     """Handle Cognito routes that require the parsed request body."""
@@ -663,7 +763,8 @@ async def _handle_admin_config_request(path: str, method: str, body: bytes):
         return None
 
     allowed_config_keys = {
-        "athena.ATHENA_ENGINE", "athena.ATHENA_DATA_DIR",
+        "athena.ATHENA_ENGINE",
+        "athena.ATHENA_DATA_DIR",
         "stepfunctions._sfn_mock_config",
         "stepfunctions._SFN_WAIT_SCALE",
         "lambda_svc.LAMBDA_EXECUTOR",
@@ -713,32 +814,34 @@ async def _handle_post_body_shortcuts(method: str, path: str, headers: dict, bod
 # Tier 3 — Special data-plane handlers (host/path-based routing)
 # ---------------------------------------------------------------------------
 
+
 async def _handle_s3_control_request(path: str, method: str, body: bytes, query_params: dict, request_id: str):
     """Handle S3 Control operations addressed via the /v20180820 path prefix."""
     if not path.startswith(_S3_CONTROL_PREFIX):
         return None
 
     if path.startswith("/v20180820/tags/"):
-        raw_arn = path[len("/v20180820/tags/"):]
+        raw_arn = path[len("/v20180820/tags/") :]
         arn = unquote(raw_arn)
         bucket_name = arn.split(":::")[-1].split("/")[0] if ":::" in arn else arn.split("/")[0]
 
         if method == "GET":
             tags = _get_module("s3")._bucket_tags.get(bucket_name, {})
-            tag_members = "".join(
-                f"<member><Key>{k}</Key><Value>{v}</Value></member>"
-                for k, v in tags.items()
-            )
+            tag_members = "".join(f"<member><Key>{k}</Key><Value>{v}</Value></member>" for k, v in tags.items())
             xml_body = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 '<ListTagsForResourceResult xmlns="https://awss3control.amazonaws.com/doc/2018-08-20/">'
                 f"<Tags>{tag_members}</Tags>"
                 "</ListTagsForResourceResult>"
             ).encode()
-            return 200, {
-                "Content-Type": "application/xml",
-                "x-amzn-requestid": request_id,
-            }, xml_body
+            return (
+                200,
+                {
+                    "Content-Type": "application/xml",
+                    "x-amzn-requestid": request_id,
+                },
+                xml_body,
+            )
 
         if method in ("POST", "PUT"):
             # AWS SDK Go v2 (used by terraform-aws-provider v6+) sends
@@ -753,10 +856,13 @@ async def _handle_s3_control_request(path: str, method: str, body: bytes, query_
                     if stripped.startswith("<"):
                         # XML: <TagResourceRequest><Tags><Tag><Key>..</Key><Value>..</Value></Tag>...</Tags></TagResourceRequest>
                         from xml.etree.ElementTree import fromstring
+
                         root = fromstring(raw)
+
                         def _local(el):
                             t = el.tag
                             return t.split("}")[-1] if "}" in t else t
+
                         for child in root.iter():
                             if _local(child) != "Tag":
                                 continue
@@ -785,15 +891,23 @@ async def _handle_s3_control_request(path: str, method: str, body: bytes, query_
             _get_module("s3")._bucket_tags[bucket_name] = tags
             return 204, {"x-amzn-requestid": request_id}, b""
 
-        return 200, {
+        return (
+            200,
+            {
+                "Content-Type": "application/json",
+                "x-amzn-requestid": request_id,
+            },
+            b"{}",
+        )
+
+    return (
+        200,
+        {
             "Content-Type": "application/json",
             "x-amzn-requestid": request_id,
-        }, b"{}"
-
-    return 200, {
-        "Content-Type": "application/json",
-        "x-amzn-requestid": request_id,
-    }, b"{}"
+        },
+        b"{}",
+    )
 
 
 async def _handle_rds_data_request(method: str, path: str, headers: dict, body: bytes, query_params: dict):
@@ -831,7 +945,7 @@ def _parse_execute_api_url(host: str, path: str) -> tuple[str, str, str] | None:
 
     # LocalStack-compat: /_aws/execute-api/{apiId}/{stage}/{path...}
     if path.startswith("/_aws/execute-api/"):
-        rest = path[len("/_aws/execute-api/"):]
+        rest = path[len("/_aws/execute-api/") :]
         parts = rest.split("/", 2)
         if len(parts) >= 2 and parts[0]:
             api_id = parts[0]
@@ -841,7 +955,7 @@ def _parse_execute_api_url(host: str, path: str) -> tuple[str, str, str] | None:
 
     # LocalStack v1 legacy: /restapis/{apiId}/{stage}/_user_request_/{path...}
     if path.startswith("/restapis/"):
-        rest = path[len("/restapis/"):]
+        rest = path[len("/restapis/") :]
         parts = rest.split("/", 3)
         if len(parts) >= 3 and parts[2] == "_user_request_":
             api_id = parts[0]
@@ -885,7 +999,9 @@ def _resolve_stage_and_path(api_id: str, tentative_stage: str, execute_path: str
     return tentative_stage, execute_path
 
 
-async def _handle_execute_api_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
+async def _handle_execute_api_request(
+    host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict
+):
     """Handle API Gateway execute-api data plane requests (Host-based + path-based)."""
     parsed = _parse_execute_api_url(host, path)
     if parsed is None:
@@ -895,7 +1011,7 @@ async def _handle_execute_api_request(host: str, path: str, method: str, headers
         # WebSocket @connections management API — /{stage}/@connections/{id}.
         # The @connections prefix is authoritative; skip $default resolution.
         if execute_path.startswith("/@connections/"):
-            connection_id = execute_path[len("/@connections/"):].split("/", 1)[0]
+            connection_id = execute_path[len("/@connections/") :].split("/", 1)[0]
             return await _get_module("apigateway").handle_connections_api(
                 method, api_id, tentative_stage, connection_id, body, headers
             )
@@ -915,7 +1031,11 @@ async def _handle_execute_api_request(host: str, path: str, method: str, headers
 def _is_potential_alb_request(host: str, path: str) -> bool:
     """Cheap ALB gate so ordinary requests avoid loading the ALB module."""
     hostname = host.split(":")[0].lower()
-    return path.startswith(_ALB_PATH_PREFIX) or hostname.endswith(".elb.amazonaws.com") or hostname.endswith(".alb.localhost")
+    return (
+        path.startswith(_ALB_PATH_PREFIX)
+        or hostname.endswith(".elb.amazonaws.com")
+        or hostname.endswith(".alb.localhost")
+    )
 
 
 async def _handle_alb_request(host: str, path: str, method: str, headers: dict, body: bytes, query_params: dict):
@@ -928,7 +1048,7 @@ async def _handle_alb_request(host: str, path: str, method: str, headers: dict, 
     dispatch_path = path
 
     if load_balancer is None and path.startswith(_ALB_PATH_PREFIX):
-        path_parts = path[len(_ALB_PATH_PREFIX):].split("/", 1)
+        path_parts = path[len(_ALB_PATH_PREFIX) :].split("/", 1)
         load_balancer = alb_module._find_lb_by_name(path_parts[0])
         if load_balancer:
             dispatch_path = "/" + path_parts[1] if len(path_parts) > 1 else "/"
@@ -957,6 +1077,8 @@ async def _handle_s3_vhost_request(host: str, path: str, method: str, headers: d
     bucket = _extract_s3_vhost_bucket(host)
     if not bucket or _S3_VHOST_EXCLUDE_RE.search(host) or bucket in _NON_S3_VHOST_NAMES:
         return None
+    if path.startswith("/key-value-stores/"):
+        return None
 
     vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
     try:
@@ -965,8 +1087,10 @@ async def _handle_s3_vhost_request(host: str, path: str, method: str, headers: d
         logger.exception("Error handling virtual-hosted S3 request: %s", e)
         from xml.sax.saxutils import escape as _xml_esc
 
-        return 500, {"Content-Type": "application/xml"}, (
-            f"<Error><Code>InternalError</Code><Message>{_xml_esc(str(e))}</Message></Error>".encode()
+        return (
+            500,
+            {"Content-Type": "application/xml"},
+            (f"<Error><Code>InternalError</Code><Message>{_xml_esc(str(e))}</Message></Error>".encode()),
         )
 
 
@@ -1020,17 +1144,22 @@ async def _handle_special_data_plane_request(
 # Tier 4 — Generic service dispatch
 # ---------------------------------------------------------------------------
 
+
 def _routing_params(method: str, path: str, headers: dict, body: bytes, query_params: dict) -> dict:
     """Augment routing params for unsigned form-encoded requests whose Action lives in the body."""
     routing_params = query_params
-    if not query_params.get("Action") and headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+    if not query_params.get("Action") and headers.get("content-type", "").startswith(
+        "application/x-www-form-urlencoded"
+    ):
         body_params = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
         if body_params.get("Action"):
             routing_params = {**query_params, "Action": body_params["Action"]}
     return routing_params
 
 
-async def _dispatch_service_request(method: str, path: str, headers: dict, body: bytes, query_params: dict, request_id: str):
+async def _dispatch_service_request(
+    method: str, path: str, headers: dict, body: bytes, query_params: dict, request_id: str
+):
     """Dispatch a request through the generic service router."""
     routing_params = _routing_params(method, path, headers, body, query_params)
     service = detect_service(method, path, headers, routing_params)
@@ -1040,29 +1169,40 @@ async def _dispatch_service_request(method: str, path: str, headers: dict, body:
 
     handler = SERVICE_HANDLERS.get(service)
     if not handler:
-        return 400, {"Content-Type": "application/json"}, json.dumps({"error": f"Unsupported service: {service}"}).encode()
+        return (
+            400,
+            {"Content-Type": "application/json"},
+            json.dumps({"error": f"Unsupported service: {service}"}).encode(),
+        )
 
     try:
         status, resp_headers, resp_body = await handler(method, path, headers, body, query_params)
     except Exception as e:
         logger.exception("Error handling %s request: %s", service, e)
-        return 500, {"Content-Type": "application/json"}, json.dumps({"__type": "InternalError", "message": str(e)}).encode()
+        return (
+            500,
+            {"Content-Type": "application/json"},
+            json.dumps({"__type": "InternalError", "message": str(e)}).encode(),
+        )
 
-    resp_headers.update({
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
-        "Access-Control-Allow-Headers": "*",
-        "Access-Control-Expose-Headers": "*",
-        "x-amzn-requestid": request_id,
-        "x-amz-request-id": request_id,
-        "x-amz-id-2": base64.b64encode(os.urandom(48)).decode(),
-    })
+    resp_headers.update(
+        {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Expose-Headers": "*",
+            "x-amzn-requestid": request_id,
+            "x-amz-request-id": request_id,
+            "x-amz-id-2": base64.b64encode(os.urandom(48)).decode(),
+        }
+    )
     return status, resp_headers, resp_body
 
 
 # ---------------------------------------------------------------------------
 # ASGI entry point
 # ---------------------------------------------------------------------------
+
 
 async def app(scope, receive, send):
     """ASGI application entry point."""
@@ -1091,7 +1231,11 @@ async def app(scope, receive, send):
         ws_api_id, _stage, _execute_path = parsed
         try:
             await _get_module("apigateway").handle_websocket(
-                scope, receive, send, ws_api_id, path_override=_execute_path,
+                scope,
+                receive,
+                send,
+                ws_api_id,
+                path_override=_execute_path,
             )
         except Exception:
             logger.exception("Error in WebSocket dispatch")
@@ -1145,9 +1289,9 @@ async def app(scope, receive, send):
     if await _send_if_handled(send, await _handle_post_body_shortcuts(method, path, headers, body, query_params)):
         return
 
-    if await _send_if_handled(send, await _handle_special_data_plane_request(
-        method, path, headers, body, query_params, request_id
-    )):
+    if await _send_if_handled(
+        send, await _handle_special_data_plane_request(method, path, headers, body, query_params, request_id)
+    ):
         return
 
     await _send_response(send, *await _dispatch_service_request(method, path, headers, body, query_params, request_id))
@@ -1156,6 +1300,7 @@ async def app(scope, receive, send):
 # ---------------------------------------------------------------------------
 # Lifecycle, init scripts, and server administration
 # ---------------------------------------------------------------------------
+
 
 async def _handle_lifespan(scope, receive, send):
     """Handle ASGI lifespan events."""
@@ -1172,6 +1317,7 @@ async def _handle_lifespan(scope, receive, send):
             # before the handler ever runs. 64 is plenty — threads are cheap
             # and idle. Override with MINISTACK_WORKER_THREADS.
             import concurrent.futures
+
             _max_workers = int(os.environ.get("MINISTACK_WORKER_THREADS", "64"))
             asyncio.get_running_loop().set_default_executor(
                 concurrent.futures.ThreadPoolExecutor(
@@ -1194,6 +1340,7 @@ async def _handle_lifespan(scope, receive, send):
             # installed or SFTP_ENABLED=0.
             try:
                 from ministack.services import transfer
+
                 await transfer.sftp_start()
             except Exception as e:
                 logger.warning("Transfer SFTP startup failed: %s", e)
@@ -1213,6 +1360,7 @@ async def _handle_lifespan(scope, receive, send):
                 save_all(save_dict)
             try:
                 from ministack.services import transfer
+
                 await transfer.sftp_stop()
             except Exception as e:
                 logger.debug("Transfer SFTP shutdown error: %s", e)
@@ -1226,6 +1374,7 @@ def _stop_docker_containers():
     Uses container labels to find them — does not touch service state."""
     try:
         import docker
+
         client = docker.from_env()
     except Exception:
         return
@@ -1270,28 +1419,29 @@ def _load_persisted_state():
 async def _wait_for_port(port, timeout=30):
     """Wait until the server is accepting TCP connections."""
     import time
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            reader, writer = await asyncio.open_connection('127.0.0.1', port)
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
             writer.close()
             await writer.wait_closed()
             return
         except OSError:
             await asyncio.sleep(0.1)
-    logger.warning('Server did not become ready within %ds — skipping ready.d scripts', timeout)
+    logger.warning("Server did not become ready within %ds — skipping ready.d scripts", timeout)
 
 
 async def _run_ready_scripts():
     """Execute .sh/.py scripts from ready.d directories after the server is ready."""
-    scripts = _collect_scripts('/docker-entrypoint-initaws.d/ready.d', '/etc/localstack/init/ready.d')
+    scripts = _collect_scripts("/docker-entrypoint-initaws.d/ready.d", "/etc/localstack/init/ready.d")
     if not scripts:
         _ready_scripts_state.update({"status": "completed", "total": 0, "completed": 0, "failed": 0})
         return
     _ready_scripts_state.update({"status": "running", "total": len(scripts), "completed": 0, "failed": 0})
     port = int(_resolve_port())
     await _wait_for_port(port)
-    logger.info('Found %d ready script(s)', len(scripts))
+    logger.info("Found %d ready script(s)", len(scripts))
     # Provide sensible defaults so init scripts can use aws cli / boto3
     # without requiring manual credential configuration.  Skip credential
     # defaults when the user has mounted ~/.aws/credentials so the CLI
@@ -1307,18 +1457,20 @@ async def _run_ready_scripts():
         script_env.setdefault("AWS_SECRET_ACCESS_KEY", "test")
     script_env.setdefault("AWS_DEFAULT_REGION", os.environ.get("MINISTACK_REGION", "us-east-1"))
     script_env.setdefault("AWS_ENDPOINT_URL", f"http://{_MINISTACK_HOST}:{port}")
-    for ready_dir in ('/docker-entrypoint-initaws.d/ready.d', '/etc/localstack/init/ready.d'):
+    for ready_dir in ("/docker-entrypoint-initaws.d/ready.d", "/etc/localstack/init/ready.d"):
         if os.path.isdir(ready_dir):
             script_env.setdefault("MINISTACK_INIT_READY_DIR", ready_dir)
             break
     for script_path in scripts:
-        logger.info('Running ready script: %s', script_path)
+        logger.info("Running ready script: %s", script_path)
         script_failed = False
         try:
-            cmd = [sys.executable, script_path] if script_path.endswith('.py') else ['sh', script_path]
-            per_script_env = {**script_env,
-                              "MINISTACK_INIT_SCRIPT_DIR": os.path.dirname(script_path),
-                              "MINISTACK_INIT_SCRIPT_PATH": script_path}
+            cmd = [sys.executable, script_path] if script_path.endswith(".py") else ["sh", script_path]
+            per_script_env = {
+                **script_env,
+                "MINISTACK_INIT_SCRIPT_DIR": os.path.dirname(script_path),
+                "MINISTACK_INIT_SCRIPT_PATH": script_path,
+            }
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -1327,20 +1479,24 @@ async def _run_ready_scripts():
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
             if stdout:
-                logger.info('  stdout: %s', stdout.decode('utf-8', errors='replace').rstrip())
+                logger.info("  stdout: %s", stdout.decode("utf-8", errors="replace").rstrip())
             if proc.returncode != 0:
                 script_failed = True
-                logger.error('Ready script %s failed (exit %d): %s', script_path, proc.returncode,
-                             stderr.decode('utf-8', errors='replace'))
+                logger.error(
+                    "Ready script %s failed (exit %d): %s",
+                    script_path,
+                    proc.returncode,
+                    stderr.decode("utf-8", errors="replace"),
+                )
             else:
-                logger.info('Ready script %s completed successfully', script_path)
+                logger.info("Ready script %s completed successfully", script_path)
         except asyncio.TimeoutError:
             script_failed = True
-            logger.error('Ready script %s timed out after 300s', script_path)
+            logger.error("Ready script %s timed out after 300s", script_path)
             proc.kill()
         except Exception as e:
             script_failed = True
-            logger.error('Failed to execute ready script %s: %s', script_path, e)
+            logger.error("Failed to execute ready script %s: %s", script_path, e)
         _ready_scripts_state["completed"] += 1
         if script_failed:
             _ready_scripts_state["failed"] += 1
@@ -1354,32 +1510,37 @@ def _collect_scripts(*dirs):
         if not os.path.isdir(d):
             continue
         for f in sorted(os.listdir(d)):
-            if f.endswith(('.sh', '.py')) and f not in seen:
+            if f.endswith((".sh", ".py")) and f not in seen:
                 seen[f] = os.path.join(d, f)
     return [seen[f] for f in sorted(seen)]
 
 
 def _run_init_scripts():
     """Execute .sh/.py scripts from init directories in alphabetical order."""
-    scripts = _collect_scripts('/docker-entrypoint-initaws.d', '/etc/localstack/init/boot.d')
+    scripts = _collect_scripts("/docker-entrypoint-initaws.d", "/etc/localstack/init/boot.d")
     if not scripts:
         return
     logger.info("Found %d init script(s)", len(scripts))
     base_env = {**os.environ}
-    for boot_dir in ('/docker-entrypoint-initaws.d', '/etc/localstack/init/boot.d'):
+    for boot_dir in ("/docker-entrypoint-initaws.d", "/etc/localstack/init/boot.d"):
         if os.path.isdir(boot_dir):
             base_env.setdefault("MINISTACK_INIT_BOOT_DIR", boot_dir)
             break
     for script_path in scripts:
         logger.info("Running init script: %s", script_path)
         try:
-            cmd = [sys.executable, script_path] if script_path.endswith('.py') else ["sh", script_path]
-            per_script_env = {**base_env,
-                              "MINISTACK_INIT_SCRIPT_DIR": os.path.dirname(script_path),
-                              "MINISTACK_INIT_SCRIPT_PATH": script_path}
+            cmd = [sys.executable, script_path] if script_path.endswith(".py") else ["sh", script_path]
+            per_script_env = {
+                **base_env,
+                "MINISTACK_INIT_SCRIPT_DIR": os.path.dirname(script_path),
+                "MINISTACK_INIT_SCRIPT_PATH": script_path,
+            }
             result = subprocess.run(
-                cmd, env=per_script_env,
-                capture_output=True, text=True, timeout=300,
+                cmd,
+                env=per_script_env,
+                capture_output=True,
+                text=True,
+                timeout=300,
             )
             if result.stdout:
                 logger.info("  stdout: %s", result.stdout.rstrip())
@@ -1482,9 +1643,11 @@ def main():
     probe_host = "127.0.0.1" if bind_host == "0.0.0.0" else bind_host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         if s.connect_ex((probe_host, port)) == 0:
-            print(f"ERROR: {probe_host}:{port} is already in use. Is MiniStack already running?\n"
-                  f"  Stop it with: ministack --stop\n"
-                  f"  Or use a different port: GATEWAY_PORT=4567 ministack")
+            print(
+                f"ERROR: {probe_host}:{port} is already in use. Is MiniStack already running?\n"
+                f"  Stop it with: ministack --stop\n"
+                f"  Or use a different port: GATEWAY_PORT=4567 ministack"
+            )
             raise SystemExit(1)
 
     if args.detach:
@@ -1495,10 +1658,18 @@ def main():
         # process; the OS reclaims it when the parent exits.
         log_fh = open(log_file, "w")
         proc = subprocess.Popen(
-            [sys.executable, "-m", "hypercorn", "ministack.app:app",
-             "--bind", f"{bind_host}:{port}",
-             "--log-level", LOG_LEVEL.upper(),
-             "--keep-alive", "75"],
+            [
+                sys.executable,
+                "-m",
+                "hypercorn",
+                "ministack.app:app",
+                "--bind",
+                f"{bind_host}:{port}",
+                "--log-level",
+                LOG_LEVEL.upper(),
+                "--keep-alive",
+                "75",
+            ],
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
