@@ -11,6 +11,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **AppSync Events API emulator** — Event APIs are now available under the AppSync service: `CreateApi`/`GetApi`/`ListApis`/`UpdateApi`/`DeleteApi`, channel namespace CRUD, API-key management through the AWS SDK's `/v1/apis/{apiId}/apikeys` path, HTTP `POST /event` publishing on `*.appsync-api.*`, and realtime `*.appsync-realtime-api.*` WebSocket subscribe/publish flows. Channel validation follows the AppSync Events grammar, publish fan-out returns AWS-shaped identifiers, and API-key / Lambda-authorizer checks are enforced consistently across HTTP and WebSocket publish paths.
+## [1.3.24] — 2026-05-02
+
+### Fixed
+
+- **`x-amzn-errortype` header now emitted on every JSON-protocol error response.** Real AWS sends the error type in both the body (`__type`) and the `x-amzn-errortype` header. boto3 falls back to the body, but Java SDK v2, Go SDK v2, and Rust SDK prefer the header — without it they surface `SdkClientException: unknown error type` instead of the actual code. Applied centrally in `error_response_json` and inline in 12 services that build error bodies directly (apigateway v1/v2, opensearch, scheduler, eks, ses, backup, sqs, cloudwatch, dynamodb, tagging).
+- **AppConfig 404 bodies now include `__type`.** Was `{"Code": ..., "Message": ...}`; generic JSON error parsers that look for `__type` saw an unknown shape. Body now carries both styles.
+- **Three previously-stateless services expose a no-op `reset()`** (`account`, `waf-classic`, `resourcegroupstaggingapi`) so `/_ministack/reset` no longer logs a warning per call.
 
 ---
 
