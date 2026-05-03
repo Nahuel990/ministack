@@ -1233,14 +1233,27 @@ def test_scheduler_parse_rate_seconds(expr, expected):
 
 @_pytest.fixture()
 def isolated_scheduler():
-    """Save and restore scheduler module state so unit tests don't bleed."""
+    """Save and restore scheduler module state so unit tests don't bleed.
+
+    Also installs a MagicMock as ``_invoke_target`` for the **entire test
+    duration** (yielded as the fixture value). This is wider than a
+    ``with patch(...)`` block: any concurrent caller (the eb-scheduler daemon
+    if it's running, an in-process ASGI lifespan, etc.) hits the mock too,
+    so tests can assert on call counts without racing.
+    """
+    from unittest.mock import MagicMock
+
     saved_rules = dict(_eb._rules._data)
     saved_targets = dict(_eb._targets._data)
     saved_fired = dict(_eb._rule_last_fired)
+    saved_invoke = _eb._invoke_target
     _eb._rules._data.clear()
     _eb._targets._data.clear()
     _eb._rule_last_fired.clear()
-    yield
+    mock_invoke = MagicMock(name="_invoke_target")
+    _eb._invoke_target = mock_invoke
+    yield mock_invoke
+    _eb._invoke_target = saved_invoke
     _eb._rules._data.clear()
     _eb._rules._data.update(saved_rules)
     _eb._targets._data.clear()
@@ -1271,21 +1284,18 @@ from unittest.mock import patch as _patch
 def test_scheduler_first_sight_initializes_countdown(isolated_scheduler):
     """First tick records the timestamp but must NOT dispatch."""
     _seed_rule()
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
+    _eb._tick_scheduled_rules()
     assert _STATE_KEY in _eb._rule_last_fired
-    mock_invoke.assert_not_called()
+    isolated_scheduler.assert_not_called()
 
 
 def test_scheduler_fires_after_interval(isolated_scheduler):
     """Tick dispatches when last-fired is older than the rule interval."""
     _seed_rule()
     _eb._rule_last_fired[_STATE_KEY] = _eb._now_ts() - 65  # 65 s ago > 60 s interval
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_called_once()
-    _, kwargs = mock_invoke.call_args
-    target_arg = mock_invoke.call_args[0][0]
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_called_once()
+    target_arg = isolated_scheduler.call_args[0][0]
     assert target_arg["Id"] == "t1"
 
 
@@ -1293,18 +1303,16 @@ def test_scheduler_skips_rule_before_interval(isolated_scheduler):
     """Tick must NOT dispatch when interval hasn't elapsed."""
     _seed_rule()
     _eb._rule_last_fired[_STATE_KEY] = _eb._now_ts() - 10  # only 10 s ago
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_not_called()
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_not_called()
 
 
 def test_scheduler_skips_disabled_rule(isolated_scheduler):
     """Disabled rules must never be dispatched even if past interval."""
     _seed_rule(state="DISABLED")
     _eb._rule_last_fired[_STATE_KEY] = _eb._now_ts() - 120
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_not_called()
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_not_called()
 
 
 @_pytest.mark.parametrize("expr,valid", [
@@ -1360,10 +1368,9 @@ def test_scheduler_cron_next_fire_weekday():
 def test_scheduler_cron_first_sight_initializes_countdown(isolated_scheduler):
     """First tick of a cron() rule records the timestamp but must NOT dispatch."""
     _seed_rule(schedule="cron(0 12 * * ? *)")
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
+    _eb._tick_scheduled_rules()
     assert _STATE_KEY in _eb._rule_last_fired
-    mock_invoke.assert_not_called()
+    isolated_scheduler.assert_not_called()
 
 
 def test_scheduler_cron_fires_after_scheduled_time(isolated_scheduler):
@@ -1371,9 +1378,8 @@ def test_scheduler_cron_fires_after_scheduled_time(isolated_scheduler):
     _seed_rule(schedule="cron(0 * * * ? *)")  # every hour on the hour
     # last_fired 2 hours ago → next occurrence is ~1 hour ago → should fire now
     _eb._rule_last_fired[_STATE_KEY] = _eb._now_ts() - 7200
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_called_once()
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_called_once()
 
 
 def test_scheduler_cron_skips_before_scheduled_time(isolated_scheduler):
@@ -1381,9 +1387,8 @@ def test_scheduler_cron_skips_before_scheduled_time(isolated_scheduler):
     _seed_rule(schedule="cron(0 * * * ? *)")  # every hour on the hour
     # last_fired 10 s ago → next occurrence is ~59m50s from now → must not fire
     _eb._rule_last_fired[_STATE_KEY] = _eb._now_ts() - 10
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_not_called()
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_not_called()
 
 
 def test_scheduler_cron_last_day_of_month():
@@ -1453,9 +1458,8 @@ def test_scheduler_no_error_without_targets(isolated_scheduler):
     _seed_rule()
     _eb._targets._data[_STATE_KEY] = []  # empty targets list
     _eb._rule_last_fired[_STATE_KEY] = _eb._now_ts() - 120
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_not_called()
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_not_called()
 
 
 def test_scheduler_reset_clears_last_fired(isolated_scheduler):
@@ -1478,9 +1482,8 @@ def test_scheduler_first_sight_with_old_creation_time_fires_immediately(isolated
         "CreationTime": _eb._now_ts() - 120,  # created 2 min ago, interval = 1 min
     }
     _eb._targets._data[_STATE_KEY] = list(_DUMMY_TARGET)
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_called_once()
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_called_once()
 
 
 def test_scheduler_first_sight_with_recent_creation_time_waits(isolated_scheduler):
@@ -1495,6 +1498,5 @@ def test_scheduler_first_sight_with_recent_creation_time_waits(isolated_schedule
         "CreationTime": _eb._now_ts() - 5,  # created 5s ago, interval = 60s
     }
     _eb._targets._data[_STATE_KEY] = list(_DUMMY_TARGET)
-    with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
-        _eb._tick_scheduled_rules()
-    mock_invoke.assert_not_called()
+    _eb._tick_scheduled_rules()
+    isolated_scheduler.assert_not_called()
