@@ -7,7 +7,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [1.3.25] — 2026-05-03
 
 ### Added
 - **AppSync Events API** — Event API management under `/v2/apis`, channel namespaces, API keys via `/v1/apis/{apiId}/apikeys`, HTTP publish on `{apiId}.appsync-api.*`, and realtime WebSocket on `{apiId}.appsync-realtime-api.*` (`aws-appsync-event-ws` subprotocol). Strict auth via `APPSYNC_EVENTS_ENFORCE_AUTH=1`. Contributed by @marcin-nowak-scl.
