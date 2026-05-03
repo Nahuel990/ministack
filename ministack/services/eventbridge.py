@@ -2138,10 +2138,20 @@ def _scheduler_loop():
             logger.exception("EventBridge scheduler tick error")
 
 
-_scheduler_thread = threading.Thread(
-    target=_scheduler_loop, daemon=True, name="eb-scheduler"
-)
-_scheduler_thread.start()
+_scheduler_thread: "threading.Thread | None" = None
+
+
+def start_scheduler() -> None:
+    """Start the eb-scheduler daemon thread (idempotent). Called from the
+    gateway lifespan.startup. Kept out of module-import scope so unit tests
+    that patch ``_invoke_target`` don't race against a background tick."""
+    global _scheduler_thread
+    if _scheduler_thread is not None and _scheduler_thread.is_alive():
+        return
+    _scheduler_thread = threading.Thread(
+        target=_scheduler_loop, daemon=True, name="eb-scheduler"
+    )
+    _scheduler_thread.start()
 
 
 def reset():

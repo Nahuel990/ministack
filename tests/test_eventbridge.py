@@ -409,7 +409,8 @@ def test_eventbridge_endpoints_and_partner_stubs(eb):
     eb.activate_event_source(Name="aws.partner/saas/foo")
     eb.deactivate_event_source(Name="aws.partner/saas/foo")
     src = eb.describe_event_source(Name="aws.partner/saas/foo")
-    assert src["State"] == "ENABLED"
+    # AWS EventSourceState enum: PENDING / ACTIVE / DELETED. (Was "ENABLED" — invalid.)
+    assert src["State"] == "ACTIVE"
 
     r = eb.create_partner_event_source(Name="saas.src", Account="111111111111")
     assert "EventSourceArn" in r
