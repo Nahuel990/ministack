@@ -1312,10 +1312,20 @@ def test_scheduler_skips_disabled_rule(isolated_scheduler):
     ("cron(0 0 ? * MON-FRI *)",  True),   # midnight Mon–Fri
     ("cron(30 6 1 * ? *)",       True),   # 06:30 on 1st of each month
     ("cron(0 0 1 1 ? 2030)",     True),   # specific year
+    ("cron(0 0 L * ? *)",        True),   # last day of every month
+    ("cron(0 0 LW * ? *)",       True),   # last weekday of every month
+    ("cron(0 12 15W * ? *)",     True),   # nearest weekday to the 15th
+    ("cron(0 12 ? * 6L *)",      True),   # last Friday of every month (AWS Fri=6)
+    ("cron(0 9 ? * 2#1 *)",      True),   # first Monday of every month (AWS Mon=2)
     ("rate(1 minute)",            False),  # not a cron expression
     ("",                          False),
     ("cron(0 12 * * *)",          False),  # 5 fields — missing Year
     ("cron()",                    False),
+    ("cron(0 12 * * * *)",        False),  # both DoM and DoW non-'?' — AWS rejects
+    ("cron(0 12 1 * MON *)",      False),  # both DoM and DoW non-'?' — AWS rejects
+    ("cron(0 12 32W * ? *)",      False),  # day-of-month out of range in <n>W
+    ("cron(0 12 ? * 8L *)",       False),  # AWS DoW only goes 1..7
+    ("cron(0 12 ? * 6#6 *)",      False),  # nth occurrence only valid 1..5
 ])
 def test_scheduler_parse_cron_fields_validity(expr, valid):
     result = _eb._parse_cron_fields(expr)
@@ -1373,6 +1383,68 @@ def test_scheduler_cron_skips_before_scheduled_time(isolated_scheduler):
     with _patch("ministack.services.eventbridge._invoke_target") as mock_invoke:
         _eb._tick_scheduled_rules()
     mock_invoke.assert_not_called()
+
+
+def test_scheduler_cron_last_day_of_month():
+    """cron(0 0 L * ? *): next fire after Jan 30 is Jan 31 (last day)."""
+    from datetime import datetime as _dt, timezone as _tz
+    fields = _eb._parse_cron_fields("cron(0 0 L * ? *)")
+    after = _dt(2024, 1, 30, 12, 0, tzinfo=_tz.utc)
+    # Jan has 31 days
+    assert _eb._cron_next_fire(fields, after) == _dt(2024, 1, 31, 0, 0, tzinfo=_tz.utc)
+    # Feb 2024 (leap year) has 29 days
+    after = _dt(2024, 2, 1, 0, 0, tzinfo=_tz.utc)
+    assert _eb._cron_next_fire(fields, after) == _dt(2024, 2, 29, 0, 0, tzinfo=_tz.utc)
+
+
+def test_scheduler_cron_last_weekday_of_month():
+    """cron(0 0 LW * ? *): last Mon-Fri of the month."""
+    from datetime import datetime as _dt, timezone as _tz
+    fields = _eb._parse_cron_fields("cron(0 0 LW * ? *)")
+    # March 2024: 31st = Sunday → last weekday is Fri Mar 29.
+    after = _dt(2024, 3, 1, 0, 0, tzinfo=_tz.utc)
+    assert _eb._cron_next_fire(fields, after) == _dt(2024, 3, 29, 0, 0, tzinfo=_tz.utc)
+
+
+def test_scheduler_cron_nearest_weekday():
+    """cron(0 12 15W * ? *): nearest Mon-Fri to the 15th, never crossing month."""
+    from datetime import datetime as _dt, timezone as _tz
+    fields = _eb._parse_cron_fields("cron(0 12 15W * ? *)")
+    # Jan 15 2024 = Monday → fires on the 15th itself.
+    assert _eb._cron_next_fire(fields, _dt(2024, 1, 14, 0, 0, tzinfo=_tz.utc)) == _dt(2024, 1, 15, 12, 0, tzinfo=_tz.utc)
+    # Jun 15 2024 = Saturday → fires on Friday Jun 14.
+    assert _eb._cron_next_fire(fields, _dt(2024, 6, 1, 0, 0, tzinfo=_tz.utc)) == _dt(2024, 6, 14, 12, 0, tzinfo=_tz.utc)
+    # Sep 15 2024 = Sunday → fires on Monday Sep 16.
+    assert _eb._cron_next_fire(fields, _dt(2024, 9, 1, 0, 0, tzinfo=_tz.utc)) == _dt(2024, 9, 16, 12, 0, tzinfo=_tz.utc)
+
+
+def test_scheduler_cron_last_dow_of_month():
+    """cron(0 12 ? * 6L *): last Friday of the month (AWS Friday = 6)."""
+    from datetime import datetime as _dt, timezone as _tz
+    fields = _eb._parse_cron_fields("cron(0 12 ? * 6L *)")
+    # Jan 2024: Fridays are 5, 12, 19, 26 → last is Fri Jan 26.
+    assert _eb._cron_next_fire(fields, _dt(2024, 1, 1, 0, 0, tzinfo=_tz.utc)) == _dt(2024, 1, 26, 12, 0, tzinfo=_tz.utc)
+    # Mar 2024: Fridays are 1, 8, 15, 22, 29 → last is Fri Mar 29.
+    assert _eb._cron_next_fire(fields, _dt(2024, 3, 1, 0, 0, tzinfo=_tz.utc)) == _dt(2024, 3, 29, 12, 0, tzinfo=_tz.utc)
+
+
+def test_scheduler_cron_nth_dow_of_month():
+    """cron(0 9 ? * 2#1 *): first Monday of every month (AWS Monday = 2)."""
+    from datetime import datetime as _dt, timezone as _tz
+    fields = _eb._parse_cron_fields("cron(0 9 ? * 2#1 *)")
+    # Jan 2024: Mondays are 1, 8, 15, 22, 29 → 1st Monday = Jan 1.
+    assert _eb._cron_next_fire(fields, _dt(2023, 12, 31, 0, 0, tzinfo=_tz.utc)) == _dt(2024, 1, 1, 9, 0, tzinfo=_tz.utc)
+    # Feb 2024: Mondays are 5, 12, 19, 26 → 1st = Feb 5.
+    assert _eb._cron_next_fire(fields, _dt(2024, 1, 2, 0, 0, tzinfo=_tz.utc)) == _dt(2024, 2, 5, 9, 0, tzinfo=_tz.utc)
+
+
+def test_scheduler_validate_rejects_dom_and_dow_both_non_question_mark():
+    """PutRule must reject cron expressions where both DoM and DoW are non-'?' (AWS rule)."""
+    assert _eb._validate_schedule_expression("cron(0 12 * * * *)") is False
+    assert _eb._validate_schedule_expression("cron(0 12 1 * MON *)") is False
+    # Valid: at least one of DoM/DoW is '?'.
+    assert _eb._validate_schedule_expression("cron(0 12 * * ? *)") is True
+    assert _eb._validate_schedule_expression("cron(0 12 ? * MON *)") is True
 
 
 def test_scheduler_no_error_without_targets(isolated_scheduler):

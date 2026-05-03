@@ -97,6 +97,7 @@ _NON_S3_VHOST_NAMES = frozenset({
     "secretsmanager", "logs", "ssm", "events", "kinesis", "monitoring", "ses",
     "states", "ecs", "rds", "rds-data", "elasticache", "glue", "athena",
     "apigateway", "cloudformation", "autoscaling", "codebuild", "transfer",
+    "cloudfront-kvs",
     "appsync-api", "appsync-realtime-api",
 })
 
@@ -280,6 +281,7 @@ _state_map = {
     "appconfig": "appconfig", "transfer": "transfer",
     "scheduler": "scheduler", "autoscaling": "autoscaling",
     "eks": "eks", "backup": "backup", "pipes": "pipes",
+    "cloudfront_keyvaluestore": "cloudfront_keyvaluestore",
 }
 
 SERVICE_NAME_ALIASES = {
@@ -1029,8 +1031,6 @@ async def _handle_s3_vhost_request(host: str, path: str, method: str, headers: d
     bucket = _extract_s3_vhost_bucket(host)
     if not bucket or _S3_VHOST_EXCLUDE_RE.search(host) or bucket in _NON_S3_VHOST_NAMES:
         return None
-    if path.startswith("/key-value-stores/"):
-        return None
 
     vhost_path = "/" + bucket + path if path != "/" else "/" + bucket + "/"
     try:
@@ -1299,9 +1299,12 @@ async def _handle_lifespan(scope, receive, send):
             except Exception as e:
                 logger.warning("Transfer SFTP startup failed: %s", e)
             await send({"type": "lifespan.startup.complete"})
-            logger.info("Ready.")
+            logger.info("Ready — %d services available on port %s.", len(SERVICE_HANDLERS), port)
+            # Per-service "init completed" lines are logged at DEBUG only — at
+            # INFO they bury the operational signal (CreateBucket, etc.) under
+            # a wall of one line per service.
             for svc in SERVICE_HANDLERS:
-                logger.info("%s init completed.", svc.capitalize())
+                logger.debug("%s init completed.", svc.capitalize())
             asyncio.create_task(_run_ready_scripts())
         elif message["type"] == "lifespan.shutdown":
             logger.info("MiniStack shutting down...")
