@@ -353,6 +353,7 @@ subnet = ec2.create_subnet(
 | **IAM** | CreateUser, GetUser, ListUsers, DeleteUser, CreateRole, GetRole, ListRoles, DeleteRole, CreatePolicy, GetPolicy, DeletePolicy, AttachRolePolicy, DetachRolePolicy, PutRolePolicy, GetRolePolicy, DeleteRolePolicy, ListRolePolicies, ListAttachedRolePolicies, CreateAccessKey, ListAccessKeys, DeleteAccessKey, CreateInstanceProfile, GetInstanceProfile, DeleteInstanceProfile, AddRoleToInstanceProfile, RemoveRoleFromInstanceProfile, ListInstanceProfiles, CreateGroup, GetGroup, AddUserToGroup, RemoveUserFromGroup, CreateServiceLinkedRole, DeleteServiceLinkedRole, GetServiceLinkedRoleDeletionStatus, CreateOpenIDConnectProvider, TagRole, UntagRole, TagUser, UntagUser, TagPolicy, UntagPolicy | |
 | **STS** | GetCallerIdentity, AssumeRole, GetSessionToken, AssumeRoleWithWebIdentity | |
 | **IMDS** (EC2 Instance Metadata) | `PUT /latest/api/token`, `GET /latest/meta-data/instance-id`, `GET /latest/meta-data/iam/security-credentials/`, `GET /latest/meta-data/iam/security-credentials/<role>`, `GET /latest/meta-data/iam/info`, `GET /latest/meta-data/placement/{region,availability-zone,...}`, `GET /latest/dynamic/instance-identity/document` | IMDSv1 + IMDSv2; default credential chain falls through to a `ministack-instance-role` document with `ASIA*` session creds. Point SDKs at ministack via `AWS_EC2_METADATA_SERVICE_ENDPOINT=http://localhost:4566` (or `ec2_metadata_service_endpoint` in `~/.aws/config`); set `MINISTACK_IMDS_V2_REQUIRED=1` to require the token PUT |
+| **ECS Task Metadata V4** | `GET /v4/<token>`, `GET /v4/<token>/task`, `GET /v4/<token>/stats`, `GET /v4/<token>/task/stats` | Per-container token injected as `ECS_CONTAINER_METADATA_URI_V4` on every container started by `RunTask`. `/task` returns sibling containers in the same task. Containers reach the gateway via `host.docker.internal` (mapped through `extra_hosts: host-gateway`, so it works on user-defined Docker networks); `networkMode: host` containers use loopback. Volatile by design (stripped on persistence, cleared by `/_ministack/reset`) |
 | **SecretsManager** | CreateSecret, GetSecretValue, ListSecrets, DeleteSecret, UpdateSecret, DescribeSecret, PutSecretValue, UpdateSecretVersionStage, RestoreSecret, RotateSecret, GetRandomPassword, ListSecretVersionIds, ReplicateSecretToRegions, TagResource, UntagResource, PutResourcePolicy, GetResourcePolicy, DeleteResourcePolicy, ValidateResourcePolicy | |
 | **CloudWatch Logs** | CreateLogGroup, DeleteLogGroup, DescribeLogGroups, CreateLogStream, DeleteLogStream, DescribeLogStreams, PutLogEvents, GetLogEvents, FilterLogEvents, PutRetentionPolicy, DeleteRetentionPolicy, PutSubscriptionFilter, DeleteSubscriptionFilter, DescribeSubscriptionFilters, PutMetricFilter, DeleteMetricFilter, DescribeMetricFilters, TagLogGroup, UntagLogGroup, ListTagsLogGroup, TagResource, UntagResource, ListTagsForResource, StartQuery, GetQueryResults, StopQuery, PutDestination, DeleteDestination, DescribeDestinations, PutDestinationPolicy | `FilterLogEvents` supports `*`/`?` globs, multi-term AND, `-term` exclusion |
 
@@ -636,6 +637,11 @@ task_arn = resp["tasks"][0]["taskArn"]
 # Stop it (removes the container)
 ecs.stop_task(cluster="dev", task=task_arn)
 ```
+
+Each container also gets the standard ECS Task Metadata V4 endpoint injected as
+`ECS_CONTAINER_METADATA_URI_V4`, so anything inside the container that uses the
+AWS SDK for ECS metadata (X-Ray, OpenTelemetry, application code calling
+`GET $ECS_CONTAINER_METADATA_URI_V4/task`) works without changes.
 
 ---
 

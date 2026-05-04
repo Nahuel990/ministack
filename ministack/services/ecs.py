@@ -32,7 +32,6 @@ import threading
 import time
 
 from ministack.core.persistence import load_state
-from ministack.services import ecs_metadata
 from ministack.core.responses import (
     AccountScopedDict,
     error_response_json,
@@ -42,6 +41,7 @@ from ministack.core.responses import (
     new_uuid,
     now_iso,
 )
+from ministack.services import ecs_metadata
 
 logger = logging.getLogger("ecs")
 
@@ -960,15 +960,19 @@ def _run_task(data):
                     port_bindings[f"{pm['containerPort']}/tcp"] = host_port
 
                 # host-mode containers reach the gateway via loopback;
-                # bridge-mode via the docker host gateway IP.
+                # otherwise route via host.docker.internal, which we map to
+                # host-gateway below so it resolves correctly on user-defined
+                # networks (where 172.17.0.1 is not reachable).
                 metadata_token = secrets.token_urlsafe(32)
-                metadata_host = "127.0.0.1" if td.get("networkMode") == "host" else "172.17.0.1"
+                host_mode = td.get("networkMode") == "host"
+                metadata_host = "127.0.0.1" if host_mode else "host.docker.internal"
                 metadata_port = os.environ.get("GATEWAY_PORT") or os.environ.get("EDGE_PORT") or "4566"
                 env["ECS_CONTAINER_METADATA_URI_V4"] = (
                     f"http://{metadata_host}:{metadata_port}/v4/{metadata_token}"
                 )
-                ecs_metadata.register_task(
+                ecs_metadata.register_container(
                     metadata_token,
+                    task_arn,
                     task_payload={
                         "Cluster": _clusters[cluster_name]["clusterArn"],
                         "TaskARN": task_arn,
@@ -983,13 +987,18 @@ def _run_task(data):
                         "DockerId": "",
                         "Name": cdef["name"],
                         "Image": cdef["image"],
-                        "Labels": {"task_arn": task_arn},
+                        "Labels": {
+                            "com.amazonaws.ecs.task-arn": task_arn,
+                            "com.amazonaws.ecs.container-name": cdef["name"],
+                            "com.amazonaws.ecs.task-definition-family": td.get("family", ""),
+                            "com.amazonaws.ecs.task-definition-version": str(td.get("revision", 1)),
+                            "com.amazonaws.ecs.cluster": _clusters[cluster_name]["clusterArn"],
+                        },
                         "DesiredStatus": "RUNNING",
                         "KnownStatus": "RUNNING",
                         "Type": "NORMAL",
                     },
                 )
-                task.setdefault("_metadata_tokens", []).append(metadata_token)
 
                 # Translate task-def fields into docker run kwargs:
                 # privileged/cap_add/pid_mode/network_mode and bind mounts.
@@ -1029,20 +1038,24 @@ def _run_task(data):
                     run_kwargs["cap_add"] = cap_add
                 if td.get("pidMode") == "host":
                     run_kwargs["pid_mode"] = "host"
-                if td.get("networkMode") == "host":
+                if host_mode:
                     run_kwargs["network_mode"] = "host"
                 else:
                     run_kwargs["network"] = ecs_network
+                    # Map host.docker.internal -> host gateway so the metadata
+                    # URI works on user-defined networks and Linux hosts.
+                    run_kwargs["extra_hosts"] = {"host.docker.internal": "host-gateway"}
 
                 try:
                     container = docker_client.containers.run(cdef["image"], **run_kwargs)
                     task["_docker_ids"].append(container.id)
                     ecs_metadata.set_docker_id(metadata_token, container.id)
+                    task.setdefault("_metadata_tokens", []).append(metadata_token)
                     if i < len(task["containers"]):
                         task["containers"][i]["runtimeId"] = container.id[:12]
                     logger.info("ECS: started container %s for task %s", cdef['image'], task_id[:8])
                 except Exception as e:
-                    ecs_metadata.unregister_task(metadata_token)
+                    ecs_metadata.unregister_token(metadata_token)
                     logger.warning("ECS: Docker run failed for %s: %s", cdef.get('image'), e)
 
         _tasks[task_arn] = task
@@ -1078,7 +1091,7 @@ def _stop_task(data):
                 logger.warning("ECS: failed to stop container %s: %s", docker_id, e)
 
     for tok in task.get("_metadata_tokens", []):
-        ecs_metadata.unregister_task(tok)
+        ecs_metadata.unregister_token(tok)
 
     now = _iso()
     task["lastStatus"] = "STOPPED"
