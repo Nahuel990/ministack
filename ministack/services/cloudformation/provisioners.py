@@ -2,6 +2,8 @@
 CloudFormation provisioners — resource create/delete handlers for each AWS resource type.
 """
 
+import base64
+import hashlib
 import io
 import json
 import logging
@@ -118,14 +120,40 @@ def _update_resource(resource_type: str, physical_id: str, old_props: dict,
 
 def _s3_create(logical_id, props, stack_name):
     name = props.get("BucketName") or _physical_name(stack_name, logical_id, lowercase=True, max_len=63)
-    _s3._buckets[name] = {
+    _s3._buckets.setdefault(name, {
         "created": now_iso(),
         "objects": {},
         "region": get_region(),
-    }
+    })
     versioning = props.get("VersioningConfiguration", {})
     if versioning.get("Status") == "Enabled":
         _s3._bucket_versioning[name] = "Enabled"
+    attrs = {
+        "Arn": f"arn:aws:s3:::{name}",
+        "DomainName": f"{name}.s3.amazonaws.com",
+        "RegionalDomainName": f"{name}.s3.{get_region()}.amazonaws.com",
+        "WebsiteURL": f"http://{name}.s3-website-{get_region()}.amazonaws.com",
+    }
+    return name, attrs
+
+
+def _s3_update(physical_id, old_props, new_props, stack_name):
+    """Update an S3 bucket in place. Real AWS CloudFormation preserves the
+    physical bucket (and its name) when only mutable properties change.
+    Auto-named buckets (no explicit ``BucketName``) must keep their existing
+    physical resource id so that ``Ref`` keeps resolving to the same bucket
+    where artifacts were uploaded."""
+    old_name = old_props.get("BucketName")
+    new_name = new_props.get("BucketName")
+    if new_name and new_name != physical_id:
+        return _s3_create(new_name, new_props, stack_name)
+    name = physical_id
+    if name in _s3._buckets:
+        versioning = new_props.get("VersioningConfiguration", {})
+        if versioning.get("Status") == "Enabled":
+            _s3._bucket_versioning[name] = "Enabled"
+    else:
+        return _s3_create(name, new_props, stack_name)
     attrs = {
         "Arn": f"arn:aws:s3:::{name}",
         "DomainName": f"{name}.s3.amazonaws.com",
@@ -426,6 +454,12 @@ def _lambda_create(logical_id, props, stack_name):
             version_id=code.get("S3ObjectVersion"),
         )
 
+    code_size = len(code_zip) if code_zip else 0
+    code_sha = (
+        base64.b64encode(hashlib.sha256(code_zip).digest()).decode()
+        if code_zip else "cfn-deployed"
+    )
+
     func = {
         "config": {
             "FunctionName": name,
@@ -433,11 +467,12 @@ def _lambda_create(logical_id, props, stack_name):
             "Runtime": runtime,
             "Role": role,
             "Handler": handler,
+            "CodeSize": code_size,
             "Description": description,
             "Timeout": timeout,
             "MemorySize": memory,
             "LastModified": now_iso(),
-            "CodeSha256": "cfn-deployed",
+            "CodeSha256": code_sha,
             "Version": "$LATEST",
             "Environment": {"Variables": env_vars},
             "Layers": [{"Arn": l} if isinstance(l, str) else l for l in layers],
@@ -2981,7 +3016,7 @@ def _backup_plan_delete(physical_id, props):
 
 
 _RESOURCE_HANDLERS = {
-    "AWS::S3::Bucket": {"create": _s3_create, "delete": _s3_delete},
+    "AWS::S3::Bucket": {"create": _s3_create, "update": _s3_update, "delete": _s3_delete},
     "AWS::S3::BucketPolicy": {"create": _s3_bucket_policy_create, "delete": _s3_bucket_policy_delete},
     "AWS::SQS::Queue": {"create": _sqs_create, "delete": _sqs_delete},
     "AWS::SNS::Topic": {"create": _sns_create, "delete": _sns_delete},
