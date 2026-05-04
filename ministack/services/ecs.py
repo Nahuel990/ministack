@@ -27,10 +27,12 @@ import copy
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 
 from ministack.core.persistence import load_state
+from ministack.services import ecs_metadata
 from ministack.core.responses import (
     AccountScopedDict,
     error_response_json,
@@ -123,6 +125,7 @@ def get_state():
     for scoped_key, task in _tasks._data.items():
         t = copy.deepcopy(task)
         t.pop("_docker_ids", None)
+        t.pop("_metadata_tokens", None)
         tasks._data[scoped_key] = t
     state["tasks"] = tasks
     return state
@@ -956,21 +959,90 @@ def _run_task(data):
                     host_port = pm.get("hostPort", pm.get("containerPort"))
                     port_bindings[f"{pm['containerPort']}/tcp"] = host_port
 
+                # host-mode containers reach the gateway via loopback;
+                # bridge-mode via the docker host gateway IP.
+                metadata_token = secrets.token_urlsafe(32)
+                metadata_host = "127.0.0.1" if td.get("networkMode") == "host" else "172.17.0.1"
+                metadata_port = os.environ.get("GATEWAY_PORT") or os.environ.get("EDGE_PORT") or "4566"
+                env["ECS_CONTAINER_METADATA_URI_V4"] = (
+                    f"http://{metadata_host}:{metadata_port}/v4/{metadata_token}"
+                )
+                ecs_metadata.register_task(
+                    metadata_token,
+                    task_payload={
+                        "Cluster": _clusters[cluster_name]["clusterArn"],
+                        "TaskARN": task_arn,
+                        "Family": td.get("family", ""),
+                        "Revision": str(td.get("revision", 1)),
+                        "DesiredStatus": "RUNNING",
+                        "KnownStatus": "RUNNING",
+                        "AvailabilityZone": f"{get_region()}a",
+                        "LaunchType": launch_type,
+                    },
+                    container_payload={
+                        "DockerId": "",
+                        "Name": cdef["name"],
+                        "Image": cdef["image"],
+                        "Labels": {"task_arn": task_arn},
+                        "DesiredStatus": "RUNNING",
+                        "KnownStatus": "RUNNING",
+                        "Type": "NORMAL",
+                    },
+                )
+                task.setdefault("_metadata_tokens", []).append(metadata_token)
+
+                # Translate task-def fields into docker run kwargs:
+                # privileged/cap_add/pid_mode/network_mode and bind mounts.
+                # Volumes use list-of-binds (not a dict) so two ECS volume
+                # entries with the same host SourcePath don't collide.
+                vol_src = {}
+                for v in td.get("volumes", []):
+                    name = v.get("Name") or v.get("name")
+                    if not name:
+                        continue
+                    host = v.get("Host") or v.get("host") or {}
+                    vol_src[name] = host.get("SourcePath") or host.get("sourcePath")
+                docker_binds = []
+                for mp in cdef.get("mountPoints", []):
+                    src = vol_src.get(mp.get("sourceVolume"))
+                    cp = mp.get("containerPath")
+                    if src and cp:
+                        mode = "ro" if mp.get("readOnly", False) else "rw"
+                        docker_binds.append(f"{src}:{cp}:{mode}")
+
+                lp = cdef.get("linuxParameters") or cdef.get("LinuxParameters") or {}
+                caps = lp.get("Capabilities") or lp.get("capabilities") or {}
+                cap_add = caps.get("Add") or caps.get("add") or []
+
+                run_kwargs = dict(
+                    detach=True,
+                    environment=env,
+                    ports=port_bindings or None,
+                    name=f"ministack-ecs-{task_id[:8]}-{cdef['name']}",
+                    labels={"ministack": "ecs", "task_arn": task_arn},
+                    command=cdef.get("command"),
+                    privileged=bool(cdef.get("privileged") or cdef.get("Privileged")),
+                )
+                if docker_binds:
+                    run_kwargs["volumes"] = docker_binds
+                if cap_add:
+                    run_kwargs["cap_add"] = cap_add
+                if td.get("pidMode") == "host":
+                    run_kwargs["pid_mode"] = "host"
+                if td.get("networkMode") == "host":
+                    run_kwargs["network_mode"] = "host"
+                else:
+                    run_kwargs["network"] = ecs_network
+
                 try:
-                    container = docker_client.containers.run(
-                        cdef["image"], detach=True,
-                        environment=env,
-                        ports=port_bindings or None,
-                        name=f"ministack-ecs-{task_id[:8]}-{cdef['name']}",
-                        labels={"ministack": "ecs", "task_arn": task_arn},
-                        network=ecs_network,
-                        command=cdef["command"]
-                    )
+                    container = docker_client.containers.run(cdef["image"], **run_kwargs)
                     task["_docker_ids"].append(container.id)
+                    ecs_metadata.set_docker_id(metadata_token, container.id)
                     if i < len(task["containers"]):
                         task["containers"][i]["runtimeId"] = container.id[:12]
                     logger.info("ECS: started container %s for task %s", cdef['image'], task_id[:8])
                 except Exception as e:
+                    ecs_metadata.unregister_task(metadata_token)
                     logger.warning("ECS: Docker run failed for %s: %s", cdef.get('image'), e)
 
         _tasks[task_arn] = task
@@ -1004,6 +1076,9 @@ def _stop_task(data):
                 c.remove(v=True)
             except Exception as e:
                 logger.warning("ECS: failed to stop container %s: %s", docker_id, e)
+
+    for tok in task.get("_metadata_tokens", []):
+        ecs_metadata.unregister_task(tok)
 
     now = _iso()
     task["lastStatus"] = "STOPPED"

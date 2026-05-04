@@ -23,6 +23,10 @@ _LAMBDA_PATH_RE = re.compile(
     r"account-settings|runtime|tags|code-signing-configs)(?:/|$)"
 )
 
+# ECS Task Metadata V4 paths: /v4/<token>[/task|/stats|...]. Token is
+# url-safe base64, generated per-container in services/ecs.py.
+_ECS_METADATA_PATH_RE = re.compile(r"^/v4/[A-Za-z0-9_-]{8,}(?:/.*)?$")
+
 # Service detection patterns
 SERVICE_PATTERNS = {
     "s3": {
@@ -790,6 +794,8 @@ def detect_service(method: str, path: str, headers: dict, query_params: dict) ->
         return "cognito-idp"
     if path_lower.startswith("/saml2/idpresponse"):
         return "cognito-idp"
+    if _ECS_METADATA_PATH_RE.match(path_lower):
+        return "ecs-metadata"
     if path_lower.startswith(("/clusters", "/taskdefinitions", "/tasks", "/services", "/stoptask")):
         return "ecs"
     # smithy-rpc-v2-cbor path: /service/ServiceName/operation/ActionName
