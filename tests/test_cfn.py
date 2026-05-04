@@ -10,8 +10,6 @@ import pytest
 import urllib.request
 from botocore.exceptions import ClientError
 
-from conftest import ENDPOINT
-
 
 def _wait_stack(cfn, name, timeout=30):
     """Poll until stack reaches terminal status."""

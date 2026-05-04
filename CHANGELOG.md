@@ -20,10 +20,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Transfer Family `LOGICAL` root home directory mappings** — `Entry="/"` failed to match because the resolver built `"//"` as the prefix. Contributed by @stefanmb.
 - **CloudTrail router target prefix** — was `AmazonCloudTrailService`; AWS uses `CloudTrail_20131101`. Routing still worked via credential scope, but the prefix entry was dead code.
 - **CloudTrail `IsLogging` state on `Stop`/`StartLogging`** — both were no-ops; `GetTrailStatus` always returned `IsLogging: True`. Now flips the trail record's state and stamps `_StartedAt` / `_StoppedAt` (int epoch).
-- **`tests/test_cloudtrail.py` runs serially** — autouse fixture flips a process-wide recording flag, racing under xdist. New `_SERIAL_FILES` set in `tests/conftest.py`.
 - **STS `Credentials.Expiration` is int epoch in the JSON path** — `AssumeRole` / `AssumeRoleWithWebIdentity` / `GetSessionToken` returned a float; Java/Go SDK v2 reject it.
 - **`backup` / `eks` `_epoch()` / `_now()` return int** — were `time.time()` (float); consumed by record fields like `createdAt`.
 - **DynamoDB `ConditionalCheckFailedException` populates `Item` on `ReturnValuesOnConditionCheckFailure="ALL_OLD"`** — `PutItem` / `UpdateItem` / `DeleteItem` / `TransactWriteItems` now return the prior item alongside the error code (and on the failing `CancellationReason` for transactions). Verified against botocore: `CancellationReason` and `ConditionalCheckFailedException` shapes both include `Item`. Reported by @darkamgine.
+- **CFN `AWS::S3::Bucket` preserves physical id on update** — auto-named buckets got a new random name on every `UpdateStack`, breaking `{Ref}` after redeploy. Contributed by @erick-reis-gran.
+- **CFN `AWS::Lambda::Function` returns real `CodeSize` / `CodeSha256`** — were hardcoded; now computed from the deployment-package bytes. Contributed by @erick-reis-gran.
 
 ---
 
