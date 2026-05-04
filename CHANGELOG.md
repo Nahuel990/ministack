@@ -5,6 +5,8 @@ All notable changes to MiniStack will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+- **Transfer Family `LOGICAL` root home directory mappings** — `HomeDirectoryMappings` with `Entry="/"` now match SFTP paths like `/users.csv` and resolve them under the configured target bucket instead of falling through because the resolver checked for a `"//"` prefix.
+
 ---
 
 ## [Unreleased]
