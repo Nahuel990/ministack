@@ -7,6 +7,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **ECS Task Metadata V4 emulator** — every container started by `RunTask` now receives `ECS_CONTAINER_METADATA_URI_V4=http://<ministack>:<gateway>/v4/<token>`, and the gateway responds on `/v4/<token>` (current container), `/v4/<token>/task` (task with sibling `Containers` array), and `/v4/<token>/stats` / `/task/stats` (empty stub). Tokens are per-container `secrets.token_urlsafe(32)` values; the registry is volatile by design (stripped on persistence, cleared by `/_ministack/reset`). The metadata host is Ministack's own IP on the shared user-defined Docker network (the only address that's reliably reachable on Linux Docker — `host-gateway` resolves to `docker0` which sibling bridges typically can't route to); when Ministack runs outside Docker the URI falls back to `host.docker.internal` mapped through `extra_hosts: host-gateway` for Docker-Desktop compatibility, and `networkMode: host` containers use loopback. Container labels follow the standard `com.amazonaws.ecs.*` keys (`task-arn`, `container-name`, `task-definition-family`, `task-definition-version`, `cluster`). `RunTask` also now translates more of the task-def: `privileged`, `linuxParameters.capabilities.add`, `pidMode: host`, and `volumes` + `mountPoints` (list-of-binds so two ECS volumes sharing a host path don't collide).
+
+---
+
 ## [1.3.27] — 2026-05-04
 
 ### Added

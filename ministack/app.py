@@ -213,6 +213,7 @@ SERVICE_REGISTRY = {
     "ec2": {"module": "ec2"},
     "ecr": {"module": "ecr"},
     "ecs": {"module": "ecs"},
+    "ecs-metadata": {"module": "ecs_metadata"},
     "eks": {"module": "eks"},
     "elasticache": {"module": "elasticache"},
     "elasticfilesystem": {"module": "efs"},

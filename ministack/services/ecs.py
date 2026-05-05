@@ -27,6 +27,7 @@ import copy
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 
@@ -40,6 +41,7 @@ from ministack.core.responses import (
     new_uuid,
     now_iso,
 )
+from ministack.services import ecs_metadata
 
 logger = logging.getLogger("ecs")
 
@@ -123,6 +125,7 @@ def get_state():
     for scoped_key, task in _tasks._data.items():
         t = copy.deepcopy(task)
         t.pop("_docker_ids", None)
+        t.pop("_metadata_tokens", None)
         tasks._data[scoped_key] = t
     state["tasks"] = tasks
     return state
@@ -857,6 +860,116 @@ def _build_task_containers(td, container_overrides):
     return containers
 
 
+def _register_metadata(task_arn, cluster_arn, td, cdef, launch_type, env,
+                       host_mode, ministack_net_ip):
+    """Inject ECS_CONTAINER_METADATA_URI_V4 into env and register the
+    container with the metadata server. Returns the token so the caller can
+    record it on the task and update DockerId once the container starts.
+
+    `ministack_net_ip` is Ministack's IP on the shared user-defined network
+    (when discoverable). Using it directly is the only reliable address on
+    Linux Docker; `host.docker.internal` is a Docker-Desktop-only fallback.
+    """
+    token = secrets.token_urlsafe(32)
+    if host_mode:
+        host = "127.0.0.1"
+    elif ministack_net_ip:
+        host = ministack_net_ip
+    else:
+        host = "host.docker.internal"
+    port = os.environ.get("GATEWAY_PORT") or os.environ.get("EDGE_PORT") or "4566"
+    env["ECS_CONTAINER_METADATA_URI_V4"] = f"http://{host}:{port}/v4/{token}"
+    ecs_metadata.register_container(
+        token,
+        task_arn,
+        task_payload={
+            "Cluster": cluster_arn,
+            "TaskARN": task_arn,
+            "Family": td.get("family", ""),
+            "Revision": str(td.get("revision", 1)),
+            "DesiredStatus": "RUNNING",
+            "KnownStatus": "RUNNING",
+            "AvailabilityZone": f"{get_region()}a",
+            "LaunchType": launch_type,
+        },
+        container_payload={
+            "DockerId": "",
+            "Name": cdef["name"],
+            "Image": cdef["image"],
+            "Labels": {
+                "com.amazonaws.ecs.task-arn": task_arn,
+                "com.amazonaws.ecs.container-name": cdef["name"],
+                "com.amazonaws.ecs.task-definition-family": td.get("family", ""),
+                "com.amazonaws.ecs.task-definition-version": str(td.get("revision", 1)),
+                "com.amazonaws.ecs.cluster": cluster_arn,
+            },
+            "DesiredStatus": "RUNNING",
+            "KnownStatus": "RUNNING",
+            "Type": "NORMAL",
+        },
+    )
+    return token
+
+
+def _docker_binds_from_taskdef(td, cdef):
+    """Translate task-def `volumes` + container `mountPoints` into Docker
+    bind strings. Returns a list (not a dict) so two ECS volume entries
+    sharing the same host SourcePath don't collide on dict-key dedup.
+    """
+    vol_src = {}
+    for v in td.get("volumes", []):
+        name = v.get("Name") or v.get("name")
+        if not name:
+            continue
+        host = v.get("Host") or v.get("host") or {}
+        vol_src[name] = host.get("SourcePath") or host.get("sourcePath")
+    binds = []
+    for mp in cdef.get("mountPoints", []):
+        src = vol_src.get(mp.get("sourceVolume"))
+        cp = mp.get("containerPath")
+        if src and cp:
+            mode = "ro" if mp.get("readOnly", False) else "rw"
+            binds.append(f"{src}:{cp}:{mode}")
+    return binds
+
+
+def _build_run_kwargs(cdef, td, env, port_bindings, ecs_network,
+                      host_mode, task_id, task_arn, ministack_net_ip):
+    """Build kwargs for docker_client.containers.run from a container
+    definition + task definition (privileged, cap_add, pid_mode, networking,
+    bind mounts).
+    """
+    lp = cdef.get("linuxParameters") or cdef.get("LinuxParameters") or {}
+    caps = lp.get("Capabilities") or lp.get("capabilities") or {}
+    cap_add = caps.get("Add") or caps.get("add") or []
+    binds = _docker_binds_from_taskdef(td, cdef)
+
+    kwargs = dict(
+        detach=True,
+        environment=env,
+        ports=port_bindings or None,
+        name=f"ministack-ecs-{task_id[:8]}-{cdef['name']}",
+        labels={"ministack": "ecs", "task_arn": task_arn},
+        command=cdef.get("command"),
+        privileged=bool(cdef.get("privileged") or cdef.get("Privileged")),
+    )
+    if binds:
+        kwargs["volumes"] = binds
+    if cap_add:
+        kwargs["cap_add"] = cap_add
+    if td.get("pidMode") == "host":
+        kwargs["pid_mode"] = "host"
+    if host_mode:
+        kwargs["network_mode"] = "host"
+    else:
+        kwargs["network"] = ecs_network
+        if not ministack_net_ip:
+            # Docker-Desktop fallback: when we couldn't discover Ministack's
+            # IP on the shared network, route via host.docker.internal.
+            kwargs["extra_hosts"] = {"host.docker.internal": "host-gateway"}
+    return kwargs
+
+
 def _run_task(data):
     cluster_name = _resolve_cluster_name(data.get("cluster", "default"))
     if cluster_name not in _clusters:
@@ -932,12 +1045,22 @@ def _run_task(data):
             # Detect the Docker network Ministack is running on,
             # so ECS containers can reach sibling services (S3, etc.)
             ecs_network = None
+            ministack_net_ip = None
             try:
                 self_container = docker_client.containers.get(os.environ.get("HOSTNAME", ""))
-                nets = list(self_container.attrs["NetworkSettings"]["Networks"].keys())
+                nets = self_container.attrs["NetworkSettings"]["Networks"]
                 if nets:
-                    ecs_network = nets[0]
-                    logger.debug("ECS: detected Ministack network: %s", ecs_network)
+                    ecs_network = next(iter(nets))
+                    # IP that ECS containers should use to reach Ministack.
+                    # Using ministack's own address on the shared network is
+                    # the only thing that works reliably on Linux Docker —
+                    # `host-gateway` magic resolves to 172.17.0.1 (docker0),
+                    # which iptables typically blocks from a sibling bridge.
+                    ministack_net_ip = nets[ecs_network].get("IPAddress") or None
+                    logger.debug(
+                        "ECS: detected Ministack network=%s ip=%s",
+                        ecs_network, ministack_net_ip,
+                    )
             except Exception:
                 logger.debug("ECS: could not detect Ministack network, using default")
 
@@ -956,21 +1079,26 @@ def _run_task(data):
                     host_port = pm.get("hostPort", pm.get("containerPort"))
                     port_bindings[f"{pm['containerPort']}/tcp"] = host_port
 
+                host_mode = td.get("networkMode") == "host"
+                metadata_token = _register_metadata(
+                    task_arn, _clusters[cluster_name]["clusterArn"],
+                    td, cdef, launch_type, env, host_mode, ministack_net_ip,
+                )
+                run_kwargs = _build_run_kwargs(
+                    cdef, td, env, port_bindings, ecs_network,
+                    host_mode, task_id, task_arn, ministack_net_ip,
+                )
+
                 try:
-                    container = docker_client.containers.run(
-                        cdef["image"], detach=True,
-                        environment=env,
-                        ports=port_bindings or None,
-                        name=f"ministack-ecs-{task_id[:8]}-{cdef['name']}",
-                        labels={"ministack": "ecs", "task_arn": task_arn},
-                        network=ecs_network,
-                        command=cdef["command"]
-                    )
+                    container = docker_client.containers.run(cdef["image"], **run_kwargs)
                     task["_docker_ids"].append(container.id)
+                    ecs_metadata.set_docker_id(metadata_token, container.id)
+                    task.setdefault("_metadata_tokens", []).append(metadata_token)
                     if i < len(task["containers"]):
                         task["containers"][i]["runtimeId"] = container.id[:12]
                     logger.info("ECS: started container %s for task %s", cdef['image'], task_id[:8])
                 except Exception as e:
+                    ecs_metadata.unregister_token(metadata_token)
                     logger.warning("ECS: Docker run failed for %s: %s", cdef.get('image'), e)
 
         _tasks[task_arn] = task
@@ -1004,6 +1132,9 @@ def _stop_task(data):
                 c.remove(v=True)
             except Exception as e:
                 logger.warning("ECS: failed to stop container %s: %s", docker_id, e)
+
+    for tok in task.get("_metadata_tokens", []):
+        ecs_metadata.unregister_token(tok)
 
     now = _iso()
     task["lastStatus"] = "STOPPED"

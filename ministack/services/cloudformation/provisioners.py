@@ -1971,6 +1971,8 @@ def _ecs_task_def_create(logical_id, props, stack_name):
         "executionRoleArn": props.get("ExecutionRoleArn", ""),
         "taskRoleArn": props.get("TaskRoleArn", ""),
         "volumes": props.get("Volumes", []),
+        "pidMode": props.get("PidMode", ""),
+        "ipcMode": props.get("IpcMode", ""),
         "placementConstraints": props.get("PlacementConstraints", []),
     }
     _ecs._task_defs[td_key] = td
