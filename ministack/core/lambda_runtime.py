@@ -5,7 +5,6 @@ the handler once (cold start) and then handles subsequent invocations without
 re-importing (warm).
 """
 
-import base64
 import json
 import logging
 import os
@@ -17,7 +16,7 @@ import tempfile
 import threading
 import time
 import zipfile
-import re
+
 from ministack.core.responses import _12_DIGIT_RE
 
 logger = logging.getLogger("lambda_runtime")
