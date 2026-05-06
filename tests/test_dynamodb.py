@@ -2493,3 +2493,43 @@ def test_dynamodb_attribute_updates_default_action_is_put(ddb):
     assert item["name"] == {"S": "alice"}
 
 
+def test_dynamodb_attribute_updates_delete_with_value_on_non_set_raises(ddb):
+    """DELETE with a Value where the existing attribute is not a set must fail."""
+    table = f"t_attr_upd_del_invalid_{_uuid_mod.uuid4().hex[:8]}"
+    ddb.create_table(
+        TableName=table,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=table, Item={"pk": {"S": "k1"}, "name": {"S": "alice"}})
+
+    with pytest.raises(ClientError) as exc_info:
+        ddb.update_item(
+            TableName=table,
+            Key={"pk": {"S": "k1"}},
+            AttributeUpdates={"name": {"Action": "DELETE", "Value": {"SS": ["x"]}}},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "ValidationException"
+
+
+def test_dynamodb_attribute_updates_add_on_string_attribute_raises(ddb):
+    """ADD applied to an existing String attribute must fail (Number/set only)."""
+    table = f"t_attr_upd_add_invalid_{_uuid_mod.uuid4().hex[:8]}"
+    ddb.create_table(
+        TableName=table,
+        KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    ddb.put_item(TableName=table, Item={"pk": {"S": "k1"}, "name": {"S": "alice"}})
+
+    with pytest.raises(ClientError) as exc_info:
+        ddb.update_item(
+            TableName=table,
+            Key={"pk": {"S": "k1"}},
+            AttributeUpdates={"name": {"Action": "ADD", "Value": {"N": "1"}}},
+        )
+    assert exc_info.value.response["Error"]["Code"] == "ValidationException"
+
+
