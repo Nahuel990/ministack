@@ -18,11 +18,9 @@ import threading
 import time
 import zipfile
 import re
+from ministack.core.responses import _12_DIGIT_RE
 
 logger = logging.getLogger("lambda_runtime")
-
-_12_DIGIT_RE = re.compile(r"^\d{12}$")
-
 
 def _account_from_arn(arn: str) -> str:
     """Extract the 12-digit account ID from a Lambda function ARN.
