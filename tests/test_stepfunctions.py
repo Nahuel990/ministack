@@ -2648,7 +2648,9 @@ def test_sfn_aws_sdk_rdsdata_execute_statement(sfn, sfn_sync, rds, sm):
     resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
     assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
     output = json.loads(resp["output"])
-    assert "numberOfRecordsUpdated" in output or "records" in output
+    assert "NumberOfRecordsUpdated" in output
+    assert "GeneratedFields" in output
+    assert "Records" in output
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
@@ -2678,6 +2680,72 @@ def test_sfn_aws_sdk_rdsdata_unknown_action_fails(sfn, sfn_sync):
 
     resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
     assert resp["status"] == "FAILED"
+
+    sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_rdsdata_output_uses_sfn_key_convention(sfn, sfn_sync, rds, sm):
+    """REST-JSON aws-sdk output is exposed with AWS SFN SDK-shaped keys."""
+    import uuid as _uuid
+
+    cluster_id = f"rdsdata-sfn-output-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-rdsdata-output-{_uuid.uuid4().hex[:8]}"
+
+    rds.create_db_cluster(
+        DBClusterIdentifier=cluster_id,
+        Engine="aurora-mysql",
+        MasterUsername="admin",
+        MasterUserPassword="testpass123",
+    )
+    secret_arn = sm.create_secret(
+        Name=f"rdsdata-output-secret-{_uuid.uuid4().hex[:8]}",
+        SecretString='{"username":"admin","password":"testpass123"}',
+    )["ARN"]
+    cluster_arn = f"arn:aws:rds:us-east-1:000000000000:cluster:{cluster_id}"
+
+    definition = json.dumps({
+        "StartAt": "CreateUser",
+        "States": {
+            "CreateUser": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rdsdata:executeStatement",
+                "Parameters": {
+                    "ResourceArn": cluster_arn,
+                    "SecretArn": secret_arn,
+                    "Sql": "CREATE USER IF NOT EXISTS 'alice'",
+                    "Database": "testdb",
+                },
+                "Next": "ObserveUser",
+            },
+            "ObserveUser": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:rdsdata:executeStatement",
+                "Parameters": {
+                    "ResourceArn": cluster_arn,
+                    "SecretArn": secret_arn,
+                    "Sql": "SELECT User FROM mysql.user WHERE User = 'alice'",
+                    "Database": "testdb",
+                },
+                "ResultSelector": {
+                    "Records.$": "$.Records",
+                    "Updated.$": "$.NumberOfRecordsUpdated",
+                },
+                "End": True,
+            },
+        },
+    })
+
+    sm_arn = sfn_sync.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )["stateMachineArn"]
+
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+    assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+    output = json.loads(resp["output"])
+    assert output["Records"] == [[{"StringValue": "alice"}]]
+    assert output["Updated"] == 0
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
@@ -2943,7 +3011,9 @@ def test_sfn_rest_json_pascal_to_camel_conversion(sfn, sfn_sync, rds, sm):
     resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
     assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} \u2014 {resp.get('cause')}"
     output = json.loads(resp["output"])
-    assert "numberOfRecordsUpdated" in output or "records" in output
+    assert "NumberOfRecordsUpdated" in output
+    assert "GeneratedFields" in output
+    assert "Records" in output
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 

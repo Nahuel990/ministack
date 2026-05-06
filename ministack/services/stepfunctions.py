@@ -3017,9 +3017,11 @@ def _dispatch_aws_sdk_rest_json(service_info, service_name, action, input_data):
             raise _ExecutionError(_prefix_sdk_error(service_name, "ServiceException"), decoded)
 
     try:
-        return json.loads(decoded) if decoded else {}
+        result = json.loads(decoded) if decoded else {}
     except (json.JSONDecodeError, TypeError):
         return decoded
+
+    return _convert_keys_to_sfn_convention(result)
 
 
 # ---------------------------------------------------------------------------
@@ -3220,7 +3222,7 @@ def _s3_normalize_lists(parsed, list_fields):
 def _dispatch_aws_sdk_rest_xml(service_info, service_name, action, input_data):
     """Dispatch an aws-sdk integration call to a REST-XML protocol service (S3)."""
     import xml.etree.ElementTree as ET
-    from urllib.parse import urlencode, quote
+    from urllib.parse import quote, urlencode
 
     from ministack import app
 
