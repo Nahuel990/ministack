@@ -2386,8 +2386,9 @@ _AWS_SDK_SERVICE_MAP = {
     "cloudwatch": {"protocol": "query", "service_key": "monitoring"},
     # REST-JSON services: path-based routing with JSON body
     "rdsdata": {"protocol": "rest-json", "service_key": "rds-data"},
+    # REST-XML services: per-op path templates, header/querystring routing, XML responses
+    "s3": {"protocol": "rest-xml", "service_key": "s3"},
     # REST services (not yet supported via aws-sdk dispatcher)
-    "s3": {"protocol": "rest"},
     "lambda": {"protocol": "rest"},
 }
 
@@ -2425,11 +2426,16 @@ def _prefix_sdk_error(service_name: str, error_code: str) -> str:
     """Prefix an SDK error code with the service name, matching real AWS SFN behavior.
 
     E.g., ("secretsmanager", "ResourceExistsException") -> "SecretsManager.ResourceExistsException"
-    If the error already has a dot prefix or is a States.* error, return as-is.
+    States.* errors and already service-prefixed errors are returned as-is.
+    Non-EC2 dotted legacy codes are preserved for backwards compatibility.
     """
-    if "." in error_code:
+    if error_code.startswith("States."):
         return error_code
     prefix = _AWS_SDK_ERROR_PREFIX.get(service_name, service_name.capitalize())
+    if error_code.startswith(f"{prefix}."):
+        return error_code
+    if "." in error_code and service_name != "ec2":
+        return error_code
     return f"{prefix}.{error_code}"
 
 # Static action→path maps for REST-JSON services.
@@ -2531,6 +2537,46 @@ def _flatten_query_params(data, prefix=""):
                     params.update(_flatten_query_params(item, member_key))
                 else:
                     params[member_key] = str(item)
+        elif isinstance(value, bool):
+            params[full_key] = "true" if value else "false"
+        else:
+            params[full_key] = str(value)
+    return params
+
+
+_EC2_QUERY_LIST_NAME_OVERRIDES = {
+    "Filters": "Filter",
+    "Values": "Value",
+    "GroupIds": "GroupId",
+    "GroupNames": "GroupName",
+    "TagSpecifications": "TagSpecification",
+    "Tags": "Tag",
+}
+
+
+def _flatten_ec2_query_params(data, prefix=""):
+    """Flatten EC2 query params using EC2's numbered-list convention.
+
+    Most query services in MiniStack use ``member.N`` in the Step Functions
+    adapter. EC2's Query API expects bare numbered lists for the shapes used
+    here (e.g. ``Filter.1.Value.1`` and ``GroupId.1``).
+    """
+    params = {}
+    if not isinstance(data, dict):
+        return params
+    for key, value in data.items():
+        full_key = f"{prefix}{key}" if not prefix else f"{prefix}.{key}"
+        if isinstance(value, dict):
+            params.update(_flatten_ec2_query_params(value, full_key))
+        elif isinstance(value, list):
+            list_key = _EC2_QUERY_LIST_NAME_OVERRIDES.get(key, key)
+            full_list_key = f"{prefix}{list_key}" if not prefix else f"{prefix}.{list_key}"
+            for i, item in enumerate(value, 1):
+                item_key = f"{full_list_key}.{i}"
+                if isinstance(item, dict):
+                    params.update(_flatten_ec2_query_params(item, item_key))
+                else:
+                    params[item_key] = str(item)
         elif isinstance(value, bool):
             params[full_key] = "true" if value else "false"
         else:
@@ -2661,6 +2707,10 @@ _QUERY_PARAM_NAME_OVERRIDES = {
     ("rds", "RemoveFromGlobalCluster"): {
         "DbClusterIdentifier": "DbClusterIdentifier",
     },
+    ("ec2", "CreateSecurityGroup"): {
+        "Description": "GroupDescription",
+        "VpcId": "VpcId",
+    },
 }
 
 
@@ -2747,6 +2797,57 @@ def _convert_keys_to_sfn_convention(obj):
     return obj
 
 
+def _query_item_list(value):
+    if value in (None, ""):
+        return []
+    if isinstance(value, dict) and "item" in value:
+        item = value["item"]
+        return item if isinstance(item, list) else [item]
+    return value if isinstance(value, list) else [value]
+
+
+def _normalize_ec2_security_group(group):
+    if not isinstance(group, dict):
+        return group
+    if "groupDescription" in group:
+        group["Description"] = group.pop("groupDescription")
+    if "tagSet" in group:
+        group["Tags"] = _query_item_list(group.pop("tagSet"))
+
+    for permission_key in ("ipPermissions", "ipPermissionsEgress"):
+        if permission_key not in group:
+            continue
+        permissions = _query_item_list(group[permission_key])
+        for permission in permissions:
+            if not isinstance(permission, dict):
+                continue
+            for list_key in ("ipRanges", "ipv6Ranges", "prefixListIds"):
+                if list_key in permission:
+                    permission[list_key] = _query_item_list(permission[list_key])
+            if "groups" in permission:
+                permission["UserIdGroupPairs"] = _query_item_list(permission.pop("groups"))
+        group[permission_key] = permissions
+    return group
+
+
+def _normalize_query_response(service_key, action, result):
+    if not isinstance(result, dict):
+        return result
+    if service_key == "ec2" and action == "DescribeSecurityGroups":
+        raw_groups = result.pop("securityGroupInfo", None)
+        if raw_groups is not None:
+            if isinstance(raw_groups, dict) and "item" in raw_groups:
+                raw_groups = raw_groups["item"]
+            if raw_groups == "":
+                groups = []
+            elif isinstance(raw_groups, list):
+                groups = raw_groups
+            else:
+                groups = [raw_groups]
+            result["SecurityGroups"] = [_normalize_ec2_security_group(group) for group in groups]
+    return result
+
+
 def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
     """Dispatch an aws-sdk integration call to a query-protocol MiniStack service."""
     import xml.etree.ElementTree as ET
@@ -2770,7 +2871,10 @@ def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
     name_overrides = _QUERY_PARAM_NAME_OVERRIDES.get((service_key, pascal_action))
     wire_data = _convert_params_to_api_names(input_data, name_overrides)
     form_params = {"Action": pascal_action}
-    form_params.update(_flatten_query_params(wire_data))
+    if service_key == "ec2":
+        form_params.update(_flatten_ec2_query_params(wire_data))
+    else:
+        form_params.update(_flatten_query_params(wire_data))
     body = urlencode(form_params)
 
     headers = {
@@ -2832,6 +2936,7 @@ def _dispatch_aws_sdk_query(service_info, service_name, action, input_data):
                 result = result[result_key]
             # Drop ResponseMetadata
             result.pop("ResponseMetadata", None)
+            result = _normalize_query_response(service_key, pascal_action, result)
         return _convert_keys_to_sfn_convention(result)
     except ET.ParseError:
         raise _ExecutionError("States.Runtime", f"Failed to parse {service_name} XML response")
@@ -2917,6 +3022,332 @@ def _dispatch_aws_sdk_rest_json(service_info, service_name, action, input_data):
         return decoded
 
 
+# ---------------------------------------------------------------------------
+# REST-XML aws-sdk dispatch (S3)
+# ---------------------------------------------------------------------------
+#
+# Per-operation spec table. Each entry mirrors botocore's S3 service-2.json
+# routing for one operation. Avoids a botocore runtime dependency.
+#
+# Fields:
+#   method:        HTTP verb sent to the s3 handler.
+#   path:          path template; "{Bucket}" and "{Key+}" substituted from input.
+#   query_params:  {InputFieldPascalCase: querystring-name}.
+#                  Static "list-type=2" style flags are appended below.
+#   header_params: {InputFieldPascalCase: HTTP-header-name}.
+#   static_query:  static query-string pairs always appended (e.g. "list-type=2").
+#   result_root:   XML element name unwrapped from the response body. None means
+#                  return the raw parsed dict.
+#   list_fields:   tuple of dict-keys whose XML "<X><Member/></X>" or repeated
+#                  child element should be normalised to a Python list (S3 XML is
+#                  inconsistent: ListBucketResult.Contents is a repeated element,
+#                  not a wrapped list).
+#   header_outputs:{HTTP-header-name: OutputFieldPascalCase} response headers
+#                  to fold into the result dict (e.g. ETag from PUT/COPY).
+#
+# Phase 1 covers non-Body operations (no GetObject/PutObject). Body shape for
+# aws-sdk:s3:getObject/putObject is convention-based (Java SDK V2 → base64) and
+# not currently doc-cited; defer until verified.
+_S3_OP_SPECS = {
+    "ListBuckets": {
+        "method": "GET", "path": "/",
+        "result_root": "ListAllMyBucketsResult",
+        "list_fields": ("Buckets",),
+    },
+    "CreateBucket": {
+        "method": "PUT", "path": "/{Bucket}",
+        "header_params": {"ACL": "x-amz-acl"},
+        "result_root": None,
+        "header_outputs": {"location": "Location"},
+    },
+    "DeleteBucket": {
+        "method": "DELETE", "path": "/{Bucket}",
+        "result_root": None,
+    },
+    "HeadBucket": {
+        "method": "HEAD", "path": "/{Bucket}",
+        "result_root": None,
+    },
+    "GetBucketVersioning": {
+        "method": "GET", "path": "/{Bucket}",
+        "static_query": (("versioning", ""),),
+        "result_root": "VersioningConfiguration",
+    },
+    "ListObjectsV2": {
+        "method": "GET", "path": "/{Bucket}",
+        "static_query": (("list-type", "2"),),
+        "query_params": {
+            "Prefix": "prefix",
+            "Delimiter": "delimiter",
+            "MaxKeys": "max-keys",
+            "ContinuationToken": "continuation-token",
+            "StartAfter": "start-after",
+            "EncodingType": "encoding-type",
+            "FetchOwner": "fetch-owner",
+        },
+        "result_root": "ListBucketResult",
+        "list_fields": ("Contents", "CommonPrefixes"),
+    },
+    "ListObjects": {
+        "method": "GET", "path": "/{Bucket}",
+        "query_params": {
+            "Prefix": "prefix",
+            "Delimiter": "delimiter",
+            "MaxKeys": "max-keys",
+            "Marker": "marker",
+            "EncodingType": "encoding-type",
+        },
+        "result_root": "ListBucketResult",
+        "list_fields": ("Contents", "CommonPrefixes"),
+    },
+    "HeadObject": {
+        "method": "HEAD", "path": "/{Bucket}/{Key+}",
+        "query_params": {"VersionId": "versionId"},
+        "result_root": None,
+        "header_outputs": {
+            "etag": "ETag",
+            "content-length": "ContentLength",
+            "content-type": "ContentType",
+            "last-modified": "LastModified",
+            "x-amz-version-id": "VersionId",
+        },
+    },
+    "CopyObject": {
+        "method": "PUT", "path": "/{Bucket}/{Key+}",
+        "header_params": {
+            "CopySource": "x-amz-copy-source",
+            "MetadataDirective": "x-amz-metadata-directive",
+            "TaggingDirective": "x-amz-tagging-directive",
+            "ACL": "x-amz-acl",
+            "StorageClass": "x-amz-storage-class",
+        },
+        "result_root": "CopyObjectResult",
+        "header_outputs": {"x-amz-version-id": "VersionId"},
+    },
+    "DeleteObject": {
+        "method": "DELETE", "path": "/{Bucket}/{Key+}",
+        "query_params": {"VersionId": "versionId"},
+        "result_root": None,
+        "header_outputs": {
+            "x-amz-version-id": "VersionId",
+            "x-amz-delete-marker": "DeleteMarker",
+        },
+    },
+    "GetObjectTagging": {
+        "method": "GET", "path": "/{Bucket}/{Key+}",
+        "static_query": (("tagging", ""),),
+        "query_params": {"VersionId": "versionId"},
+        "result_root": "Tagging",
+        "list_fields": ("TagSet",),
+    },
+    "PutObjectTagging": {
+        "method": "PUT", "path": "/{Bucket}/{Key+}",
+        "static_query": (("tagging", ""),),
+        "query_params": {"VersionId": "versionId"},
+        "body_field": "Tagging",
+        "body_root": "Tagging",
+        "result_root": None,
+    },
+}
+
+
+def _s3_substitute_path(template, input_data):
+    """Substitute {Bucket} and {Key+} placeholders. {Key+} preserves slashes."""
+    out = template
+    if "{Bucket}" in out:
+        bucket = input_data.get("Bucket", "")
+        out = out.replace("{Bucket}", bucket)
+    if "{Key+}" in out:
+        key = input_data.get("Key", "")
+        out = out.replace("{Key+}", key)
+    return out
+
+
+def _s3_build_xml_body(root_name, payload):
+    """Build a minimal XML body for the small handful of ops that need one."""
+    import xml.etree.ElementTree as ET
+    root = ET.Element(root_name)
+
+    def _emit(parent, name, value):
+        if isinstance(value, dict):
+            child = ET.SubElement(parent, name)
+            for k, v in value.items():
+                _emit(child, k, v)
+        elif isinstance(value, list):
+            for item in value:
+                _emit(parent, name, item)
+        else:
+            child = ET.SubElement(parent, name)
+            child.text = "" if value is None else str(value)
+
+    if isinstance(payload, dict):
+        for k, v in payload.items():
+            _emit(root, k, v)
+    return ET.tostring(root, encoding="utf-8", short_empty_elements=False)
+
+
+def _s3_normalize_lists(parsed, list_fields):
+    """Force fields named in list_fields to be Python lists in the parsed dict.
+
+    S3's XML mixes two list patterns: ``<Buckets><Bucket>..</Bucket>..</Buckets>``
+    (wrapped) and ``<Contents>..</Contents><Contents>..</Contents>`` (repeated
+    siblings). Both arrive here as the parent value being one of:
+    empty-string (no items), dict (single item, possibly wrapped under "Bucket"
+    or similar), or list (multiple items). Always normalise to a list.
+    """
+    if not isinstance(parsed, dict) or not list_fields:
+        return parsed
+    for field in list_fields:
+        if field not in parsed:
+            continue
+        value = parsed[field]
+        if value in (None, ""):
+            parsed[field] = []
+        elif isinstance(value, dict):
+            # Wrapped form: {"Bucket": [...]} or {"Bucket": {...}} → unwrap.
+            if len(value) == 1:
+                inner = next(iter(value.values()))
+                if isinstance(inner, list):
+                    parsed[field] = inner
+                else:
+                    parsed[field] = [inner] if inner not in (None, "") else []
+            else:
+                parsed[field] = [value]
+        # If already a list, leave alone.
+    return parsed
+
+
+def _dispatch_aws_sdk_rest_xml(service_info, service_name, action, input_data):
+    """Dispatch an aws-sdk integration call to a REST-XML protocol service (S3)."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlencode, quote
+
+    from ministack import app
+
+    service_key = service_info.get("service_key", service_name)
+    handler = app.SERVICE_HANDLERS.get(service_key)
+    if not handler:
+        raise _ExecutionError(
+            "States.Runtime",
+            f"Service '{service_key}' is not available in MiniStack",
+        )
+
+    pascal_action = action[0].upper() + action[1:] if action else action
+    spec = _S3_OP_SPECS.get(pascal_action)
+    if not spec:
+        raise _ExecutionError(
+            "States.Runtime",
+            f"aws-sdk:{service_name}:{action} is not yet implemented in MiniStack "
+            "(rest-xml dispatcher Phase 1 covers list/head/copy/delete/tagging operations)",
+        )
+
+    input_data = input_data or {}
+    method = spec["method"]
+    path = _s3_substitute_path(spec["path"], input_data)
+
+    # S3 handler routes by the query_params dict, not by parsing the path —
+    # so build the dict and ALSO append a query string for handlers that
+    # inspect the raw path. Both forms stay in sync.
+    query_dict = {}
+    query_pairs = []
+    for key, qname in (spec.get("query_params") or {}).items():
+        if key in input_data and input_data[key] is not None:
+            query_dict[qname] = str(input_data[key])
+            query_pairs.append((qname, str(input_data[key])))
+    for qname, qvalue in spec.get("static_query") or ():
+        query_dict[qname] = qvalue
+        query_pairs.append((qname, qvalue))
+    if query_pairs:
+        path_with_query = f"{path}?{urlencode(query_pairs, quote_via=quote)}"
+    else:
+        path_with_query = path
+
+    headers = {
+        "host": f"{service_key}.{REGION}.amazonaws.com",
+        "authorization": (
+            f"AWS4-HMAC-SHA256 Credential=test/20260101/{REGION}/{service_key}/aws4_request"
+        ),
+    }
+    for key, hname in (spec.get("header_params") or {}).items():
+        if key in input_data and input_data[key] is not None:
+            headers[hname.lower()] = str(input_data[key])
+
+    body = b""
+    body_field = spec.get("body_field")
+    if body_field and body_field in input_data:
+        body = _s3_build_xml_body(spec.get("body_root", body_field), input_data[body_field])
+        headers["content-type"] = "application/xml"
+        headers["content-length"] = str(len(body))
+
+    # S3's path parser splits on "/" without stripping the query string —
+    # passing the raw path with "?..." would treat "?list-type=2" as part of
+    # the bucket name. Send the query-less path; the dict is the source of
+    # truth for query routing.
+    coro = handler(method, path, headers, body, query_dict)
+    try:
+        coro.send(None)
+    except StopIteration as stop:
+        status, resp_headers, resp_body = stop.value
+    else:
+        coro.close()
+        loop = asyncio.new_event_loop()
+        try:
+            status, resp_headers, resp_body = loop.run_until_complete(
+                handler(method, path, headers, body, query_dict)
+            )
+        finally:
+            loop.close()
+
+    decoded = resp_body.decode("utf-8") if isinstance(resp_body, bytes) else (resp_body or "")
+    norm_resp_headers = {k.lower(): v for k, v in (resp_headers or {}).items()}
+
+    if status >= 400:
+        code = "S3Exception"
+        message = decoded or f"S3 returned status {status}"
+        if decoded:
+            try:
+                err_root = ET.fromstring(decoded)
+                code_el = err_root.find("Code")
+                msg_el = err_root.find("Message")
+                if code_el is not None and code_el.text:
+                    code = code_el.text
+                if msg_el is not None and msg_el.text:
+                    message = msg_el.text
+            except ET.ParseError:
+                pass
+        raise _ExecutionError(f"S3.{code}", message)
+
+    result = {}
+    if decoded.strip():
+        try:
+            root = ET.fromstring(decoded)
+            _, parsed = _xml_element_to_dict(root)
+            if isinstance(parsed, dict):
+                result = parsed
+            elif parsed in (None, ""):
+                result = {}
+            else:
+                result = {"Result": parsed}
+        except ET.ParseError:
+            result = {}
+
+    for hname, output_key in (spec.get("header_outputs") or {}).items():
+        if hname in norm_resp_headers:
+            value = norm_resp_headers[hname]
+            if output_key in ("ContentLength",):
+                try:
+                    value = int(value)
+                except (TypeError, ValueError):
+                    pass
+            elif output_key == "DeleteMarker":
+                value = str(value).lower() == "true"
+            result[output_key] = value
+
+    result = _s3_normalize_lists(result, spec.get("list_fields") or ())
+
+    return _convert_keys_to_sfn_convention(result)
+
+
 def _invoke_aws_sdk_integration(resource, input_data):
     """Dispatch arn:aws:states:::aws-sdk:<service>:<action> to the target MiniStack service."""
     # Parse service and action from ARN
@@ -2942,6 +3373,8 @@ def _invoke_aws_sdk_integration(resource, input_data):
         return _dispatch_aws_sdk_query(service_info, service_name, action, input_data)
     elif protocol == "rest-json":
         return _dispatch_aws_sdk_rest_json(service_info, service_name, action, input_data)
+    elif protocol == "rest-xml":
+        return _dispatch_aws_sdk_rest_xml(service_info, service_name, action, input_data)
     else:
         raise _ExecutionError(
             "States.Runtime",

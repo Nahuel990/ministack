@@ -5,6 +5,8 @@ All notable changes to MiniStack will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+
+- **Step Functions `aws-sdk:ec2` security group compatibility** — `CreateSecurityGroup` now maps the SDK `Description` parameter to EC2's query-wire `GroupDescription` while preserving `VpcId`, and `DescribeSecurityGroups` now sends EC2-shaped filters (`Filter.1.Value.1`) instead of the generic `member.N` form. The Step Functions XML adapter also returns `SecurityGroups` instead of raw `SecurityGroupInfo`, matching AWS SDK output.
 ---
 
 ## [1.3.28] — 2026-05-05
@@ -15,6 +17,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 - **DynamoDB legacy `Expected` (PutItem / UpdateItem / DeleteItem) and `KeyConditions` (Query)** — previously ignored; SDKs and code paths that still use the pre-expression API now work. `ScanFilter` / `QueryFilter` comparison support extended to all 13 legacy operators (`EQ`, `NE`, `LE`, `LT`, `GE`, `GT`, `NOT_NULL`, `NULL`, `CONTAINS`, `NOT_CONTAINS`, `BEGINS_WITH`, `IN`, `BETWEEN`) with type-aware numeric comparison. Reported by @darkamgine
 - **DynamoDB `TransactWriteItems` multi-failure reporting** — only the first failing item was marked in `CancellationReasons`; AWS returns a `ConditionalCheckFailed` entry for every failing item in the transaction. Now evaluates all conditions in a first pass and reports each failure. Reported by @anghel93 and @gnjack
+
 
 ---
 
@@ -826,6 +829,9 @@ These services stored per-tenant data in plain `dict` / `list`, so `List*` / `De
 ### Added
 - **Dynamic RDS storage** — new `RDS_PERSIST=1` env var switches database containers from fixed-size tmpfs to Docker named volumes for auto-growing persistent storage. Default (`RDS_PERSIST=0`) remains ephemeral tmpfs for CI/CD. Reported by @macario1983 (#248).
 - **Dual Docker Hub publishing** — Docker images now publish to both `nahuelnucera/ministack` and `ministackorg/ministack` on tag push.
+
+### Fixed
+- **Step Functions `aws-sdk:s3` integration** — `arn:aws:states:::aws-sdk:s3:listObjectsV2`, `:copyObject`, and other S3 control-plane operations now dispatch correctly. Previously, S3 was tagged as `rest`-protocol with no dispatcher and every call failed with `States.Runtime`: "aws-sdk integration for rest-protocol service 's3' is not yet implemented". A REST-XML dispatcher now drives a hand-tabled spec for list/head/copy/delete/tagging operations, mapping each `Parameters` field to its botocore-modelled URI/querystring/header location and returning XML responses normalised to the SFN PascalCase convention. Reported by @LeTrungNguyen1703 (#573). Phase 1 covers `ListBuckets`, `CreateBucket`, `DeleteBucket`, `HeadBucket`, `GetBucketVersioning`, `ListObjectsV2`, `ListObjects`, `HeadObject`, `CopyObject`, `DeleteObject`, `GetObjectTagging`, `PutObjectTagging`. `GetObject`/`PutObject` (Body-bearing operations) deferred to Phase 2.
 
 ---
 

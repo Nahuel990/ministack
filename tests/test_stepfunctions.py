@@ -687,6 +687,143 @@ def test_sfn_aws_sdk_rds_create_and_describe_cluster(sfn, sfn_sync):
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
+
+def test_sfn_aws_sdk_ec2_security_group_create_and_describe(sfn_sync, ec2):
+    """aws-sdk:ec2 CreateSecurityGroup + DescribeSecurityGroups use EC2 query shapes."""
+    import uuid as _uuid
+
+    vpc_id = ec2.create_vpc(CidrBlock="10.91.0.0/16")["Vpc"]["VpcId"]
+    group_name = f"sfn-ec2-sg-{_uuid.uuid4().hex[:8]}"
+    description = "created through sfn aws-sdk ec2"
+    sm_name = f"sdk-ec2-sg-{_uuid.uuid4().hex[:8]}"
+    sm_arn = None
+    sg_id = None
+
+    definition = json.dumps({
+        "StartAt": "CreateSecurityGroup",
+        "States": {
+            "CreateSecurityGroup": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:ec2:createSecurityGroup",
+                "Parameters": {
+                    "GroupName": group_name,
+                    "Description": description,
+                    "VpcId": vpc_id,
+                    "TagSpecifications": [
+                        {
+                            "ResourceType": "security-group",
+                            "Tags": [{"Key": "Name", "Value": group_name}],
+                        }
+                    ],
+                },
+                "ResultPath": "$.createResult",
+                "Next": "DescribeSecurityGroups",
+            },
+            "DescribeSecurityGroups": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:ec2:describeSecurityGroups",
+                "Parameters": {
+                    "Filters": [
+                        {"Name": "vpc-id", "Values": [vpc_id]},
+                        {"Name": "group-name", "Values": [group_name]},
+                    ],
+                },
+                "ResultPath": "$.describeResult",
+                "Next": "Done",
+            },
+            "Done": {"Type": "Succeed"},
+        },
+    })
+
+    try:
+        sm_arn = sfn_sync.create_state_machine(
+            name=sm_name,
+            definition=definition,
+            roleArn="arn:aws:iam::000000000000:role/sfn-role",
+        )["stateMachineArn"]
+
+        resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+        assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
+        output = json.loads(resp["output"])
+
+        sg_id = output["createResult"]["GroupId"]
+        assert sg_id.startswith("sg-")
+
+        describe_result = output["describeResult"]
+        assert "SecurityGroups" in describe_result
+        assert "SecurityGroupInfo" not in describe_result
+        groups = describe_result["SecurityGroups"]
+        assert isinstance(groups, list)
+        assert len(groups) == 1
+        assert groups[0]["GroupId"] == sg_id
+        assert groups[0]["GroupName"] == group_name
+        assert groups[0]["Description"] == description
+        assert groups[0]["VpcId"] == vpc_id
+        assert groups[0]["Tags"] == [{"Key": "Name", "Value": group_name}]
+    finally:
+        if sg_id:
+            ec2.delete_security_group(GroupId=sg_id)
+        ec2.delete_vpc(VpcId=vpc_id)
+        if sm_arn:
+            sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_ec2_security_group_duplicate_error(sfn_sync, ec2):
+    """aws-sdk:ec2 CreateSecurityGroup preserves AWS duplicate-name errors."""
+    import uuid as _uuid
+
+    group_name = f"sfn-ec2-sg-dup-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-ec2-sg-dup-{_uuid.uuid4().hex[:8]}"
+    sm_arn = None
+
+    definition = json.dumps({
+        "StartAt": "CreateFirst",
+        "States": {
+            "CreateFirst": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:ec2:createSecurityGroup",
+                "Parameters": {
+                    "GroupName": group_name,
+                    "Description": "first",
+                    "VpcId": "vpc-00000001",
+                },
+                "Next": "CreateDuplicate",
+            },
+            "CreateDuplicate": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:ec2:createSecurityGroup",
+                "Parameters": {
+                    "GroupName": group_name,
+                    "Description": "second",
+                    "VpcId": "vpc-00000001",
+                },
+                "End": True,
+            },
+        },
+    })
+
+    try:
+        sm_arn = sfn_sync.create_state_machine(
+            name=sm_name,
+            definition=definition,
+            roleArn="arn:aws:iam::000000000000:role/sfn-role",
+        )["stateMachineArn"]
+
+        resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+        assert resp["status"] == "FAILED"
+        assert resp["error"] == "Ec2.InvalidGroup.Duplicate"
+        assert "already exists" in resp["cause"]
+    finally:
+        groups = ec2.describe_security_groups(Filters=[
+            {"Name": "vpc-id", "Values": ["vpc-00000001"]},
+            {"Name": "group-name", "Values": [group_name]},
+        ])["SecurityGroups"]
+        for group in groups:
+            ec2.delete_security_group(GroupId=group["GroupId"])
+        if sm_arn:
+            sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
 def test_sfn_aws_sdk_rds_create_and_describe_instance(sfn, sfn_sync):
     """aws-sdk:rds CreateDBInstance + DescribeDBInstances via query-protocol dispatch."""
     import uuid as _uuid
@@ -2555,6 +2692,195 @@ def test_sfn_aws_sdk_rdsdata_path_mapping():
     assert rds_data_paths["BeginTransaction"] == "/BeginTransaction"
     assert rds_data_paths["CommitTransaction"] == "/CommitTransaction"
     assert rds_data_paths["RollbackTransaction"] == "/RollbackTransaction"
+
+
+# ---------------------------------------------------------------------------
+# REST-XML aws-sdk dispatch (S3) — Issue #573
+# ---------------------------------------------------------------------------
+
+
+def test_sfn_aws_sdk_s3_list_objects_v2(sfn_sync, s3):
+    """aws-sdk:s3:listObjectsV2 returns object listing through REST-XML dispatch."""
+    import uuid as _uuid
+
+    bucket = f"sfn-s3-list-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-s3-list-{_uuid.uuid4().hex[:8]}"
+    sm_arn = None
+    try:
+        s3.create_bucket(Bucket=bucket)
+        s3.put_object(Bucket=bucket, Key="alpha/one.txt", Body=b"a")
+        s3.put_object(Bucket=bucket, Key="alpha/two.txt", Body=b"b")
+        s3.put_object(Bucket=bucket, Key="beta/three.txt", Body=b"c")
+
+        definition = json.dumps({
+            "StartAt": "List",
+            "States": {
+                "List": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:s3:listObjectsV2",
+                    "Parameters": {"Bucket": bucket, "Prefix": "alpha/"},
+                    "End": True,
+                },
+            },
+        })
+
+        sm_arn = sfn_sync.create_state_machine(
+            name=sm_name,
+            definition=definition,
+            roleArn="arn:aws:iam::000000000000:role/sfn-role",
+        )["stateMachineArn"]
+
+        resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+        assert resp["status"] == "SUCCEEDED", f"{resp.get('error')} — {resp.get('cause')}"
+        output = json.loads(resp["output"])
+        keys = sorted(item["Key"] for item in output.get("Contents", []))
+        assert keys == ["alpha/one.txt", "alpha/two.txt"]
+    finally:
+        for k in ("alpha/one.txt", "alpha/two.txt", "beta/three.txt"):
+            try:
+                s3.delete_object(Bucket=bucket, Key=k)
+            except Exception:
+                pass
+        try:
+            s3.delete_bucket(Bucket=bucket)
+        except Exception:
+            pass
+        if sm_arn:
+            sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_s3_copy_object(sfn_sync, s3):
+    """aws-sdk:s3:copyObject duplicates an object via x-amz-copy-source header."""
+    import uuid as _uuid
+
+    bucket = f"sfn-s3-copy-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-s3-copy-{_uuid.uuid4().hex[:8]}"
+    sm_arn = None
+    try:
+        s3.create_bucket(Bucket=bucket)
+        s3.put_object(Bucket=bucket, Key="src.txt", Body=b"hello")
+
+        definition = json.dumps({
+            "StartAt": "Copy",
+            "States": {
+                "Copy": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:s3:copyObject",
+                    "Parameters": {
+                        "Bucket": bucket,
+                        "Key": "dst.txt",
+                        "CopySource": f"{bucket}/src.txt",
+                    },
+                    "End": True,
+                },
+            },
+        })
+
+        sm_arn = sfn_sync.create_state_machine(
+            name=sm_name,
+            definition=definition,
+            roleArn="arn:aws:iam::000000000000:role/sfn-role",
+        )["stateMachineArn"]
+
+        resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+        assert resp["status"] == "SUCCEEDED", f"{resp.get('error')} — {resp.get('cause')}"
+
+        copied = s3.get_object(Bucket=bucket, Key="dst.txt")["Body"].read()
+        assert copied == b"hello"
+    finally:
+        for k in ("src.txt", "dst.txt"):
+            try:
+                s3.delete_object(Bucket=bucket, Key=k)
+            except Exception:
+                pass
+        try:
+            s3.delete_bucket(Bucket=bucket)
+        except Exception:
+            pass
+        if sm_arn:
+            sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_s3_list_buckets(sfn_sync, s3):
+    """aws-sdk:s3:listBuckets returns the bucket list via REST-XML."""
+    import uuid as _uuid
+
+    marker_bucket = f"sfn-s3-marker-{_uuid.uuid4().hex[:8]}"
+    sm_name = f"sdk-s3-listbuckets-{_uuid.uuid4().hex[:8]}"
+    sm_arn = None
+    try:
+        s3.create_bucket(Bucket=marker_bucket)
+
+        definition = json.dumps({
+            "StartAt": "ListBuckets",
+            "States": {
+                "ListBuckets": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::aws-sdk:s3:listBuckets",
+                    "Parameters": {},
+                    "End": True,
+                },
+            },
+        })
+
+        sm_arn = sfn_sync.create_state_machine(
+            name=sm_name,
+            definition=definition,
+            roleArn="arn:aws:iam::000000000000:role/sfn-role",
+        )["stateMachineArn"]
+
+        resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+        assert resp["status"] == "SUCCEEDED", f"{resp.get('error')} — {resp.get('cause')}"
+        output = json.loads(resp["output"])
+        names = [b["Name"] for b in output.get("Buckets", [])]
+        assert marker_bucket in names
+    finally:
+        try:
+            s3.delete_bucket(Bucket=marker_bucket)
+        except Exception:
+            pass
+        if sm_arn:
+            sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_s3_unsupported_op_returns_helpful_error(sfn_sync):
+    """aws-sdk:s3:getObject (Phase 2) returns a clear 'not yet implemented' error."""
+    import uuid as _uuid
+
+    sm_name = f"sdk-s3-unsupported-{_uuid.uuid4().hex[:8]}"
+
+    definition = json.dumps({
+        "StartAt": "Get",
+        "States": {
+            "Get": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+                "Parameters": {"Bucket": "x", "Key": "y"},
+                "End": True,
+            },
+        },
+    })
+
+    sm_arn = sfn_sync.create_state_machine(
+        name=sm_name,
+        definition=definition,
+        roleArn="arn:aws:iam::000000000000:role/sfn-role",
+    )["stateMachineArn"]
+
+    resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
+    assert resp["status"] == "FAILED"
+    cause = (resp.get("cause") or "").lower()
+    assert "not yet implemented" in cause and "getobject" in cause
+
+    sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
+
+
+def test_sfn_aws_sdk_s3_op_specs_cover_issue_573_request():
+    """The two ops the original bug report named must be in the Phase 1 spec table."""
+    from ministack.services.stepfunctions import _S3_OP_SPECS
+
+    assert "ListObjectsV2" in _S3_OP_SPECS
+    assert "CopyObject" in _S3_OP_SPECS
 # ---------------------------------------------------------------------------
 # Terraform compatibility tests
 # ---------------------------------------------------------------------------
