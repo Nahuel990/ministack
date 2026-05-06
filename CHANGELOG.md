@@ -7,6 +7,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.30] — 2026-05-06
+
+### Fixed
+- **Step Functions REST-JSON `aws-sdk` response casing** — successful REST-JSON integrations such as `aws-sdk:rdsdata:executeStatement` now expose output keys with the same PascalCase convention used by the query and REST-XML dispatchers (`Records`, `NumberOfRecordsUpdated`) instead of raw wire camelCase, so `ResultSelector` paths like `$.Records` resolve correctly. Contributed by @jayjanssen.
+
+---
+
 ## [1.3.29] — 2026-05-06
 
 ### Added
@@ -18,7 +25,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Step Functions `aws-sdk:s3` integration** — S3 was tagged as `rest`-protocol with no dispatcher; every call failed with `States.Runtime`. New REST-XML dispatcher covers `ListBuckets`, `CreateBucket`, `DeleteBucket`, `HeadBucket`, `GetBucketVersioning`, `ListObjectsV2`, `ListObjects`, `HeadObject`, `CopyObject`, `DeleteObject`, `GetObjectTagging`, `PutObjectTagging`. `GetObject`/`PutObject` deferred to Phase 2. Reported by @LeTrungNguyen1703.
 - **SQS `ReceiveMessage` honors `MessageSystemAttributeNames`** — only the deprecated `AttributeNames` was read, so AWS SDK v2 (Java/Kotlin) consumers got empty `Attributes` and broken `ApproximateReceiveCount`-based redelivery detection. Contributed by @joaomena.
 - **CFN `AWS::SNS::Subscription` honors `RawMessageDelivery`** — the provisioner silently defaulted to `false` even when templates set `true`, so consumers got SNS-wrapped envelopes instead of raw payloads. Contributed by @joaomena.
-- **Step Functions REST-JSON `aws-sdk` response casing** — successful REST-JSON integrations such as `aws-sdk:rdsdata:executeStatement` now expose SDK-shaped output keys (`Records`, `StringValue`, `NumberOfRecordsUpdated`) instead of raw wire keys (`records`, `stringValue`, `numberOfRecordsUpdated`), matching AWS Step Functions `ResultSelector` behavior.
+
 ---
 
 ## [1.3.28] — 2026-05-05
