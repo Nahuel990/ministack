@@ -9,6 +9,14 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - **Step Functions `aws-sdk:ec2` security group compatibility** — `CreateSecurityGroup` now maps the SDK `Description` parameter to EC2's query-wire `GroupDescription` while preserving `VpcId`, and `DescribeSecurityGroups` now sends EC2-shaped filters (`Filter.1.Value.1`) instead of the generic `member.N` form. The Step Functions XML adapter also returns `SecurityGroups` instead of raw `SecurityGroupInfo`, matching AWS SDK output.
 ---
 
+## [Unreleased]
+
+### Fixed
+- **SQS `ReceiveMessage` honors `MessageSystemAttributeNames`** — only the legacy `AttributeNames` / `SystemAttributeNames` request fields were read; the AWS Java SDK v2 (and any client using the modern, non-deprecated request shape) sends `MessageSystemAttributeNames`, so `Attributes` came back empty even when the client requested `All`. Broke `ApproximateReceiveCount`-based redelivery detection and DLQ logic for SDK v2 consumers.
+- **CFN `AWS::SNS::Subscription` honors `RawMessageDelivery`** — the CloudFormation provisioner read only `FilterPolicyScope` and `FilterPolicy` from the resource properties, silently defaulting subscriptions to `RawMessageDelivery=false` even when the template explicitly set it to `true`. Consumers received SNS-wrapped envelope JSON instead of the raw message, breaking attribute-based routing for any consumer that reads SQS-level `MessageAttributes`.
+
+---
+
 ## [1.3.28] — 2026-05-05
 
 ### Added
