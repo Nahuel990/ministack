@@ -5,15 +5,19 @@ All notable changes to MiniStack will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
-
-- **Step Functions `aws-sdk:ec2` security group compatibility** — `CreateSecurityGroup` now maps the SDK `Description` parameter to EC2's query-wire `GroupDescription` while preserving `VpcId`, and `DescribeSecurityGroups` now sends EC2-shaped filters (`Filter.1.Value.1`) instead of the generic `member.N` form. The Step Functions XML adapter also returns `SecurityGroups` instead of raw `SecurityGroupInfo`, matching AWS SDK output.
 ---
 
-## [Unreleased]
+## [1.3.29] — 2026-05-06
+
+### Added
+- **EC2 `DescribeVpcEndpointServices`** — returns the standard catalog of 2 Gateway services (`s3`, `dynamodb`) and 17 Interface PrivateLink services with region-templated DNS names and stable per-service IDs. `ServiceNames`, `service-name`, and `service-type` filters supported. Reported by @svenikea.
+- **DynamoDB legacy `AttributeUpdates`** — `UpdateItem` now applies the pre-expression parameter with `PUT` (default), `DELETE` (full removal or set subtract), and `ADD` (numeric increment or set union) actions. Mutually exclusive with `UpdateExpression`. .NET AWS SDK upserts (`UpdateItem` under the hood) were silently dropping all non-key fields. Reported by @gnjack.
 
 ### Fixed
-- **SQS `ReceiveMessage` honors `MessageSystemAttributeNames`** — only the legacy `AttributeNames` / `SystemAttributeNames` request fields were read; the AWS Java SDK v2 (and any client using the modern, non-deprecated request shape) sends `MessageSystemAttributeNames`, so `Attributes` came back empty even when the client requested `All`. Broke `ApproximateReceiveCount`-based redelivery detection and DLQ logic for SDK v2 consumers.
-- **CFN `AWS::SNS::Subscription` honors `RawMessageDelivery`** — the CloudFormation provisioner read only `FilterPolicyScope` and `FilterPolicy` from the resource properties, silently defaulting subscriptions to `RawMessageDelivery=false` even when the template explicitly set it to `true`. Consumers received SNS-wrapped envelope JSON instead of the raw message, breaking attribute-based routing for any consumer that reads SQS-level `MessageAttributes`.
+- **Step Functions `aws-sdk:ec2` security group compatibility** — `CreateSecurityGroup` now maps SDK `Description` to wire `GroupDescription`, `DescribeSecurityGroups` sends EC2-shaped filters (`Filter.1.Value.1` instead of `member.N`), and the XML adapter returns `SecurityGroups` rather than raw `SecurityGroupInfo`. Contributed by @jayjanssen.
+- **Step Functions `aws-sdk:s3` integration** — S3 was tagged as `rest`-protocol with no dispatcher; every call failed with `States.Runtime`. New REST-XML dispatcher covers `ListBuckets`, `CreateBucket`, `DeleteBucket`, `HeadBucket`, `GetBucketVersioning`, `ListObjectsV2`, `ListObjects`, `HeadObject`, `CopyObject`, `DeleteObject`, `GetObjectTagging`, `PutObjectTagging`. `GetObject`/`PutObject` deferred to Phase 2. Reported by @LeTrungNguyen1703.
+- **SQS `ReceiveMessage` honors `MessageSystemAttributeNames`** — only the deprecated `AttributeNames` was read, so AWS SDK v2 (Java/Kotlin) consumers got empty `Attributes` and broken `ApproximateReceiveCount`-based redelivery detection. Contributed by @joaomena.
+- **CFN `AWS::SNS::Subscription` honors `RawMessageDelivery`** — the provisioner silently defaulted to `false` even when templates set `true`, so consumers got SNS-wrapped envelopes instead of raw payloads. Contributed by @joaomena.
 
 ---
 
@@ -837,9 +841,6 @@ These services stored per-tenant data in plain `dict` / `list`, so `List*` / `De
 ### Added
 - **Dynamic RDS storage** — new `RDS_PERSIST=1` env var switches database containers from fixed-size tmpfs to Docker named volumes for auto-growing persistent storage. Default (`RDS_PERSIST=0`) remains ephemeral tmpfs for CI/CD. Reported by @macario1983 (#248).
 - **Dual Docker Hub publishing** — Docker images now publish to both `nahuelnucera/ministack` and `ministackorg/ministack` on tag push.
-
-### Fixed
-- **Step Functions `aws-sdk:s3` integration** — `arn:aws:states:::aws-sdk:s3:listObjectsV2`, `:copyObject`, and other S3 control-plane operations now dispatch correctly. Previously, S3 was tagged as `rest`-protocol with no dispatcher and every call failed with `States.Runtime`: "aws-sdk integration for rest-protocol service 's3' is not yet implemented". A REST-XML dispatcher now drives a hand-tabled spec for list/head/copy/delete/tagging operations, mapping each `Parameters` field to its botocore-modelled URI/querystring/header location and returning XML responses normalised to the SFN PascalCase convention. Reported by @LeTrungNguyen1703 (#573). Phase 1 covers `ListBuckets`, `CreateBucket`, `DeleteBucket`, `HeadBucket`, `GetBucketVersioning`, `ListObjectsV2`, `ListObjects`, `HeadObject`, `CopyObject`, `DeleteObject`, `GetObjectTagging`, `PutObjectTagging`. `GetObject`/`PutObject` (Body-bearing operations) deferred to Phase 2.
 
 ---
 

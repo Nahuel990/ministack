@@ -55,6 +55,7 @@ Supports:
 """
 
 import copy
+import hashlib
 import logging
 import os
 import random
@@ -1518,7 +1519,7 @@ def _describe_vpc_endpoint_services(p):
             private_dns = f"<privateDnsName>{short}.{region}.amazonaws.com</privateDnsName>"
         detail_items.append(f"""<item>
             <serviceName>{name}</serviceName>
-            <serviceId>vpce-svc-{abs(hash(name)) & 0xffffffffffff:012x}</serviceId>
+            <serviceId>vpce-svc-{hashlib.sha256(name.encode()).hexdigest()[:12]}</serviceId>
             <serviceType><item><serviceType>{stype}</serviceType></item></serviceType>
             <availabilityZoneSet>{az_items}</availabilityZoneSet>
             <owner>amazon</owner>

@@ -669,7 +669,10 @@ def _update_item(data):
     if update_expr:
         item = _apply_update_expression(item, update_expr, eav, ean)
     elif attribute_updates:
-        item = _apply_attribute_updates(item, attribute_updates)
+        try:
+            item = _apply_attribute_updates(item, attribute_updates)
+        except _AttributeUpdatesValidationError as exc:
+            return error_response_json("ValidationException", str(exc), 400)
 
     table["items"][pk_val][sk_val] = item
     _update_counts(table)
@@ -2703,6 +2706,18 @@ def _evaluate_expected(item, expected, conditional_operator="AND"):
     return all(results)
 
 
+_SET_TYPES = ("SS", "NS", "BS")
+
+
+class _AttributeUpdatesValidationError(Exception):
+    """Raised when AttributeUpdates contains an invalid action/type combination.
+
+    Real DynamoDB rejects DELETE-with-Value where the existing attribute is not a
+    set, and ADD where the existing attribute (or the supplied value) is not a
+    Number or set type. The caller translates this to a ValidationException.
+    """
+
+
 def _apply_attribute_updates(item, attribute_updates):
     """Apply legacy ``AttributeUpdates`` to an item.
 
@@ -2723,34 +2738,49 @@ def _apply_attribute_updates(item, attribute_updates):
                 # No value → remove the attribute entirely
                 item.pop(attr_name, None)
             else:
-                # Value provided → subtract from a set
+                value_set_type = next((t for t in _SET_TYPES if t in value), None)
+                if value_set_type is None:
+                    raise _AttributeUpdatesValidationError(
+                        "One or more parameter values were invalid: "
+                        "Action DELETE is not supported for the type of value "
+                        f"provided for attribute {attr_name}"
+                    )
                 existing = item.get(attr_name)
-                if existing:
-                    for set_type in ("SS", "NS", "BS"):
-                        if set_type in value and set_type in existing:
-                            remaining = [v for v in existing[set_type] if v not in set(value[set_type])]
-                            if remaining:
-                                item[attr_name] = {set_type: remaining}
-                            else:
-                                item.pop(attr_name, None)
-                            break
+                if existing is None:
+                    continue
+                if value_set_type not in existing:
+                    raise _AttributeUpdatesValidationError(
+                        "One or more parameter values were invalid: "
+                        f"Type mismatch for attribute {attr_name}"
+                    )
+                remaining = [v for v in existing[value_set_type] if v not in set(value[value_set_type])]
+                if remaining:
+                    item[attr_name] = {value_set_type: remaining}
+                else:
+                    item.pop(attr_name, None)
         elif action == "ADD":
             if value is None:
                 continue
             existing = item.get(attr_name)
-            if "N" in value:
+            value_type = next(iter(value.keys()), None)
+            if value_type not in ("N",) + _SET_TYPES:
+                raise _AttributeUpdatesValidationError(
+                    "One or more parameter values were invalid: "
+                    "Action ADD is only supported for Number and set types "
+                    f"for attribute {attr_name}"
+                )
+            if existing is not None and value_type not in existing:
+                raise _AttributeUpdatesValidationError(
+                    "One or more parameter values were invalid: "
+                    f"Type mismatch for attribute {attr_name}"
+                )
+            if value_type == "N":
                 inc = Decimal(value["N"])
                 cur = Decimal(existing["N"]) if existing and "N" in existing else Decimal(0)
                 item[attr_name] = {"N": str(cur + inc)}
-            elif "SS" in value:
-                cur = set(existing["SS"]) if existing and "SS" in existing else set()
-                item[attr_name] = {"SS": sorted(cur | set(value["SS"]))}
-            elif "NS" in value:
-                cur = set(existing["NS"]) if existing and "NS" in existing else set()
-                item[attr_name] = {"NS": sorted(cur | set(value["NS"]))}
-            elif "BS" in value:
-                cur = set(existing["BS"]) if existing and "BS" in existing else set()
-                item[attr_name] = {"BS": sorted(cur | set(value["BS"]))}
+            else:
+                cur = set(existing[value_type]) if existing and value_type in existing else set()
+                item[attr_name] = {value_type: sorted(cur | set(value[value_type]))}
     return item
 
 
