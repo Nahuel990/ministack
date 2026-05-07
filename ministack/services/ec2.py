@@ -3347,6 +3347,9 @@ def _describe_prefix_lists(p):
 
 def _create_managed_prefix_list(p):
     name = _p(p, "PrefixListName") or ""
+    # Reject creation of prefix lists that collide with AWS managed names
+    if _is_aws_managed_prefix_name(name):
+        return _error("UnsupportedOperation", "The action is not supported for an AWS-managed prefix list.", 400)
     max_entries = int(_p(p, "MaxEntries") or "10")
     af = _p(p, "AddressFamily") or "IPv4"
     pl_id = "pl-" + "".join(random.choices(string.hexdigits[:16], k=17))

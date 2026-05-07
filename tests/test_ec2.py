@@ -1093,6 +1093,16 @@ def test_ec2_describe_prefix_lists_cidr_not_placeholder(ec2):
         for cidr in pl["Cidrs"]:
             assert cidr != "0.0.0.0/0"
 
+
+def test_ec2_aws_managed_prefix_list_cannot_create(ec2):
+    """Creating a prefix list with an AWS-managed name returns UnsupportedOperation."""
+    with pytest.raises(ClientError) as exc_info:
+        ec2.create_managed_prefix_list(
+            PrefixListName="com.amazonaws.us-east-1.s3",
+            MaxEntries=5, AddressFamily="IPv4",
+        )
+    assert exc_info.value.response["Error"]["Code"] == "UnsupportedOperation"
+
 def test_ec2_vpn_gateway_crud(ec2):
     """Full lifecycle: create, attach, describe, detach, delete."""
     vpc = ec2.create_vpc(CidrBlock="10.95.0.0/16")
